@@ -225,8 +225,16 @@ export function deriveExtractorLimits(args: {
   const includesJobindex = args.sources.includes("jobindex");
   const includesSeek = args.sources.includes("seek");
   const includesNaukri = args.sources.includes("naukri");
+  const remoteApiSourcesCount = [
+    args.sources.includes("remotive"),
+    args.sources.includes("jobicy"),
+    args.sources.includes("weworkremotely"),
+    args.sources.includes("themuse"),
+    args.sources.includes("arbeitnow"),
+  ].filter(Boolean).length;
 
   const weightedContributors =
+    remoteApiSourcesCount * termCount +
     (includesIndeed ? termCount : 0) +
     (includesLinkedIn ? termCount : 0) +
     (includesGlassdoor ? termCount : 0) +
@@ -355,6 +363,13 @@ export function calculateAutomaticEstimate(args: {
   const hasJobindex = sources.includes("jobindex");
   const hasSeek = sources.includes("seek");
   const hasNaukri = sources.includes("naukri");
+  const remoteApiSourcesCount = [
+    sources.includes("remotive"),
+    sources.includes("jobicy"),
+    sources.includes("weworkremotely"),
+    sources.includes("themuse"),
+    sources.includes("arbeitnow"),
+  ].filter(Boolean).length;
   const limits = deriveExtractorLimits({
     budget: values.runBudget,
     searchTerms: values.searchTerms,
@@ -364,6 +379,8 @@ export function calculateAutomaticEstimate(args: {
   const jobspySitesCount = [hasIndeed, hasLinkedIn, hasGlassdoor].filter(
     Boolean,
   ).length;
+  const remoteApiCap =
+    remoteApiSourcesCount * limits.jobspyResultsWanted * termCount;
   const jobspyCap = jobspySitesCount * limits.jobspyResultsWanted * termCount;
   const gradcrackerCap = hasGradcracker
     ? limits.gradcrackerMaxJobsPerTerm * termCount
@@ -386,6 +403,7 @@ export function calculateAutomaticEstimate(args: {
   const naukriCap = hasNaukri ? limits.naukriMaxJobsPerTerm * termCount : 0;
 
   const discoveredCap =
+    remoteApiCap +
     jobspyCap +
     gradcrackerCap +
     ukvisaCap +

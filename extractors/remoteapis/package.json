@@ -1,0 +1,13 @@
+{
+  "name": "remoteapis-extractor",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Remote API and RSS extractor for remote-first job boards",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.0"
+  },
+  "scripts": {
+    "check:types": "tsc --noEmit"
+  }
+}
