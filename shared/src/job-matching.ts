@@ -98,6 +98,7 @@ export function getJobLocationCandidates(job: {
         country?: string | null;
         city?: string | null;
         workplaceType?: "remote" | "hybrid" | "onsite" | null;
+        isRemote?: boolean | null;
       }
     | null;
 }): string[] {
@@ -128,6 +129,26 @@ export function getJobLocationCandidates(job: {
   return out;
 }
 
+function locationCandidateSuggestsRemote(value: string): boolean {
+  return /remote|worldwide|anywhere|work from home|wfh/i.test(value);
+}
+
+function hasRemoteLocationSignal(
+  job: {
+    locationEvidence?: {
+      isRemote?: boolean | null;
+      workplaceType?: "remote" | "hybrid" | "onsite" | null;
+    } | null;
+    isRemote?: boolean | null;
+  },
+  candidates: readonly string[],
+): boolean {
+  if (job.isRemote === true) return true;
+  if (job.locationEvidence?.isRemote === true) return true;
+  if (job.locationEvidence?.workplaceType === "remote") return true;
+  return candidates.some(locationCandidateSuggestsRemote);
+}
+
 export function matchJobLocationIntent(
   job: {
     location?: string | null;
@@ -136,6 +157,7 @@ export function matchJobLocationIntent(
       country?: string | null;
       city?: string | null;
       workplaceType?: "remote" | "hybrid" | "onsite" | null;
+      isRemote?: boolean | null;
     } | null;
     isRemote?: boolean | null;
   },
@@ -180,7 +202,7 @@ export function matchJobLocationIntent(
   if (
     intent.workplaceTypes.includes("remote") &&
     intent.geoScope !== "selected_only" &&
-    job.isRemote === true
+    hasRemoteLocationSignal(job, candidates)
   ) {
     return { matched: true, reasonCode: "remote_worldwide", priority: 0 };
   }
