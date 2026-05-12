@@ -15,6 +15,10 @@ vi.mock("@server/extractors/registry", () => ({
   getExtractorRegistry: vi.fn(),
 }));
 
+vi.mock("@server/services/profile", () => ({
+  getProfile: vi.fn().mockResolvedValue({}),
+}));
+
 const baseConfig: PipelineConfig = {
   topN: 10,
   minSuitabilityScore: 50,
@@ -30,6 +34,76 @@ describe("discoverJobsStep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetProgress();
+  });
+
+  it("augments configured search terms with resume-derived terms", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+    const profileModule = await import("@server/services/profile");
+
+    const jobspyManifest = {
+      id: "jobspy",
+      displayName: "JobSpy",
+      providesSources: ["indeed", "linkedin", "glassdoor"],
+      run: vi.fn().mockResolvedValue({ success: true, jobs: [] }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+      searchTerms: JSON.stringify(["Backend Engineer"]),
+    } as any);
+    vi.mocked(profileModule.getProfile).mockResolvedValue({
+      basics: { headline: "AI Engineer" },
+      sections: {
+        experience: {
+          items: [
+            {
+              id: "exp-1",
+              company: "Acme",
+              position: "Backend Engineer",
+              location: "Remote",
+              date: "2025",
+              summary: "Built APIs",
+              visible: true,
+            },
+          ],
+        },
+        skills: {
+          items: [
+            {
+              id: "skill-1",
+              name: "TypeScript Backend Engineer",
+              description: "Node.js services",
+              level: 5,
+              keywords: [],
+              visible: true,
+            },
+          ],
+        },
+      },
+    });
+
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["jobspy", jobspyManifest as any]]),
+      manifestBySource: new Map([["linkedin", jobspyManifest as any]]),
+      availableSources: ["linkedin"],
+    } as any);
+
+    await discoverJobsStep({
+      mergedConfig: {
+        ...baseConfig,
+        sources: ["linkedin"],
+      },
+    });
+
+    expect(jobspyManifest.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        searchTerms: [
+          "Backend Engineer",
+          "AI Engineer",
+          "TypeScript Backend Engineer",
+        ],
+      }),
+    );
   });
 
   it("aggregates source errors for enabled sources", async () => {

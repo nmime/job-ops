@@ -3,6 +3,8 @@ import { sanitizeUnknown } from "@infra/sanitize";
 import { getExtractorRegistry } from "@server/extractors/registry";
 import { getAllJobUrls } from "@server/repositories/jobs";
 import * as settingsRepo from "@server/repositories/settings";
+import { buildFallbackSearchTerms } from "@server/services/onboarding-search-terms";
+import { getProfile } from "@server/services/profile";
 import { asyncPool } from "@server/utils/async-pool";
 import type { ExtractorSourceId } from "@shared/extractors";
 import { matchJobLocationIntent } from "@shared/job-matching.js";
@@ -15,6 +17,7 @@ import {
 import { formatCountryLabel } from "@shared/location-support.js";
 import { normalizeStringArray } from "@shared/normalize-string-array.js";
 import type { CreateJobInput, PipelineConfig } from "@shared/types";
+import { normalizeSearchTerms } from "@shared/utils/search-terms";
 import {
   type CrawlSource,
   type PendingChallenge,
@@ -64,6 +67,54 @@ function parseWorkplaceTypes(
   } catch {
     return [];
   }
+}
+
+function parseConfiguredSearchTerms(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return normalizeSearchTerms(
+      parsed.filter((value): value is string => typeof value === "string"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseEnvSearchTerms(): string[] {
+  return normalizeSearchTerms(
+    (process.env.JOBSPY_SEARCH_TERMS || "web developer")
+      .split("|")
+      .map((term) => term.trim())
+      .filter(Boolean),
+  );
+}
+
+async function getResumeSearchTerms(): Promise<string[]> {
+  try {
+    const profile = await getProfile();
+    return buildFallbackSearchTerms(profile).terms;
+  } catch (error) {
+    logger.warn("Could not extract search terms from resume profile", {
+      step: "discover-jobs",
+      error,
+    });
+    return [];
+  }
+}
+
+async function resolveSearchTerms(
+  settings: Record<string, string | undefined>,
+) {
+  const configuredTerms = parseConfiguredSearchTerms(settings.searchTerms);
+  const resumeTerms = await getResumeSearchTerms();
+  const mergedTerms = normalizeSearchTerms([
+    ...configuredTerms,
+    ...resumeTerms,
+  ]);
+  if (mergedTerms.length > 0) return mergedTerms;
+  return parseEnvSearchTerms();
 }
 
 function isBlockedEmployer(
@@ -130,19 +181,7 @@ export async function discoverJobsStep(args: {
   const settings = await settingsRepo.getAllSettings();
   const registry = await getExtractorRegistry();
 
-  const searchTermsSetting = settings.searchTerms;
-  let searchTerms: string[] = [];
-
-  if (searchTermsSetting) {
-    searchTerms = JSON.parse(searchTermsSetting) as string[];
-  } else {
-    const defaultSearchTermsEnv =
-      process.env.JOBSPY_SEARCH_TERMS || "web developer";
-    searchTerms = defaultSearchTermsEnv
-      .split("|")
-      .map((term) => term.trim())
-      .filter(Boolean);
-  }
+  const searchTerms = await resolveSearchTerms(settings);
 
   const locationIntent =
     args.mergedConfig.locationIntent ??
