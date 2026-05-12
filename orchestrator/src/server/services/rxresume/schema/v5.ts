@@ -395,7 +395,7 @@ export const typographySchema = z.object({
 export const metadataSchema = z.object({
   template: templateSchema.catch("onyx"),
   layout: layoutSchema,
-  css: cssSchema.catch(defaultCss).default(defaultCss),
+  css: cssSchema,
   page: pageSchema,
   design: designSchema,
   typography: typographySchema,

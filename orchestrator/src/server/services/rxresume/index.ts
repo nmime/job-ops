@@ -9,6 +9,7 @@ import {
 } from "@server/services/tracer-links";
 import { getActiveTenantId } from "@server/tenancy/context";
 import type { ResumeProjectCatalogItem } from "@shared/types";
+import { normalizeReactiveResumeV5Document } from "./document";
 import {
   getResumeSchemaValidationMessage,
   safeParseV5ResumeData,
@@ -326,7 +327,9 @@ export async function validateResumeSchema(
   | { ok: true; mode: "v5"; data: Record<string, unknown> }
   | { ok: false; mode: "v5"; message: string }
 > {
-  const result = safeParseV5ResumeData(resumeData);
+  const result = safeParseV5ResumeData(
+    normalizeReactiveResumeV5Document(resumeData),
+  );
   if (!result.success) {
     return {
       ok: false,
@@ -368,7 +371,9 @@ export function extractProjectsFromResume(resumeData: unknown): {
   mode: "v5";
   catalog: ResumeProjectCatalogItem[];
 } {
-  const parsed = safeParseV5ResumeData(resumeData);
+  const parsed = safeParseV5ResumeData(
+    normalizeReactiveResumeV5Document(resumeData),
+  );
   if (!parsed.success) {
     throw new Error(getResumeSchemaValidationMessage(parsed.error));
   }
@@ -395,7 +400,9 @@ export async function prepareTailoredResumeForPdf(args: {
   forceVisibleProjectsSection?: boolean;
   jobId?: string;
 }): Promise<PreparedRxResumePdfPayload> {
-  const parsed = safeParseV5ResumeData(args.resumeData);
+  const parsed = safeParseV5ResumeData(
+    normalizeReactiveResumeV5Document(args.resumeData),
+  );
   if (!parsed.success) {
     throw new Error(getResumeSchemaValidationMessage(parsed.error));
   }
