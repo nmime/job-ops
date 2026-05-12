@@ -2,6 +2,7 @@
 // Reactive Resume v5/OpenAPI implementation (API key auth).
 import { logger } from "@infra/logger";
 import { getOriginalEnvValue } from "@server/services/envSettings";
+import { normalizeReactiveResumeV5Document } from "./document";
 import { parseV5ResumeData } from "./schema/v5";
 
 type RxResumeApiConfig = { baseUrl?: string; apiKey?: string };
@@ -177,7 +178,9 @@ export async function getResume(
     config,
   )) as RxResumeGetByIdResponse;
   if (payload.data !== undefined) {
-    payload.data = parseV5ResumeData(payload.data) as Record<string, unknown>;
+    payload.data = parseV5ResumeData(
+      normalizeReactiveResumeV5Document(payload.data),
+    ) as Record<string, unknown>;
   }
   return payload;
 }

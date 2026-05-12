@@ -409,6 +409,27 @@ describe("design resume service", () => {
     );
   });
 
+  it("imports upstream v5 resumes missing metadata css", async () => {
+    const upstreamResume = makeValidResumeJson();
+    delete (upstreamResume.metadata as Record<string, unknown>).css;
+
+    vi.mocked(getResume).mockResolvedValueOnce({
+      id: "rx-1",
+      mode: "v5",
+      data: upstreamResume,
+    } as never);
+
+    const result = await importDesignResumeFromReactiveResume();
+
+    const defaultCss = (buildDefaultReactiveResumeDocument().metadata as Record<
+      string,
+      unknown
+    >).css;
+    expect(result.resumeJson.metadata.css).toEqual(
+      defaultCss,
+    );
+  });
+
   it("rejects legacy local documents and requires re-import", async () => {
     repo.getLatestDesignResumeDocument.mockResolvedValueOnce(
       makeDocumentRow({

@@ -234,6 +234,17 @@ export function SignInPage() {
                     : "Sign in"}
               </Button>
             </form>
+            <div className="border-border/60 border-t pt-4 text-center text-sm text-muted-foreground">
+              Need to manage your resume?{" "}
+              <a
+                className="font-medium text-primary underline-offset-4 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                href="https://reactive-resume.funfiesta.games"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open Reactive Resume
+              </a>
+            </div>
           </CardContent>
         </Card>
       </div>

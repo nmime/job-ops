@@ -18,6 +18,8 @@ export function useProfile() {
   } = useQuery<ResumeProfile | null>({
     queryKey: queryKeys.profile.current(),
     queryFn: api.getProfile,
+    enabled: api.hasAuthenticatedSession(),
+    retry: false,
   });
 
   const refreshProfile = async () => {

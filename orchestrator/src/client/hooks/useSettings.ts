@@ -14,6 +14,8 @@ export function useSettings() {
   } = useQuery<AppSettings | null>({
     queryKey: queryKeys.settings.current(),
     queryFn: api.getSettings,
+    enabled: api.hasAuthenticatedSession(),
+    retry: false,
   });
 
   const refreshSettings = async () => {

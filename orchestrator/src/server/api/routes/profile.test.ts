@@ -144,7 +144,7 @@ describe.sequential("Profile API routes", () => {
       expect(body.data).toEqual(mockProfile);
     });
 
-    it("returns error when profile is not configured", async () => {
+    it("returns null when profile is not configured", async () => {
       vi.mocked(getProfile).mockRejectedValue(
         new Error("Base resume not configured."),
       );
@@ -152,9 +152,9 @@ describe.sequential("Profile API routes", () => {
       const res = await fetch(`${baseUrl}/api/profile`);
       const body = await res.json();
 
-      expect(res.ok).toBe(false);
-      expect(body.ok).toBe(false);
-      expect(body.error.message).toContain("Base resume not configured");
+      expect(res.ok).toBe(true);
+      expect(body.ok).toBe(true);
+      expect(body.data).toBeNull();
     });
   });
 

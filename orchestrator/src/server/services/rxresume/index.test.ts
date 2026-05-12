@@ -8,7 +8,9 @@ import {
   importResume,
   listResumes,
   validateCredentials,
+  validateResumeSchema,
 } from "./index";
+import { buildDefaultReactiveResumeDocument } from "./document";
 import * as v5 from "./v5";
 
 vi.mock("@server/repositories/settings", () => ({
@@ -273,6 +275,26 @@ describe("RxResume Service (index.ts)", () => {
         status: 400,
         message: expect.stringContaining("API key is not configured"),
       });
+    });
+  });
+
+  describe("validateResumeSchema", () => {
+    it("accepts v5 resumes missing metadata css", async () => {
+      const resumeData = buildDefaultReactiveResumeDocument();
+      delete (resumeData.metadata as Record<string, unknown>).css;
+
+      const result = await validateResumeSchema(resumeData);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const defaultCss = (buildDefaultReactiveResumeDocument().metadata as Record<
+          string,
+          unknown
+        >).css;
+        expect((result.data.metadata as Record<string, unknown>).css).toEqual(
+          defaultCss,
+        );
+      }
     });
   });
 });

@@ -7,7 +7,7 @@ export function useDemoInfo(options: { enabled?: boolean } = {}) {
   const enabled = options.enabled ?? true;
   const { data } = useQuery<DemoInfoResponse | null>({
     queryKey: queryKeys.demo.info(),
-    enabled,
+    enabled: enabled && api.hasAuthenticatedSession(),
     queryFn: async () => {
       try {
         return await api.getDemoInfo();
@@ -15,6 +15,7 @@ export function useDemoInfo(options: { enabled?: boolean } = {}) {
         return null;
       }
     },
+    retry: false,
   });
   return data ?? null;
 }

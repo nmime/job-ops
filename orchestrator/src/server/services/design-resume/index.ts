@@ -12,6 +12,7 @@ import { getSetting } from "@server/repositories/settings";
 import { getOriginalEnvValue } from "@server/services/envSettings";
 import { getResume } from "@server/services/rxresume";
 import { getConfiguredRxResumeBaseResumeId } from "@server/services/rxresume/baseResumeId";
+import { buildDefaultReactiveResumeDocument } from "@server/services/rxresume/document";
 import { getResumeSchemaValidationMessage } from "@server/services/rxresume/schema";
 import {
   parseV5ResumeData,
@@ -77,11 +78,31 @@ function formatValidationMessage(prefix: string, error: unknown): string {
   return `${prefix} ${detail}`;
 }
 
+function withDefaultMetadataCss(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+  const root = input as Record<string, unknown>;
+  const metadata = asRecord(root.metadata);
+  if (!metadata || Object.hasOwn(metadata, "css")) {
+    return input;
+  }
+  const defaultMetadata = buildDefaultReactiveResumeDocument()
+    .metadata as Record<string, unknown>;
+  return {
+    ...root,
+    metadata: {
+      ...metadata,
+      css: defaultMetadata.css,
+    },
+  };
+}
+
 function validateIncomingDesignResumeDocument(
   input: unknown,
 ): DesignResumeJson {
   try {
-    return parseV5ResumeData(input) as DesignResumeJson;
+    return parseV5ResumeData(withDefaultMetadataCss(input)) as DesignResumeJson;
   } catch (error) {
     throw badRequest(formatValidationMessage(INVALID_V5_PREFIX, error));
   }
