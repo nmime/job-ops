@@ -31,8 +31,10 @@ const baseConfig: PipelineConfig = {
 };
 
 describe("discoverJobsStep", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    const profileModule = await import("@server/services/profile");
     vi.clearAllMocks();
+    vi.mocked(profileModule.getProfile).mockResolvedValue({});
     resetProgress();
   });
 
@@ -103,6 +105,126 @@ describe("discoverJobsStep", () => {
           "TypeScript Backend Engineer",
         ],
       }),
+    );
+  });
+
+  it("uses configured search terms when profile term extraction fails", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+    const profileModule = await import("@server/services/profile");
+
+    const jobspyManifest = {
+      id: "jobspy",
+      displayName: "JobSpy",
+      providesSources: ["indeed", "linkedin", "glassdoor"],
+      run: vi.fn().mockResolvedValue({ success: true, jobs: [] }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+      searchTerms: JSON.stringify(["Platform Engineer"]),
+    } as any);
+    vi.mocked(profileModule.getProfile).mockRejectedValue(new Error("missing"));
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["jobspy", jobspyManifest as any]]),
+      manifestBySource: new Map([["linkedin", jobspyManifest as any]]),
+      availableSources: ["linkedin"],
+    } as any);
+
+    await discoverJobsStep({
+      mergedConfig: {
+        ...baseConfig,
+        sources: ["linkedin"],
+      },
+    });
+
+    expect(jobspyManifest.run).toHaveBeenCalledWith(
+      expect.objectContaining({ searchTerms: ["Platform Engineer"] }),
+    );
+  });
+
+  it("falls back to env search terms when settings and profile terms are empty", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+    const profileModule = await import("@server/services/profile");
+    const previousTerms = process.env.JOBSPY_SEARCH_TERMS;
+    process.env.JOBSPY_SEARCH_TERMS = "SRE|Backend Developer";
+
+    const jobspyManifest = {
+      id: "jobspy",
+      displayName: "JobSpy",
+      providesSources: ["indeed", "linkedin", "glassdoor"],
+      run: vi.fn().mockResolvedValue({ success: true, jobs: [] }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({} as any);
+    vi.mocked(profileModule.getProfile).mockResolvedValue({});
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["jobspy", jobspyManifest as any]]),
+      manifestBySource: new Map([["linkedin", jobspyManifest as any]]),
+      availableSources: ["linkedin"],
+    } as any);
+
+    try {
+      await discoverJobsStep({
+        mergedConfig: {
+          ...baseConfig,
+          sources: ["linkedin"],
+        },
+      });
+    } finally {
+      if (previousTerms === undefined) {
+        delete process.env.JOBSPY_SEARCH_TERMS;
+      } else {
+        process.env.JOBSPY_SEARCH_TERMS = previousTerms;
+      }
+    }
+
+    expect(jobspyManifest.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        searchTerms: ["SRE", "Backend Developer"],
+      }),
+    );
+  });
+
+  it("falls back to env search terms when profile loading fails and no configured terms exist", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+    const profileModule = await import("@server/services/profile");
+    const previousTerms = process.env.JOBSPY_SEARCH_TERMS;
+    process.env.JOBSPY_SEARCH_TERMS = "Full Stack Engineer";
+
+    const jobspyManifest = {
+      id: "jobspy",
+      displayName: "JobSpy",
+      providesSources: ["indeed", "linkedin", "glassdoor"],
+      run: vi.fn().mockResolvedValue({ success: true, jobs: [] }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({} as any);
+    vi.mocked(profileModule.getProfile).mockRejectedValue(new Error("offline"));
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["jobspy", jobspyManifest as any]]),
+      manifestBySource: new Map([["linkedin", jobspyManifest as any]]),
+      availableSources: ["linkedin"],
+    } as any);
+
+    try {
+      await discoverJobsStep({
+        mergedConfig: {
+          ...baseConfig,
+          sources: ["linkedin"],
+        },
+      });
+    } finally {
+      if (previousTerms === undefined) {
+        delete process.env.JOBSPY_SEARCH_TERMS;
+      } else {
+        process.env.JOBSPY_SEARCH_TERMS = previousTerms;
+      }
+    }
+
+    expect(jobspyManifest.run).toHaveBeenCalledWith(
+      expect.objectContaining({ searchTerms: ["Full Stack Engineer"] }),
     );
   });
 

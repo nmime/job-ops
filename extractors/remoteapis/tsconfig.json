@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "strict": true,
+    "noUnusedLocals": false,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../../shared/src/*"],
+      "job-ops-shared/*": ["../../shared/src/*"]
+    }
+  },
+  "include": ["./src/**/*"]
+}

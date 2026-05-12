@@ -28,6 +28,8 @@ import {
 const DISCOVERY_CONCURRENCY = 3;
 
 type DiscoveryTaskResult = {
+  source: CrawlSource;
+  selectedSources: ExtractorSourceId[];
   discoveredJobs: CreateJobInput[];
   sourceErrors: string[];
   challenge?: PendingChallenge;
@@ -35,6 +37,7 @@ type DiscoveryTaskResult = {
 
 type DiscoverySourceTask = {
   source: CrawlSource;
+  selectedSources: ExtractorSourceId[];
   termsTotal?: number;
   detail: string;
   run: () => Promise<DiscoveryTaskResult>;
@@ -260,6 +263,7 @@ export async function discoverJobsStep(args: {
 
     sourceTasks.push({
       source: manifest.id,
+      selectedSources: grouped.sources as ExtractorSourceId[],
       termsTotal: grouped.termsTotal,
       detail:
         grouped.sources.length > 1
@@ -312,6 +316,8 @@ export async function discoverJobsStep(args: {
 
         if (!result.success) {
           return {
+            source: manifest.id,
+            selectedSources: grouped.sources as ExtractorSourceId[],
             discoveredJobs: [],
             sourceErrors: [
               `${manifest.displayName || manifest.id}: ${result.error ?? "unknown error"} (sources: ${grouped.sources.join(",")})`,
@@ -328,6 +334,8 @@ export async function discoverJobsStep(args: {
         }
 
         return {
+          source: manifest.id,
+          selectedSources: grouped.sources as ExtractorSourceId[],
           discoveredJobs: result.jobs,
           sourceErrors: [],
         };
@@ -373,6 +381,8 @@ export async function discoverJobsStep(args: {
         });
 
         return {
+          source: sourceTask.source,
+          selectedSources: sourceTask.selectedSources,
           discoveredJobs: [],
           sourceErrors: [
             `${sourceTask.source}: ${error instanceof Error ? error.message : "unknown error"}`,
@@ -393,6 +403,32 @@ export async function discoverJobsStep(args: {
       pendingChallenges.push(sourceResult.challenge);
     }
   }
+
+  const discoveryMetrics = sourceResults.map((sourceResult) => {
+    const jobsBySource = sourceResult.discoveredJobs.reduce<
+      Record<string, number>
+    >((counts, job) => {
+      counts[job.source] = (counts[job.source] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    return {
+      manifest: sourceResult.source,
+      sources: sourceResult.selectedSources,
+      discovered: sourceResult.discoveredJobs.length,
+      jobsBySource,
+      failures: sourceResult.sourceErrors.length,
+      challengeRequired: Boolean(sourceResult.challenge),
+    };
+  });
+
+  logger.info("Discovery source metrics", {
+    step: "discover-jobs",
+    metrics: discoveryMetrics,
+    totalDiscoveredBeforeFilters: discoveredJobs.length,
+    totalFailures: sourceErrors.length,
+    challengeCount: pendingChallenges.length,
+  });
 
   const locationFilterReasonCounts: Record<string, number> = {};
   const locationFilteredJobs = discoveredJobs.filter((job) => {

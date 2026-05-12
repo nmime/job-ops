@@ -33,6 +33,41 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
   ExtractorSourceId,
   HealthProbeConfig
 > = {
+  remotive: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
+  jobicy: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
+  weworkremotely: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
+  themuse: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
+  arbeitnow: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
   gradcracker: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
