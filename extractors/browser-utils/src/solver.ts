@@ -1,4 +1,5 @@
 import type { BrowserContext } from "playwright";
+import { solvePaidCaptcha, type PaidCaptchaSolverOptions } from "./captcha-provider.js";
 import { isChallengePage } from "./challenge.js";
 import { saveCookies } from "./cookies.js";
 import { createLaunchOptions } from "./launch.js";
@@ -7,6 +8,12 @@ export type SolverResult =
   | { status: "solved" }
   | { status: "timeout" }
   | { status: "error"; message: string };
+
+export interface ChallengeSolveOptions {
+  paidCaptcha?: PaidCaptchaSolverOptions;
+  headless?: boolean;
+  manualFallback?: boolean;
+}
 
 const SOLVED_PAGE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
 <html><head><style>
@@ -38,6 +45,7 @@ export async function solveChallenge(
   extractorId: string,
   storageDir: string,
   timeoutMs = 5 * 60 * 1000,
+  options: ChallengeSolveOptions = {},
 ): Promise<SolverResult> {
   let context: BrowserContext | undefined;
   let browser:
@@ -50,7 +58,9 @@ export async function solveChallenge(
     // and click through it. The solved cf_clearance cookie is tied to this
     // browser's UA + TLS fingerprint, so extractors must reuse the same UA
     // (persisted in the cookie jar) when creating their headless context.
-    const { launchOptions } = await createLaunchOptions({ headless: false });
+    const { launchOptions } = await createLaunchOptions({
+      headless: options.headless ?? false,
+    });
     browser = await firefox.launch(launchOptions);
     context = await browser.newContext();
     const page = await context.newPage();
@@ -64,8 +74,26 @@ export async function solveChallenge(
     // browser session established a valid cf_clearance
     if (!(await isChallengePage(page))) {
       await saveCookies(context, extractorId, storageDir);
-      await showSolvedPage(page);
+      if (!options.headless) await showSolvedPage(page);
       return { status: "solved" };
+    }
+
+    if (options.paidCaptcha) {
+      const paidResult = await solvePaidCaptcha(page, {
+        ...options.paidCaptcha,
+        pageUrl: url,
+        timeoutMs,
+      });
+      if (paidResult.status === "solved") {
+        await saveCookies(context, extractorId, storageDir);
+        if (!options.headless) await showSolvedPage(page);
+        return { status: "solved" };
+      }
+      if (!options.manualFallback) {
+        return paidResult.status === "timeout"
+          ? { status: "timeout" }
+          : { status: "error", message: paidResult.message };
+      }
     }
 
     // Poll until the challenge is resolved or timeout
@@ -77,7 +105,7 @@ export async function solveChallenge(
 
       if (!(await isChallengePage(page))) {
         await saveCookies(context, extractorId, storageDir);
-        await showSolvedPage(page);
+        if (!options.headless) await showSolvedPage(page);
         return { status: "solved" };
       }
     }
