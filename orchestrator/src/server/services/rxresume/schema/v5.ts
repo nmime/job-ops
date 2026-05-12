@@ -395,7 +395,7 @@ export const typographySchema = z.object({
 export const metadataSchema = z.object({
   template: templateSchema.catch("onyx"),
   layout: layoutSchema,
-  css: cssSchema.catch(defaultCss),
+  css: cssSchema.catch(defaultCss).default(defaultCss),
   page: pageSchema,
   design: designSchema,
   typography: typographySchema,
@@ -543,7 +543,7 @@ export const defaultV5ResumeData: V5ResumeData = {
         },
       ],
     },
-    css: { enabled: false, value: "" },
+    css: defaultCss,
     page: {
       gapX: 4,
       gapY: 6,

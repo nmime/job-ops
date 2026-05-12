@@ -9,10 +9,10 @@ export const OnboardingGate: React.FC = () => {
     return null;
   }
 
-  return <OnboardingRedirect />;
+  return <OnboardingGateCheck />;
 };
 
-const OnboardingRedirect: React.FC = () => {
+const OnboardingGateCheck: React.FC = () => {
   const { checking, complete } = useOnboardingRequirement();
 
   if (checking || complete) {

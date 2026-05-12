@@ -40,6 +40,13 @@ profileRouter.get("/", async (_req: Request, res: Response) => {
     const profile = await getProfile();
     ok(res, profile);
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("Base resume not configured")
+    ) {
+      ok(res, null);
+      return;
+    }
     fail(res, toAppError(error));
   }
 });
