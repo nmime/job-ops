@@ -100,6 +100,10 @@ vi.mock("@server/services/challenge-viewer", () => ({
   proxyChallengeViewerRequest: vi.fn(),
 }));
 
+vi.mock("browser-utils", () => ({
+  solveChallenge: vi.fn().mockResolvedValue({ status: "solved" }),
+}));
+
 vi.mock("@server/services/visa-sponsors/index", () => ({
   getStatus: vi.fn(),
   searchSponsors: vi.fn(),

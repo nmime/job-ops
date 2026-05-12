@@ -42,6 +42,8 @@ export const CHAT_STYLE_MANUAL_LANGUAGE_VALUES = [
 export type ChatStyleManualLanguage =
   (typeof CHAT_STYLE_MANUAL_LANGUAGE_VALUES)[number];
 
+export type CaptchaSolverProvider = "manual" | "2captcha";
+
 export const CHAT_STYLE_MANUAL_LANGUAGE_LABELS: Record<
   ChatStyleManualLanguage,
   string
@@ -166,6 +168,8 @@ export interface AppSettings {
   jobCompleteWebhookUrl: Resolved<string>;
   resumeProjects: Resolved<ResumeProjectsSettings>;
   pdfRenderer: Resolved<PdfRenderer>;
+  captchaSolverProvider: Resolved<CaptchaSolverProvider>;
+  captchaSolverAutoSolveEnabled: Resolved<boolean>;
   ukvisajobsMaxJobs: Resolved<number>;
   adzunaMaxJobsPerTerm: Resolved<number>;
   gradcrackerMaxJobsPerTerm: Resolved<number>;
@@ -223,6 +227,7 @@ export interface AppSettings {
   ukvisajobsPasswordHint: string | null;
   adzunaAppKeyHint: string | null;
   apifyTokenHint: string | null;
+  captchaSolverApiKeyHint: string | null;
   basicAuthPasswordHint: string | null;
   webhookSecretHint: string | null;
 

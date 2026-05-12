@@ -27,6 +27,7 @@ import {
   subscribeToProgress,
 } from "@server/pipeline/index";
 import * as pipelineRepo from "@server/repositories/pipeline";
+import * as settingsRepo from "@server/repositories/settings";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
 import {
   buildChallengeViewerUrl,
@@ -34,7 +35,9 @@ import {
   ensureChallengeViewer,
 } from "@server/services/challenge-viewer";
 import { simulatePipelineRun } from "@server/services/demo-simulator";
+import { getOriginalEnvValue } from "@server/services/envSettings";
 import { PIPELINE_EXTRACTOR_SOURCE_IDS } from "@shared/extractors";
+import { settingsRegistry } from "@shared/settings-registry";
 import {
   createLocationIntent,
   planLocationSources,
@@ -441,6 +444,29 @@ const solveChallengeSchema = z.object({
   extractorId: z.string().min(1),
 });
 
+async function getPaidChallengeSolverOptions(): Promise<
+  | { provider: "2captcha"; apiKey: string }
+  | null
+> {
+  const settings = await settingsRepo.getAllSettings();
+  const provider =
+    settingsRegistry.captchaSolverProvider.parse(
+      settings.captchaSolverProvider ??
+        getOriginalEnvValue("CAPTCHA_SOLVER_PROVIDER"),
+    ) ?? settingsRegistry.captchaSolverProvider.default();
+  const enabled =
+    settingsRegistry.captchaSolverAutoSolveEnabled.parse(
+      settings.captchaSolverAutoSolveEnabled ??
+        getOriginalEnvValue("CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED"),
+    ) ?? settingsRegistry.captchaSolverAutoSolveEnabled.default();
+  const apiKey =
+    settings.captchaSolverApiKey ?? getOriginalEnvValue("CAPTCHA_SOLVER_API_KEY");
+
+  return enabled && provider === "2captcha" && apiKey
+    ? { provider, apiKey }
+    : null;
+}
+
 pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
   try {
     const body = solveChallengeSchema.parse(req.body);
@@ -470,17 +496,35 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
     // DATA_DIR rather than under extractor source directories.
     const storageDir = join(getDataDir(), "cloudflare-cookies");
 
-    // Dynamic import: browser-utils pulls in playwright which is heavy.
-    // A top-level import would slow down every server startup even though
-    // most pipeline runs never hit a challenge.
-    await ensureChallengeViewer();
-
     const { solveChallenge } = await import("browser-utils");
-    const result = await solveChallenge(
-      challengeUrl,
-      body.extractorId,
-      storageDir,
-    );
+    const paidSolver = await getPaidChallengeSolverOptions();
+    if (paidSolver) {
+      logger.info("Using paid CAPTCHA solver", {
+        route: "/api/pipeline/solve-challenge",
+        extractorId: body.extractorId,
+        provider: paidSolver.provider,
+      });
+    }
+    let result = paidSolver
+      ? await solveChallenge(challengeUrl, body.extractorId, storageDir, undefined, {
+          paidCaptcha: paidSolver,
+          headless: true,
+          manualFallback: false,
+        })
+      : null;
+
+    if (result?.status !== "solved") {
+      if (paidSolver) {
+        logger.info("Opening manual challenge viewer after paid solver result", {
+          route: "/api/pipeline/solve-challenge",
+          extractorId: body.extractorId,
+          provider: paidSolver.provider,
+          status: result?.status ?? "not_attempted",
+        });
+      }
+      await ensureChallengeViewer();
+      result = await solveChallenge(challengeUrl, body.extractorId, storageDir);
+    }
 
     if (result.status === "solved") {
       const { remaining } = resolvePipelineChallenge(body.extractorId);

@@ -150,6 +150,10 @@ const parseLocationSearchScopeOrNull = createEnumParser(
 const parseLocationMatchStrictnessOrNull = createEnumParser(
   LOCATION_MATCH_STRICTNESS_VALUES,
 );
+const CAPTCHA_SOLVER_PROVIDER_VALUES = ["manual", "2captcha"] as const;
+const parseCaptchaSolverProviderOrNull = createEnumParser(
+  CAPTCHA_SOLVER_PROVIDER_VALUES,
+);
 
 export const resumeProjectsSchema = z.object({
   maxProjects: z.number().int().min(0).max(100),
@@ -263,6 +267,33 @@ export const settingsRegistry = {
     parse: parsePdfRendererOrNull,
     serialize: (value: PdfRenderer | null | undefined): string | null =>
       value ?? null,
+  },
+  captchaSolverProvider: {
+    kind: "typed" as const,
+    envKey: "CAPTCHA_SOLVER_PROVIDER",
+    schema: z.enum(CAPTCHA_SOLVER_PROVIDER_VALUES),
+    default: (): (typeof CAPTCHA_SOLVER_PROVIDER_VALUES)[number] =>
+      parseCaptchaSolverProviderOrNull(
+        typeof process !== "undefined"
+          ? process.env.CAPTCHA_SOLVER_PROVIDER
+          : undefined,
+      ) ?? "manual",
+    parse: parseCaptchaSolverProviderOrNull,
+    serialize: (value: string | null | undefined): string | null =>
+      value ?? null,
+  },
+  captchaSolverAutoSolveEnabled: {
+    kind: "typed" as const,
+    envKey: "CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED",
+    schema: z.boolean(),
+    default: (): boolean =>
+      parseBitBoolOrNull(
+        typeof process !== "undefined"
+          ? process.env.CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED
+          : undefined,
+      ) ?? false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
   },
   ukvisajobsMaxJobs: {
     kind: "typed" as const,
@@ -707,6 +738,11 @@ export const settingsRegistry = {
   apifyToken: {
     kind: "secret" as const,
     envKey: "APIFY_TOKEN",
+    schema: z.string().trim().max(2000),
+  },
+  captchaSolverApiKey: {
+    kind: "secret" as const,
+    envKey: "CAPTCHA_SOLVER_API_KEY",
     schema: z.string().trim().max(2000),
   },
   basicAuthPassword: {

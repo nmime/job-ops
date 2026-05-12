@@ -18,6 +18,13 @@ export {
   waitForChallengeResolution,
 } from "./challenge.js";
 export {
+  type PaidCaptchaProvider,
+  type PaidCaptchaResult,
+  type PaidCaptchaSolverOptions,
+  extractTurnstileChallenge,
+  solvePaidCaptcha,
+} from "./captcha-provider.js";
+export {
   type CookieJarInfo,
   getCloudflareCookieStorageDir,
   invalidateCookies,
@@ -36,4 +43,8 @@ export {
   type RetryOptions,
   withRetry,
 } from "./retry.js";
-export { type SolverResult, solveChallenge } from "./solver.js";
+export {
+  type ChallengeSolveOptions,
+  type SolverResult,
+  solveChallenge,
+} from "./solver.js";

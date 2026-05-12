@@ -512,6 +512,59 @@ describe.sequential("Pipeline API routes", () => {
     expect(body.ok).toBe(false);
   });
 
+  it("uses the paid solver before opening the manual challenge viewer", async () => {
+    await stopServer({ server, closeDb, tempDir });
+    ({ server, baseUrl, closeDb, tempDir } = await startServer({
+      env: {
+        CAPTCHA_SOLVER_PROVIDER: "2captcha",
+        CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED: "1",
+        CAPTCHA_SOLVER_API_KEY: "test-key",
+      },
+    }));
+
+    const pipeline = await import("@server/pipeline/index");
+    const { ensureChallengeViewer } = await import(
+      "@server/services/challenge-viewer"
+    );
+    const { solveChallenge } = await import("browser-utils");
+
+    vi.mocked(pipeline.getPendingChallenges).mockReturnValueOnce([
+      {
+        extractorId: "naukri",
+        extractorName: "Naukri",
+        url: "https://www.naukri.com/software-engineer-jobs",
+        sources: ["naukri"],
+      },
+    ]);
+    vi.mocked(pipeline.resolvePipelineChallenge).mockReturnValueOnce({
+      resolved: true,
+      remaining: 0,
+    });
+    vi.mocked(solveChallenge).mockResolvedValueOnce({ status: "solved" });
+
+    const res = await fetch(`${baseUrl}/api/pipeline/solve-challenge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ extractorId: "naukri" }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data.status).toBe("solved");
+    expect(solveChallenge).toHaveBeenCalledWith(
+      "https://www.naukri.com/software-engineer-jobs",
+      "naukri",
+      expect.stringContaining("cloudflare-cookies"),
+      undefined,
+      {
+        paidCaptcha: { provider: "2captcha", apiKey: "test-key" },
+        headless: true,
+        manualFallback: false,
+      },
+    );
+    expect(ensureChallengeViewer).not.toHaveBeenCalled();
+  });
+
   it("streams pipeline progress over SSE", async () => {
     const controller = new AbortController();
     const res = await fetch(`${baseUrl}/api/pipeline/progress`, {
