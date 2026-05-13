@@ -413,6 +413,13 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const handleAutoApply = useCallback(async () => {
     if (!selectedJob || selectedJob.status !== "ready") return;
     if (
+      !selectedJob.pdfPath ||
+      isPdfRegenerating(selectedJob) ||
+      isPdfStale(selectedJob)
+    ) {
+      return;
+    }
+    if (
       !window.confirm(
         `Send a real application for ${selectedJob.title} at ${selectedJob.employer}?`,
       )
@@ -566,6 +573,17 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     ? PDF_REGENERATING_MESSAGE
     : null;
   const pdfActionDisabled = !selectedJob.pdfPath || isRegeneratingPdf;
+  const autoApplyDisabledReason =
+    selectedJob.status !== "ready"
+      ? "Only ready jobs can be auto-applied."
+      : !selectedJob.pdfPath
+        ? "Generate or upload a resume PDF before auto-applying."
+        : isRegeneratingPdf
+          ? PDF_REGENERATING_MESSAGE
+          : isStalePdf
+            ? "Regenerate the stale resume PDF before auto-applying."
+            : null;
+  const autoApplyDisabled = primaryBusy || Boolean(autoApplyDisabledReason);
   const tone = statusTone[selectedJob.status];
   const openListingIsPrimary =
     selectedJob.status === "ready" && hasJobListing && !hasOpenedJobListing;
@@ -829,19 +847,24 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
               </div>
             </div>
             <div className="grid gap-2 sm:grid-cols-4">
-              <Button
-                size="sm"
-                className={cn(activeApplyCtaClassName)}
-                onClick={() => void handleAutoApply()}
-                disabled={selectedJob.status !== "ready" || primaryBusy}
+              <TooltipWhenDisabled
+                reason={autoApplyDisabledReason}
+                className="w-full"
               >
-                {isAutoApplying ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Mail className="size-3.5" />
-                )}
-                Auto-apply
-              </Button>
+                <Button
+                  size="sm"
+                  className={cn(activeApplyCtaClassName, "w-full")}
+                  onClick={() => void handleAutoApply()}
+                  disabled={autoApplyDisabled}
+                >
+                  {isAutoApplying ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Mail className="size-3.5" />
+                  )}
+                  Auto-apply
+                </Button>
+              </TooltipWhenDisabled>
               <TooltipWhenDisabled
                 reason={pdfRegeneratingReason}
                 className="w-full"

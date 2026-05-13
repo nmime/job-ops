@@ -353,6 +353,16 @@ export async function sendAutoApplication(job: Job): Promise<AutoApplyResult> {
     throw badRequest("Only ready jobs can be auto-applied.");
   }
 
+  if (
+    job.pdfRegenerating ||
+    job.pdfFreshness === "regenerating" ||
+    job.pdfFreshness === "stale"
+  ) {
+    throw badRequest(
+      "Auto-apply needs a current generated resume PDF or an uploaded resume PDF before sending.",
+    );
+  }
+
   const recipient = resolveAutoApplyRecipient(job);
   if (!recipient) {
     throw badRequest(

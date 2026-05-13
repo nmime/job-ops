@@ -154,7 +154,9 @@ jobsApplicationRouter.post(
       }
 
       const job = await requireJob(req.params.id);
-      const autoApply = await sendAutoApplication(job);
+      const autoApply = await sendAutoApplication(
+        await hydrateJobPdfFreshness(job),
+      );
 
       const appliedAtDate = new Date();
       const appliedAt = appliedAtDate.toISOString();

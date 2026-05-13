@@ -74,4 +74,23 @@ describe("sendAutoApplication", () => {
       "Auto-apply needs a generated or uploaded resume PDF before sending.",
     );
   });
+
+  it("rejects stale generated PDFs before sending", async () => {
+    process.env.AUTO_APPLY_SMTP_HOST = "127.0.0.1";
+    process.env.AUTO_APPLY_SMTP_PORT = "2525";
+    process.env.AUTO_APPLY_SMTP_STARTTLS = "0";
+
+    await expect(
+      sendAutoApplication(
+        createJob({
+          applicationLink: "mailto:jobs@example.com",
+          pdfPath: "data/pdfs/stale.pdf",
+          pdfFreshness: "stale",
+          status: "ready",
+        }),
+      ),
+    ).rejects.toThrow(
+      "Auto-apply needs a current generated resume PDF or an uploaded resume PDF before sending.",
+    );
+  });
 });
