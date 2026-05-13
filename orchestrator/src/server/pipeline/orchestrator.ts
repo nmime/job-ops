@@ -65,6 +65,7 @@ const DEFAULT_CONFIG: PipelineConfig = {
     "weworkremotely",
     "themuse",
     "arbeitnow",
+    "remoteok",
     "workingnomads",
     "hiringcafe",
     "startupjobs",

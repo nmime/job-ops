@@ -249,6 +249,10 @@ export const getEnabledSources = (
       enabled.push(source);
       continue;
     }
+    if (source === "remoteok") {
+      enabled.push(source);
+      continue;
+    }
     if (source === "golangjobs") {
       enabled.push(source);
       continue;

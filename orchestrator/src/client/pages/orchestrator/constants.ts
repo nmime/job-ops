@@ -11,6 +11,7 @@ export const DEFAULT_PIPELINE_SOURCES: JobSource[] = [
   "weworkremotely",
   "themuse",
   "arbeitnow",
+  "remoteok",
   "workingnomads",
   "hiringcafe",
   "startupjobs",

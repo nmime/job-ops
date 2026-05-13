@@ -1,6 +1,21 @@
 import { createJob } from "@shared/testing/factories";
-import { describe, expect, it } from "vitest";
-import { resolveAutoApplyRecipient } from "./auto-apply";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveAutoApplyRecipient, sendAutoApplication } from "./auto-apply";
+
+vi.mock("@server/services/profile", () => ({
+  getProfile: vi.fn().mockResolvedValue({
+    basics: {
+      name: "Test Candidate",
+      email: "candidate@example.com",
+    },
+  }),
+}));
+
+afterEach(() => {
+  delete process.env.AUTO_APPLY_SMTP_HOST;
+  delete process.env.AUTO_APPLY_SMTP_PORT;
+  delete process.env.AUTO_APPLY_SMTP_STARTTLS;
+});
 
 describe("resolveAutoApplyRecipient", () => {
   it("uses mailto application links", () => {
@@ -38,5 +53,25 @@ describe("resolveAutoApplyRecipient", () => {
     });
 
     expect(resolveAutoApplyRecipient(job)).toBeNull();
+  });
+});
+
+describe("sendAutoApplication", () => {
+  it("rejects ready jobs without a resume PDF before sending", async () => {
+    process.env.AUTO_APPLY_SMTP_HOST = "127.0.0.1";
+    process.env.AUTO_APPLY_SMTP_PORT = "2525";
+    process.env.AUTO_APPLY_SMTP_STARTTLS = "0";
+
+    await expect(
+      sendAutoApplication(
+        createJob({
+          applicationLink: "mailto:jobs@example.com",
+          pdfPath: null,
+          status: "ready",
+        }),
+      ),
+    ).rejects.toThrow(
+      "Auto-apply needs a generated or uploaded resume PDF before sending.",
+    );
   });
 });

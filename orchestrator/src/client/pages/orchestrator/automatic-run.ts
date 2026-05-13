@@ -231,6 +231,7 @@ export function deriveExtractorLimits(args: {
     args.sources.includes("weworkremotely"),
     args.sources.includes("themuse"),
     args.sources.includes("arbeitnow"),
+    args.sources.includes("remoteok"),
   ].filter(Boolean).length;
 
   const weightedContributors =
@@ -369,6 +370,7 @@ export function calculateAutomaticEstimate(args: {
     sources.includes("weworkremotely"),
     sources.includes("themuse"),
     sources.includes("arbeitnow"),
+    sources.includes("remoteok"),
   ].filter(Boolean).length;
   const limits = deriveExtractorLimits({
     budget: values.runBudget,
