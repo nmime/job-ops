@@ -181,6 +181,35 @@ describe("rxresume v5 endpoints", () => {
     expect(body.data.metadata.template).toBe("meowth");
   });
 
+  it("normalizes legacy resumes without metadata css", async () => {
+    const resume = structuredClone(sampleResume);
+    delete (resume.metadata as Record<string, unknown>).css;
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "resume-123", name: "Resume", data: resume }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ id: "imported-123" }));
+    vi.stubGlobal("fetch", mockFetch);
+
+    const fetched = await getResume("resume-123", {
+      baseUrl: "https://rxresu.me",
+      apiKey: "test-key",
+    });
+    await importResume(
+      { data: resume, name: "Imported Resume" },
+      { baseUrl: "https://rxresu.me", apiKey: "test-key" },
+    );
+
+    const body = JSON.parse(String(mockFetch.mock.calls[1][1].body));
+    const fetchedData = fetched.data as { metadata: { css: unknown } };
+    expect(fetchedData.metadata.css).toEqual({
+      enabled: false,
+      value: "",
+    });
+    expect(body.data.metadata.css).toEqual({ enabled: false, value: "" });
+  });
+
   it("logs sanitized upstream validation details when a request fails", async () => {
     const { logger } = await import("@infra/logger");
     const errorPayload = {
