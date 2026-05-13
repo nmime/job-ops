@@ -394,18 +394,23 @@ export async function runPipeline(
         jobsScored: scoredJobs.length,
         jobsSelected: jobsToProcess.length,
       });
-      const { processedCount } = await processJobsStep({
-        jobsToProcess,
-        processJob,
-        shouldCancel: () =>
-          getPipelineState(tenantId).cancelRequestedAt !== null,
-      });
+      const { processedCount, failedCount, processErrors } =
+        await processJobsStep({
+          jobsToProcess,
+          processJob,
+          shouldCancel: () =>
+            getPipelineState(tenantId).cancelRequestedAt !== null,
+        });
       jobsProcessed = processedCount;
 
       resultSummary = updatePipelineRunResultSummary(resultSummary, {
         stage: "completed",
         jobsScored: scoredJobs.length,
         jobsSelected: jobsToProcess.length,
+        jobsProcessingFailed: failedCount,
+        processingErrors: processErrors.map(
+          (error) => `${error.title}: ${error.error}`,
+        ),
       });
       await pipelineRepo.updatePipelineRun(pipelineRun.id, {
         status: "completed",

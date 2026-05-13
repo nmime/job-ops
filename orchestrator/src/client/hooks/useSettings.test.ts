@@ -7,6 +7,7 @@ import { _resetSettingsCache, useSettings } from "./useSettings";
 
 vi.mock("../api", () => ({
   getSettings: vi.fn(),
+  hasAuthenticatedSession: vi.fn(() => true),
 }));
 
 describe("useSettings", () => {

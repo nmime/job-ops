@@ -199,6 +199,7 @@ export function usePipelineControls(
         ukvisajobsMaxJobs: limits.ukvisajobsMaxJobs,
         adzunaMaxJobsPerTerm: limits.adzunaMaxJobsPerTerm,
         startupjobsMaxJobsPerTerm: limits.startupjobsMaxJobsPerTerm,
+        workingnomadsMaxJobsPerTerm: limits.workingnomadsMaxJobsPerTerm,
         jobindexMaxJobsPerTerm: limits.jobindexMaxJobsPerTerm,
         seekMaxJobsPerTerm: limits.seekMaxJobsPerTerm,
         naukriMaxJobsPerTerm: limits.naukriMaxJobsPerTerm,

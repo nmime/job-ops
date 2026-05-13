@@ -9,12 +9,23 @@ type ProcessJobFn = (
 ) => Promise<{ success: boolean; error?: string }>;
 const PROCESSING_CONCURRENCY = 3;
 
+export interface PipelineProcessError {
+  jobId: string;
+  title: string;
+  error: string;
+}
+
 export async function processJobsStep(args: {
   jobsToProcess: ScoredJob[];
   processJob: ProcessJobFn;
   shouldCancel?: () => boolean;
-}): Promise<{ processedCount: number }> {
+}): Promise<{
+  processedCount: number;
+  failedCount: number;
+  processErrors: PipelineProcessError[];
+}> {
   let processedCount = 0;
+  const processErrors: PipelineProcessError[] = [];
 
   if (args.jobsToProcess.length > 0) {
     const total = args.jobsToProcess.length;
@@ -40,22 +51,39 @@ export async function processJobsStep(args: {
         progressHelpers.jobComplete(completedCount, total);
       },
       task: async (job) => {
-        const result = await args.processJob(job.id, {
-          force: false,
-          analyticsOrigin: "pipeline",
-        });
-        if (result.success) {
-          processedCount += 1;
-        } else {
-          logger.warn("Failed to process job", {
-            jobId: job.id,
-            error: result.error,
+        try {
+          const result = await args.processJob(job.id, {
+            force: false,
+            analyticsOrigin: "pipeline",
           });
+          if (result.success) {
+            processedCount += 1;
+          } else {
+            const error = result.error ?? "Processing failed";
+            processErrors.push({ jobId: job.id, title: job.title, error });
+            logger.warn("Failed to process job", {
+              jobId: job.id,
+              error,
+            });
+          }
+          return result;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          processErrors.push({
+            jobId: job.id,
+            title: job.title,
+            error: message,
+          });
+          logger.error("Failed to process job", { jobId: job.id, error });
+          return { success: false, error: message };
         }
-        return result;
       },
     });
   }
 
-  return { processedCount };
+  return {
+    processedCount,
+    failedCount: processErrors.length,
+    processErrors,
+  };
 }

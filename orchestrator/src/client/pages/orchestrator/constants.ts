@@ -6,6 +6,15 @@ import {
 import type { JobSource, JobStatus } from "@shared/types";
 
 export const DEFAULT_PIPELINE_SOURCES: JobSource[] = [
+  "remotive",
+  "jobicy",
+  "weworkremotely",
+  "themuse",
+  "arbeitnow",
+  "workingnomads",
+  "hiringcafe",
+  "startupjobs",
+  "golangjobs",
   "gradcracker",
   "indeed",
   "linkedin",

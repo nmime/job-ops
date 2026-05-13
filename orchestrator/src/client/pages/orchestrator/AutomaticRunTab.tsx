@@ -27,7 +27,13 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -955,6 +961,9 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
                       />
                     </div>
                   </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    Auto-apply stays in draft mode: selected jobs get tailored materials only; nothing is submitted without your confirmation.
+                  </p>
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -963,7 +972,10 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
 
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle>Search terms</CardTitle>
+            <CardTitle>CV-derived search terms</CardTitle>
+            <CardDescription>
+              These terms are generated from your CV profile and can be edited before each run.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <TokenizedInput

@@ -361,7 +361,7 @@ function RunInsightsBody(props: {
                 <MetricCard
                   label="Source limits"
                   value={`Indeed ${savedDetails.effectiveConfig.sourceLimits.jobspyResultsWanted}; UK Visa Jobs ${savedDetails.effectiveConfig.sourceLimits.ukvisajobsMaxJobs}`}
-                  hint={`Adzuna ${savedDetails.effectiveConfig.sourceLimits.adzunaMaxJobsPerTerm}; Gradcracker ${savedDetails.effectiveConfig.sourceLimits.gradcrackerMaxJobsPerTerm}; startup.jobs ${savedDetails.effectiveConfig.sourceLimits.startupjobsMaxJobsPerTerm}; Jobindex ${savedDetails.effectiveConfig.sourceLimits.jobindexMaxJobsPerTerm}`}
+                  hint={`Adzuna ${savedDetails.effectiveConfig.sourceLimits.adzunaMaxJobsPerTerm}; Gradcracker ${savedDetails.effectiveConfig.sourceLimits.gradcrackerMaxJobsPerTerm}; startup.jobs ${savedDetails.effectiveConfig.sourceLimits.startupjobsMaxJobsPerTerm}; Working Nomads ${savedDetails.effectiveConfig.sourceLimits.workingnomadsMaxJobsPerTerm}; Jobindex ${savedDetails.effectiveConfig.sourceLimits.jobindexMaxJobsPerTerm}`}
                 />
                 <MetricCard
                   label="Resume projects"
@@ -398,12 +398,30 @@ function RunInsightsBody(props: {
                       ? "Not recorded"
                       : savedDetails.resultSummary.jobsSelected.toLocaleString()
                   }
+                  hint={
+                    run.jobsProcessed === 0 &&
+                    savedDetails.resultSummary.jobsSelected === 0
+                      ? "No jobs met the min score/top-N selection rules."
+                      : null
+                  }
+                />
+                <MetricCard
+                  label="Processing failures"
+                  value={(
+                    savedDetails.resultSummary.jobsProcessingFailed ?? 0
+                  ).toLocaleString()}
                 />
                 <MetricCard
                   label="Source errors"
                   value={savedDetails.resultSummary.sourceErrors.length.toLocaleString()}
                 />
               </div>
+              {savedDetails.resultSummary.processingErrors &&
+              savedDetails.resultSummary.processingErrors.length > 0 ? (
+                <div className="mt-3 rounded-lg border border-border/60 bg-background/40 p-3 text-sm text-muted-foreground">
+                  {savedDetails.resultSummary.processingErrors.join(" ")}
+                </div>
+              ) : null}
               {savedDetails.resultSummary.sourceErrors.length > 0 ? (
                 <div className="mt-3 rounded-lg border border-border/60 bg-background/40 p-3 text-sm text-muted-foreground">
                   {savedDetails.resultSummary.sourceErrors.join(" ")}
