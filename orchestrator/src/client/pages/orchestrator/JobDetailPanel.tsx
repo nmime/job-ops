@@ -43,6 +43,7 @@ import {
   FolderKanban,
   Link2,
   Loader2,
+  Mail,
   MoreHorizontal,
   RefreshCcw,
   Sparkles,
@@ -250,6 +251,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("brief");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
+  const [isAutoApplying, setIsAutoApplying] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
   const [isEditDetailsOpen, setIsEditDetailsOpen] = useState(false);
   const [catalog, setCatalog] = useState<ResumeProjectCatalogItem[]>([]);
@@ -408,6 +410,36 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     }
   }, [handleJobMoved, markAsAppliedMutation, onJobUpdated, selectedJob]);
 
+  const handleAutoApply = useCallback(async () => {
+    if (!selectedJob || selectedJob.status !== "ready") return;
+    if (
+      !window.confirm(
+        `Send a real application for ${selectedJob.title} at ${selectedJob.employer}?`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setIsAutoApplying(true);
+      await api.autoApplyJob(selectedJob.id);
+      trackProductEvent("jobs_job_action_completed", {
+        action: "auto_apply",
+        result: "success",
+        from_status: selectedJob.status,
+        to_status: "applied",
+      });
+      toast.success("Application sent", {
+        description: `${selectedJob.title} at ${selectedJob.employer}`,
+      });
+      handleJobMoved(selectedJob.id);
+      await onJobUpdated();
+    } catch (error) {
+      showErrorToast(error, "Failed to auto-apply");
+    } finally {
+      setIsAutoApplying(false);
+    }
+  }, [handleJobMoved, onJobUpdated, selectedJob]);
+
   const handlePrimaryAction = useCallback(async () => {
     if (!selectedJob) return;
     if (selectedJob.status === "discovered") {
@@ -522,6 +554,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const primaryBusy =
     isProcessing ||
     isApplying ||
+    isAutoApplying ||
     isMoving ||
     selectedJob.status === "processing";
   const canGenerate = ["discovered", "ready"].includes(selectedJob.status);
@@ -795,7 +828,20 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 </div>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-4">
+              <Button
+                size="sm"
+                className={cn(activeApplyCtaClassName)}
+                onClick={() => void handleAutoApply()}
+                disabled={selectedJob.status !== "ready" || primaryBusy}
+              >
+                {isAutoApplying ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Mail className="size-3.5" />
+                )}
+                Auto-apply
+              </Button>
               <TooltipWhenDisabled
                 reason={pdfRegeneratingReason}
                 className="w-full"
