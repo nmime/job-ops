@@ -301,6 +301,16 @@ describe.sequential("Pipeline API routes", () => {
     });
     expect(badRun.status).toBe(400);
 
+    const unsupportedRunFields = await fetch(`${baseUrl}/api/pipeline/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runBudget: 150,
+        searchTerms: ["backend engineer"],
+      }),
+    });
+    expect(unsupportedRunFields.status).toBe(400);
+
     const { runPipeline } = await import("@server/pipeline/index");
     const runRes = await fetch(`${baseUrl}/api/pipeline/run`, {
       method: "POST",
@@ -308,8 +318,6 @@ describe.sequential("Pipeline API routes", () => {
       body: JSON.stringify({
         topN: 5,
         minSuitabilityScore: 65,
-        runBudget: 150,
-        searchTerms: ["backend engineer"],
         country: "united kingdom",
         cityLocations: ["London"],
         workplaceTypes: ["remote", "hybrid"],
@@ -344,7 +352,6 @@ describe.sequential("Pipeline API routes", () => {
         min_suitability_score: 65,
         country: "united kingdom",
         has_city_locations: true,
-        search_terms_count: 1,
       }),
       expect.objectContaining({
         urlPath: "/jobs",

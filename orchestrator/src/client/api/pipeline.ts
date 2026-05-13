@@ -62,8 +62,6 @@ export async function runPipeline(config?: {
   topN?: number;
   minSuitabilityScore?: number;
   sources?: JobSource[];
-  runBudget?: number;
-  searchTerms?: string[];
   country?: string;
   cityLocations?: string[];
   workplaceTypes?: Array<"remote" | "hybrid" | "onsite">;

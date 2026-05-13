@@ -175,6 +175,7 @@ describe("AutomaticRunTab", () => {
     expect(
       screen.getByRole("button", { name: "Start run now" }),
     ).toBeDisabled();
+    expect(screen.getByText("Select a country before starting.")).toBeInTheDocument();
   });
 
   it("loads persisted country from settings", () => {
@@ -698,8 +699,8 @@ describe("AutomaticRunTab", () => {
     fireEvent.click(screen.getByLabelText("Onsite"));
 
     expect(
-      screen.getByText("Select at least one workplace type."),
-    ).toBeInTheDocument();
+      screen.getAllByText("Select at least one workplace type."),
+    ).not.toHaveLength(0);
     expect(
       screen.getByRole("button", { name: "Start run now" }),
     ).toBeDisabled();

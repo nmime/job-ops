@@ -292,10 +292,13 @@ export async function markAsApplied(id: string): Promise<Job> {
   });
 }
 
-export async function autoApplyJob(id: string): Promise<Job> {
+export async function autoApplyJob(
+  id: string,
+  options: { confirm: true },
+): Promise<Job> {
   return fetchApi<Job>(`/jobs/${id}/auto-apply`, {
     method: "POST",
-    body: JSON.stringify({ confirm: true }),
+    body: JSON.stringify(options),
   });
 }
 

@@ -189,6 +189,38 @@ const getDefaultInspectorTab = (
   return "brief";
 };
 
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+const normalizeEmail = (value: string): string | null => {
+  const match = value.match(emailPattern);
+  return match ? match[0].toLowerCase() : null;
+};
+
+const resolveAutoApplyRecipient = (
+  job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief" | "emails">,
+): string | null => {
+  const applicationLink = job.applicationLink?.trim();
+  if (applicationLink?.toLowerCase().startsWith("mailto:")) {
+    try {
+      return normalizeEmail(decodeURIComponent(new URL(applicationLink).pathname));
+    } catch {
+      return normalizeEmail(applicationLink);
+    }
+  }
+
+  for (const candidate of [
+    job.applicationLink,
+    job.emails,
+    job.jobDescription,
+    job.jobBrief,
+  ]) {
+    const email = normalizeEmail(candidate ?? "");
+    if (email) return email;
+  }
+
+  return null;
+};
+
 const Stat: React.FC<{
   label: string;
   value?: string | null;
@@ -292,6 +324,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     : false;
   const applicationKitReady =
     hasTailoredSummary && hasTailoredSkills && hasResumePdf;
+  const autoApplyRecipient = selectedJob
+    ? resolveAutoApplyRecipient(selectedJob)
+    : null;
   const brief = parseJobBrief(selectedJob?.jobBrief || null);
 
   const loadCatalog = useCallback(async () => {
@@ -413,7 +448,10 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const handleAutoApply = useCallback(async () => {
     if (!selectedJob || selectedJob.status !== "ready") return;
     if (
+      !hasTailoredSummary ||
+      !hasTailoredSkills ||
       !selectedJob.pdfPath ||
+      !autoApplyRecipient ||
       isPdfRegenerating(selectedJob) ||
       isPdfStale(selectedJob)
     ) {
@@ -421,14 +459,19 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     }
     if (
       !window.confirm(
-        `Send a real application for ${selectedJob.title} at ${selectedJob.employer}?`,
+        [
+          `Send a real application email with attached resume for ${selectedJob.title} at ${selectedJob.employer}?`,
+          `Recipient: ${autoApplyRecipient}`,
+          `Resume PDF: ${selectedPdfFilename}`,
+          "The job is marked applied only after the email sends successfully.",
+        ].join("\n"),
       )
     ) {
       return;
     }
     try {
       setIsAutoApplying(true);
-      await api.autoApplyJob(selectedJob.id);
+      await api.autoApplyJob(selectedJob.id, { confirm: true });
       trackProductEvent("jobs_job_action_completed", {
         action: "auto_apply",
         result: "success",
@@ -445,7 +488,15 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     } finally {
       setIsAutoApplying(false);
     }
-  }, [handleJobMoved, onJobUpdated, selectedJob]);
+  }, [
+    autoApplyRecipient,
+    handleJobMoved,
+    hasTailoredSkills,
+    hasTailoredSummary,
+    onJobUpdated,
+    selectedJob,
+    selectedPdfFilename,
+  ]);
 
   const handlePrimaryAction = useCallback(async () => {
     if (!selectedJob) return;
@@ -576,12 +627,16 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const autoApplyDisabledReason =
     selectedJob.status !== "ready"
       ? "Only ready jobs can be auto-applied."
+      : !hasTailoredSummary || !hasTailoredSkills
+        ? "Complete tailored summary and skills before auto-applying."
       : !selectedJob.pdfPath
         ? "Generate or upload a resume PDF before auto-applying."
         : isRegeneratingPdf
           ? PDF_REGENERATING_MESSAGE
           : isStalePdf
             ? "Regenerate the stale resume PDF before auto-applying."
+            : !autoApplyRecipient
+              ? "Add an application email or mailto link before auto-applying."
             : null;
   const autoApplyDisabled = primaryBusy || Boolean(autoApplyDisabledReason);
   const tone = statusTone[selectedJob.status];
