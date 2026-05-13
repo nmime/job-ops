@@ -87,6 +87,8 @@ function buildEffectiveConfigSnapshot(args: {
       adzunaMaxJobsPerTerm: args.settings.adzunaMaxJobsPerTerm.value,
       gradcrackerMaxJobsPerTerm: args.settings.gradcrackerMaxJobsPerTerm.value,
       startupjobsMaxJobsPerTerm: args.settings.startupjobsMaxJobsPerTerm.value,
+      workingnomadsMaxJobsPerTerm:
+        args.settings.workingnomadsMaxJobsPerTerm.value,
       jobindexMaxJobsPerTerm: args.settings.jobindexMaxJobsPerTerm.value,
       naukriMaxJobsPerTerm: args.settings.naukriMaxJobsPerTerm.value,
       jobspyResultsWanted: args.settings.jobspyResultsWanted.value,
@@ -133,7 +135,9 @@ export function createPipelineRunResultSummary(
     stage: "started",
     jobsScored: null,
     jobsSelected: null,
+    jobsProcessingFailed: null,
     sourceErrors: [],
+    processingErrors: [],
     ...overrides,
   };
 }

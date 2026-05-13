@@ -22,6 +22,7 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
 });
 
 vi.mock("../api", () => ({
+  hasAuthenticatedSession: vi.fn(() => true),
   updateSettings: vi.fn().mockResolvedValue({}),
   runPipeline: vi.fn().mockResolvedValue({ message: "ok" }),
   cancelPipeline: vi.fn().mockResolvedValue({
@@ -945,6 +946,7 @@ describe("OrchestratorPage", () => {
         ukvisajobsMaxJobs: 150,
         adzunaMaxJobsPerTerm: 150,
         startupjobsMaxJobsPerTerm: 150,
+        workingnomadsMaxJobsPerTerm: 150,
         jobindexMaxJobsPerTerm: 150,
         seekMaxJobsPerTerm: 150,
         jobspyCountryIndeed: "united kingdom",

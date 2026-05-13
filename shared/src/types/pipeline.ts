@@ -62,6 +62,7 @@ export interface PipelineRunSourceLimitSnapshot {
   adzunaMaxJobsPerTerm: number;
   gradcrackerMaxJobsPerTerm: number;
   startupjobsMaxJobsPerTerm: number;
+  workingnomadsMaxJobsPerTerm: number;
   naukriMaxJobsPerTerm: number;
   jobindexMaxJobsPerTerm: number;
   jobspyResultsWanted: number;
@@ -106,7 +107,9 @@ export interface PipelineRunResultSummary {
   stage: PipelineRunExecutionStage;
   jobsScored: number | null;
   jobsSelected: number | null;
+  jobsProcessingFailed?: number | null;
   sourceErrors: string[];
+  processingErrors?: string[];
 }
 
 export interface PipelineRunSavedDetails {

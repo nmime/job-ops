@@ -129,6 +129,7 @@ vi.mock("@/lib/utils", async (importOriginal) => {
 });
 
 vi.mock("@client/api", () => ({
+  hasAuthenticatedSession: vi.fn(() => true),
   updateJob: vi.fn(),
   processJob: vi.fn(),
   generateJobPdf: vi.fn(),

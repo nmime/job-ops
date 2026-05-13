@@ -174,6 +174,7 @@ export interface AppSettings {
   adzunaMaxJobsPerTerm: Resolved<number>;
   gradcrackerMaxJobsPerTerm: Resolved<number>;
   startupjobsMaxJobsPerTerm: Resolved<number>;
+  workingnomadsMaxJobsPerTerm: Resolved<number>;
   seekMaxJobsPerTerm: Resolved<number>;
   naukriMaxJobsPerTerm: Resolved<number>;
   jobindexMaxJobsPerTerm: Resolved<number>;
