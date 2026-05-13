@@ -14,6 +14,7 @@ export const REMOTE_API_SOURCES = [
   "weworkremotely",
   "themuse",
   "arbeitnow",
+  "remoteok",
 ] as const;
 
 export type RemoteApiSource = (typeof REMOTE_API_SOURCES)[number];
@@ -405,6 +406,27 @@ function mapArbeitnowJob(job: RawJob): CreateJobInput | null {
   });
 }
 
+function mapRemoteOkJob(job: RawJob): CreateJobInput | null {
+  return buildJob({
+    source: "remoteok",
+    sourceJobId: String(job.id ?? job.slug ?? "") || undefined,
+    title: asString(job.position) ?? asString(job.title),
+    employer: asString(job.company),
+    jobUrl: asString(job.url),
+    applicationLink: asString(job.apply_url) ?? asString(job.url),
+    location: asString(job.location) ?? "Remote",
+    datePosted: asString(job.date) ?? asString(job.epoch),
+    description: asString(job.description),
+    jobType: asString(job.job_type),
+    jobFunction: asString(job.category),
+    skills: asStringArray(job.tags),
+    salaryMinAmount: asNumber(job.salary_min),
+    salaryMaxAmount: asNumber(job.salary_max),
+    salaryCurrency: asString(job.salary_currency),
+    companyLogo: asString(job.company_logo) ?? asString(job.logo),
+  });
+}
+
 function decodeXml(value: string): string {
   return value
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
@@ -531,6 +553,15 @@ async function fetchSourceJobs(args: {
           : [];
       return { source: args.source, jobs };
     }
+    case "remoteok": {
+      const payload = await fetchJson({
+        fetchImpl: args.fetchImpl,
+        source: args.source,
+        url: "https://remoteok.com/api",
+      });
+      const jobs = Array.isArray(payload) ? (payload as RawJob[]) : [];
+      return { source: args.source, jobs };
+    }
   }
 }
 
@@ -549,6 +580,8 @@ function mapSourceJob(
       return mapMuseJob(job);
     case "arbeitnow":
       return mapArbeitnowJob(job);
+    case "remoteok":
+      return mapRemoteOkJob(job);
   }
 }
 

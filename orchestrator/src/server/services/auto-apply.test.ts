@@ -20,6 +20,16 @@ describe("resolveAutoApplyRecipient", () => {
     expect(resolveAutoApplyRecipient(job)).toBe("hiring.team@example.org");
   });
 
+  it("uses source-provided contact emails from search integrations", () => {
+    const job = createJob({
+      applicationLink: "https://example.com/apply",
+      emails: JSON.stringify(["Recruiting@Example.net"]),
+      jobDescription: "Apply through the portal.",
+    });
+
+    expect(resolveAutoApplyRecipient(job)).toBe("recruiting@example.net");
+  });
+
   it("returns null when no application email is available", () => {
     const job = createJob({
       applicationLink: "https://example.com/apply",

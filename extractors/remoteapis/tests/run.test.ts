@@ -105,4 +105,42 @@ describe("runRemoteApiJobs", () => {
       }),
     ]);
   });
+
+  it("maps Remote OK API jobs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      createJsonResponse([
+        { legal: "terms" },
+        {
+          id: "remoteok-1",
+          position: "Platform Engineer",
+          company: "Remote Co",
+          url: "https://remoteok.com/remote-jobs/remoteok-1",
+          apply_url: "mailto:jobs@remote.co",
+          location: "Worldwide",
+          description: "Kubernetes and TypeScript",
+          tags: ["kubernetes", "typescript"],
+          salary_min: 120000,
+          salary_max: 160000,
+          salary_currency: "USD",
+        },
+      ]),
+    );
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["remoteok"],
+      searchTerms: ["platform engineer"],
+      fetchImpl: fetchMock,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        source: "remoteok",
+        title: "Platform Engineer",
+        employer: "Remote Co",
+        applicationLink: "mailto:jobs@remote.co",
+        salary: "USD120000 - USD160000",
+      }),
+    ]);
+  });
 });

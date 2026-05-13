@@ -68,7 +68,7 @@ function normalizeEmail(value: string): string | null {
 }
 
 export function resolveAutoApplyRecipient(
-  job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief">,
+  job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief" | "emails">,
 ): string | null {
   const applicationLink = cleanString(job.applicationLink);
   if (applicationLink?.toLowerCase().startsWith("mailto:")) {
@@ -78,6 +78,7 @@ export function resolveAutoApplyRecipient(
 
   for (const candidate of [
     job.applicationLink,
+    job.emails,
     job.jobDescription,
     job.jobBrief,
   ]) {
@@ -369,6 +370,11 @@ export async function sendAutoApplication(job: Job): Promise<AutoApplyResult> {
   const config = getSmtpConfig(profile);
   const subject = `Application for ${job.title} at ${job.employer}`;
   const attachments = await buildAttachments(job);
+  if (attachments.length === 0) {
+    throw badRequest(
+      "Auto-apply needs a generated or uploaded resume PDF before sending.",
+    );
+  }
   const messageId = await sendSmtpMail(config, {
     from: config.from,
     fromName: config.fromName,
