@@ -254,6 +254,7 @@ export const DEMO_SOURCE_BASE_URLS: Record<JobSource, string> = {
   weworkremotely: "https://weworkremotely.com",
   themuse: "https://www.themuse.com",
   arbeitnow: "https://www.arbeitnow.com",
+  remoteok: "https://remoteok.com",
   linkedin: "https://www.linkedin.com",
   indeed: "https://www.indeed.com",
   glassdoor: "https://www.glassdoor.com",

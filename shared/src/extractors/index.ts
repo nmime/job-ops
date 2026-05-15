@@ -6,6 +6,7 @@ export const EXTRACTOR_SOURCE_IDS = [
   "weworkremotely",
   "themuse",
   "arbeitnow",
+  "remoteok",
   "workingnomads",
   "hiringcafe",
   "startupjobs",
@@ -45,6 +46,7 @@ export const EXTRACTOR_SOURCE_METADATA: Record<
   },
   themuse: { label: "The Muse", order: 40, category: "pipeline" },
   arbeitnow: { label: "Arbeitnow", order: 50, category: "pipeline" },
+  remoteok: { label: "Remote OK", order: 55, category: "pipeline" },
   workingnomads: {
     label: "Working Nomads",
     order: 60,

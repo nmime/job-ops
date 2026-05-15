@@ -116,8 +116,6 @@ export function usePipelineControls(
           topN: config.topN,
           minSuitabilityScore: config.minSuitabilityScore,
           sources: config.sources,
-          runBudget: config.runBudget,
-          searchTerms: config.searchTerms,
           country: config.country,
           cityLocations: config.cityLocations,
           workplaceTypes: config.workplaceTypes,

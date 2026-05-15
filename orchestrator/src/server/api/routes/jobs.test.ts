@@ -1385,6 +1385,73 @@ describe.sequential("Jobs API routes", () => {
     );
   });
 
+  it("auto-applies a ready job by sending the real application", async () => {
+    const { createJob, updateJob } = await import("@server/repositories/jobs");
+    const { sendAutoApplication } = await import("@server/services/auto-apply");
+    const { trackCanonicalActivationEvent } = await import(
+      "@server/services/activation-funnel"
+    );
+    const job = await createJob({
+      source: "manual",
+      title: "Test Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/auto",
+      applicationLink: "mailto:jobs@example.com",
+      jobDescription: "Test description",
+    });
+    await updateJob(job.id, { status: "ready" });
+
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/auto-apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const body = await res.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe("applied");
+    expect(body.data.appliedAt).toBeTruthy();
+    expect(body.data.autoApply.recipient).toBe("jobs@example.com");
+    expect(sendAutoApplication).toHaveBeenCalledWith(
+      expect.objectContaining({ id: job.id, status: "ready" }),
+    );
+    expect(trackCanonicalActivationEvent).toHaveBeenCalledWith(
+      "application_marked_applied",
+      expect.objectContaining({
+        source: "jobs_auto_apply_route",
+      }),
+      expect.objectContaining({
+        urlPath: "/jobs",
+      }),
+    );
+  });
+
+  it("requires explicit confirmation before auto-applying", async () => {
+    const { createJob, updateJob } = await import("@server/repositories/jobs");
+    const { sendAutoApplication } = await import("@server/services/auto-apply");
+    vi.mocked(sendAutoApplication).mockClear();
+    const job = await createJob({
+      source: "manual",
+      title: "Test Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/auto-confirm",
+      applicationLink: "mailto:jobs@example.com",
+      jobDescription: "Test description",
+    });
+    await updateJob(job.id, { status: "ready" });
+
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/auto-apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: false }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(sendAutoApplication).not.toHaveBeenCalled();
+  });
+
   it("rescoring a job updates the suitability fields", async () => {
     const { createJob } = await import("@server/repositories/jobs");
     const { generateJobBrief } = await import("@server/services/job-brief");

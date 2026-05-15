@@ -292,6 +292,16 @@ export async function markAsApplied(id: string): Promise<Job> {
   });
 }
 
+export async function autoApplyJob(
+  id: string,
+  options: { confirm: true },
+): Promise<Job> {
+  return fetchApi<Job>(`/jobs/${id}/auto-apply`, {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}
+
 export async function skipJob(ids: string[]): Promise<JobActionResponse>;
 export async function skipJob(id: string): Promise<Job>;
 export async function skipJob(

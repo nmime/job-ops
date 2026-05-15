@@ -219,8 +219,6 @@ const runPipelineSchema = z.object({
     )
     .min(1)
     .optional(),
-  runBudget: z.number().min(50).max(1000).optional(),
-  searchTerms: z.array(z.string().trim().min(1)).optional(),
   country: z.string().trim().optional(),
   cityLocations: z.array(z.string().trim().min(1)).optional(),
   workplaceTypes: z
@@ -230,7 +228,7 @@ const runPipelineSchema = z.object({
     .optional(),
   searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
   matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
-});
+}).strict();
 
 pipelineRouter.post("/run", async (req: Request, res: Response) => {
   try {
@@ -327,7 +325,6 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
         has_city_locations: Array.isArray(config.cityLocations)
           ? config.cityLocations.length > 0
           : false,
-        search_terms_count: config.searchTerms?.length,
       },
       {
         requestOrigin: resolveRequestOrigin(req),

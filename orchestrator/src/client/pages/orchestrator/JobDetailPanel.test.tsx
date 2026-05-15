@@ -133,6 +133,7 @@ vi.mock("@client/api", () => ({
   updateJob: vi.fn(),
   processJob: vi.fn(),
   generateJobPdf: vi.fn(),
+  autoApplyJob: vi.fn(),
   markAsApplied: vi.fn(),
   skipJob: vi.fn(),
   getProfile: vi.fn().mockResolvedValue({}),
@@ -275,6 +276,140 @@ describe("JobDetailPanel", () => {
     expect(
       within(getApplyPanel()).queryByRole("button", { name: /view pdf/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps auto-apply disabled until a current or uploaded PDF is available", async () => {
+    const missingPdfJob = createJob({
+      status: "ready",
+      pdfPath: null,
+      tailoredSummary: "Tailored summary",
+      tailoredSkills: JSON.stringify(["TypeScript"]),
+    });
+    const confirmSpy = vi.spyOn(window, "confirm");
+
+    const rendered = await renderJobDetailPanel({
+      activeTab: "ready",
+      activeJobs: [missingPdfJob],
+      selectedJob: missingPdfJob,
+      onSelectJobId: vi.fn(),
+      onJobUpdated: vi.fn().mockResolvedValue(undefined),
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /apply/i }));
+
+    expect(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Generate or upload a resume PDF before auto-applying."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    );
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(api.autoApplyJob).not.toHaveBeenCalled();
+
+    const stalePdfJob = createJob({
+      status: "ready",
+      pdfPath: "data/pdfs/job-1.pdf",
+      pdfFreshness: "stale",
+      tailoredSummary: "Tailored summary",
+      tailoredSkills: JSON.stringify(["TypeScript"]),
+    });
+
+    rendered.rerender(
+      <JobDetailPanel
+        activeTab="ready"
+        activeJobs={[stalePdfJob]}
+        selectedJob={stalePdfJob}
+        onSelectJobId={vi.fn()}
+        onJobUpdated={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Regenerate the stale resume PDF before auto-applying."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    );
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(api.autoApplyJob).not.toHaveBeenCalled();
+
+    const noRecipientJob = createJob({
+      status: "ready",
+      pdfPath: "data/pdfs/job-2.pdf",
+      pdfFreshness: "current",
+      tailoredSummary: "Tailored summary",
+      tailoredSkills: JSON.stringify(["TypeScript"]),
+    });
+
+    rendered.rerender(
+      <JobDetailPanel
+        activeTab="ready"
+        activeJobs={[noRecipientJob]}
+        selectedJob={noRecipientJob}
+        onSelectJobId={vi.fn()}
+        onJobUpdated={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    expect(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText("Add an application email or mailto link before auto-applying."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    );
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(api.autoApplyJob).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+
+  it("auto-applies ready jobs with a current PDF after confirmation", async () => {
+    const job = createJob({
+      id: "job-current-pdf",
+      status: "ready",
+      pdfPath: "data/pdfs/job-current.pdf",
+      pdfFreshness: "current",
+      tailoredSummary: "Tailored summary",
+      tailoredSkills: JSON.stringify(["TypeScript"]),
+      emails: JSON.stringify(["jobs@example.com"]),
+    });
+    const onJobUpdated = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(api.autoApplyJob).mockResolvedValue(job as any);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    await renderJobDetailPanel({
+      activeTab: "ready",
+      activeJobs: [job],
+      selectedJob: job,
+      onSelectJobId: vi.fn(),
+      onJobUpdated,
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /apply/i }));
+    fireEvent.click(
+      within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
+    );
+
+    await waitFor(() => {
+      expect(api.autoApplyJob).toHaveBeenCalledWith("job-current-pdf", {
+        confirm: true,
+      });
+    });
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Recipient: jobs@example.com"),
+    );
+    expect(onJobUpdated).toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
   });
 
   it("shows an empty state when no job is selected", async () => {

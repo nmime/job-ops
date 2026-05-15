@@ -565,6 +565,19 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     values.searchTerms.length === 0 ||
     countrySelectionInvalid ||
     workplaceTypeSelectionInvalid;
+  const runDisabledReason = isPipelineRunning
+    ? "A pipeline run is already in progress."
+    : isSaving
+      ? "Saving run settings before launch."
+      : compatiblePipelineSources.length === 0
+        ? "No compatible sources for this location setup."
+        : values.searchTerms.length === 0
+          ? "Add at least one search term."
+          : countrySelectionInvalid
+            ? "Select a country before starting."
+            : workplaceTypeSelectionInvalid
+              ? "Select at least one workplace type."
+              : null;
 
   const toggleWorkplaceType = (
     workplaceType: WorkplaceType,
@@ -1225,7 +1238,7 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
           Est: {estimate.discovered.min}-{estimate.discovered.max} jobs, ~
           {values.topN} resumes
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-col items-end gap-1">
           <Button
             type="button"
             className="gap-2"
@@ -1239,6 +1252,11 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
             )}
             Start run now
           </Button>
+          {runDisabledReason ? (
+            <p className="max-w-72 text-right text-xs text-muted-foreground">
+              {runDisabledReason}
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

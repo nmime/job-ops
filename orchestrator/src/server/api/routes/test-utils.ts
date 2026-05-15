@@ -72,6 +72,16 @@ vi.mock("@server/services/job-brief", () => ({
   generateJobBrief: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@server/services/auto-apply", () => ({
+  sendAutoApplication: vi.fn().mockResolvedValue({
+    mode: "email",
+    recipient: "jobs@example.com",
+    subject: "Application for Test Role at Acme",
+    messageId: "test-message-id",
+    attachedResume: false,
+  }),
+}));
+
 vi.mock("@server/services/profile", () => ({
   getProfile: vi.fn().mockResolvedValue({}),
   clearProfileCache: vi.fn(),

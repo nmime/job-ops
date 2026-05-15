@@ -25,6 +25,10 @@ describe("orchestrator utils", () => {
     expect(getEnabledSources(createAppSettings())).toContain("workingnomads");
   });
 
+  it("enables remoteok without credentials", () => {
+    expect(getEnabledSources(createAppSettings())).toContain("remoteok");
+  });
+
   it("enables golangjobs without credentials", () => {
     expect(getEnabledSources(createAppSettings())).toContain("golangjobs");
   });

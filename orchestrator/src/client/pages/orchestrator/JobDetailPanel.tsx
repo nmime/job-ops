@@ -43,6 +43,7 @@ import {
   FolderKanban,
   Link2,
   Loader2,
+  Mail,
   MoreHorizontal,
   RefreshCcw,
   Sparkles,
@@ -188,6 +189,38 @@ const getDefaultInspectorTab = (
   return "brief";
 };
 
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+const normalizeEmail = (value: string): string | null => {
+  const match = value.match(emailPattern);
+  return match ? match[0].toLowerCase() : null;
+};
+
+const resolveAutoApplyRecipient = (
+  job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief" | "emails">,
+): string | null => {
+  const applicationLink = job.applicationLink?.trim();
+  if (applicationLink?.toLowerCase().startsWith("mailto:")) {
+    try {
+      return normalizeEmail(decodeURIComponent(new URL(applicationLink).pathname));
+    } catch {
+      return normalizeEmail(applicationLink);
+    }
+  }
+
+  for (const candidate of [
+    job.applicationLink,
+    job.emails,
+    job.jobDescription,
+    job.jobBrief,
+  ]) {
+    const email = normalizeEmail(candidate ?? "");
+    if (email) return email;
+  }
+
+  return null;
+};
+
 const Stat: React.FC<{
   label: string;
   value?: string | null;
@@ -250,6 +283,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("brief");
   const [isProcessing, setIsProcessing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
+  const [isAutoApplying, setIsAutoApplying] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
   const [isEditDetailsOpen, setIsEditDetailsOpen] = useState(false);
   const [catalog, setCatalog] = useState<ResumeProjectCatalogItem[]>([]);
@@ -290,6 +324,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     : false;
   const applicationKitReady =
     hasTailoredSummary && hasTailoredSkills && hasResumePdf;
+  const autoApplyRecipient = selectedJob
+    ? resolveAutoApplyRecipient(selectedJob)
+    : null;
   const brief = parseJobBrief(selectedJob?.jobBrief || null);
 
   const loadCatalog = useCallback(async () => {
@@ -408,6 +445,59 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     }
   }, [handleJobMoved, markAsAppliedMutation, onJobUpdated, selectedJob]);
 
+  const handleAutoApply = useCallback(async () => {
+    if (!selectedJob || selectedJob.status !== "ready") return;
+    if (
+      !hasTailoredSummary ||
+      !hasTailoredSkills ||
+      !selectedJob.pdfPath ||
+      !autoApplyRecipient ||
+      isPdfRegenerating(selectedJob) ||
+      isPdfStale(selectedJob)
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        [
+          `Send a real application email with attached resume for ${selectedJob.title} at ${selectedJob.employer}?`,
+          `Recipient: ${autoApplyRecipient}`,
+          `Resume PDF: ${selectedPdfFilename}`,
+          "The job is marked applied only after the email sends successfully.",
+        ].join("\n"),
+      )
+    ) {
+      return;
+    }
+    try {
+      setIsAutoApplying(true);
+      await api.autoApplyJob(selectedJob.id, { confirm: true });
+      trackProductEvent("jobs_job_action_completed", {
+        action: "auto_apply",
+        result: "success",
+        from_status: selectedJob.status,
+        to_status: "applied",
+      });
+      toast.success("Application sent", {
+        description: `${selectedJob.title} at ${selectedJob.employer}`,
+      });
+      handleJobMoved(selectedJob.id);
+      await onJobUpdated();
+    } catch (error) {
+      showErrorToast(error, "Failed to auto-apply");
+    } finally {
+      setIsAutoApplying(false);
+    }
+  }, [
+    autoApplyRecipient,
+    handleJobMoved,
+    hasTailoredSkills,
+    hasTailoredSummary,
+    onJobUpdated,
+    selectedJob,
+    selectedPdfFilename,
+  ]);
+
   const handlePrimaryAction = useCallback(async () => {
     if (!selectedJob) return;
     if (selectedJob.status === "discovered") {
@@ -522,6 +612,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const primaryBusy =
     isProcessing ||
     isApplying ||
+    isAutoApplying ||
     isMoving ||
     selectedJob.status === "processing";
   const canGenerate = ["discovered", "ready"].includes(selectedJob.status);
@@ -533,6 +624,21 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     ? PDF_REGENERATING_MESSAGE
     : null;
   const pdfActionDisabled = !selectedJob.pdfPath || isRegeneratingPdf;
+  const autoApplyDisabledReason =
+    selectedJob.status !== "ready"
+      ? "Only ready jobs can be auto-applied."
+      : !hasTailoredSummary || !hasTailoredSkills
+        ? "Complete tailored summary and skills before auto-applying."
+      : !selectedJob.pdfPath
+        ? "Generate or upload a resume PDF before auto-applying."
+        : isRegeneratingPdf
+          ? PDF_REGENERATING_MESSAGE
+          : isStalePdf
+            ? "Regenerate the stale resume PDF before auto-applying."
+            : !autoApplyRecipient
+              ? "Add an application email or mailto link before auto-applying."
+            : null;
+  const autoApplyDisabled = primaryBusy || Boolean(autoApplyDisabledReason);
   const tone = statusTone[selectedJob.status];
   const openListingIsPrimary =
     selectedJob.status === "ready" && hasJobListing && !hasOpenedJobListing;
@@ -795,7 +901,25 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 </div>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-4">
+              <TooltipWhenDisabled
+                reason={autoApplyDisabledReason}
+                className="w-full"
+              >
+                <Button
+                  size="sm"
+                  className={cn(activeApplyCtaClassName, "w-full")}
+                  onClick={() => void handleAutoApply()}
+                  disabled={autoApplyDisabled}
+                >
+                  {isAutoApplying ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Mail className="size-3.5" />
+                  )}
+                  Auto-apply
+                </Button>
+              </TooltipWhenDisabled>
               <TooltipWhenDisabled
                 reason={pdfRegeneratingReason}
                 className="w-full"
