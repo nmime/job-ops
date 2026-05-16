@@ -215,6 +215,58 @@ describe("importDesignResumeFromFile", () => {
     expect(contents[0]?.parts?.[0]?.text).toContain("Senior Engineer");
   });
 
+  it("imports limited deterministic DOCX metadata when AI credentials are missing", async () => {
+    modelSelection.resolveLlmRuntimeSettings.mockResolvedValueOnce({
+      provider: "openai",
+      model: "gpt-4.1",
+      baseUrl: null,
+      apiKey: null,
+    });
+
+    const docxBase64 = await makeDocxBase64(
+      [
+        "Taylor Quinn",
+        "Senior Product Engineer",
+        "taylor@example.com",
+        "+1 555 123 4567",
+        "https://www.linkedin.com/in/taylorquinn",
+      ].join("\n"),
+    );
+
+    const result = await importDesignResumeFromFile({
+      fileName: "resume.docx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      dataBase64: docxBase64,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.id).toBe("primary");
+
+    const savedInput =
+      designResumeService.replaceCurrentDesignResumeDocument.mock.calls[0]?.[0];
+    expect(savedInput?.resumeJson?.basics).toMatchObject({
+      name: "Taylor Quinn",
+      headline: "Senior Product Engineer",
+      email: "taylor@example.com",
+      phone: "+1 555 123 4567",
+      website: {
+        url: "https://www.linkedin.com/in/taylorquinn",
+        label: "",
+      },
+    });
+    expect(savedInput?.resumeJson?.sections?.profiles?.items).toMatchObject([
+      {
+        network: "LinkedIn",
+        username: "taylorquinn",
+        website: {
+          url: "https://www.linkedin.com/in/taylorquinn",
+          label: "",
+        },
+      },
+    ]);
+  });
+
   it("repairs Gemini JSON with unescaped quotes inside description fields", async () => {
     modelSelection.resolveLlmRuntimeSettings.mockResolvedValueOnce({
       provider: "gemini",
