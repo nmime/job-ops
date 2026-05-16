@@ -608,6 +608,182 @@ async function extractDocxText(decoded: Buffer): Promise<string> {
   return text;
 }
 
+type DeterministicDocxImport = {
+  resumeJson: DesignResumeJson;
+  extracted: {
+    hasName: boolean;
+    hasEmail: boolean;
+    hasPhone: boolean;
+    hasWebsite: boolean;
+    profileCount: number;
+  };
+};
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function getPlainTextLines(documentText: string): string[] {
+  return documentText
+    .split(/\n+/g)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function extractFirstEmail(documentText: string): string {
+  return (
+    documentText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? ""
+  );
+}
+
+function extractFirstPhone(documentText: string): string {
+  const matches = documentText.match(/(?:\+?\d[\d\s().-]{6,}\d)/g) ?? [];
+  for (const match of matches) {
+    const normalized = match.replace(/\s+/g, " ").trim();
+    const digits = normalized.replace(/\D/g, "");
+    if (digits.length >= 7 && digits.length <= 16) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function normalizeDetectedUrl(rawUrl: string): string {
+  const trimmed = rawUrl.replace(/[),.;:!?]+$/g, "").trim();
+  if (!trimmed) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function extractUrls(documentText: string): string[] {
+  const matches =
+    documentText.match(/\b(?:https?:\/\/|www\.)[^\s<>"]+/gi) ?? [];
+  return uniqueStrings(matches.map(normalizeDetectedUrl));
+}
+
+function detectProfileNetwork(url: string): string {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+
+  if (host.includes("linkedin.")) return "LinkedIn";
+  if (host === "github.com" || host.endsWith(".github.com")) return "GitHub";
+  if (host.includes("gitlab.")) return "GitLab";
+  if (host.includes("stackoverflow.")) return "Stack Overflow";
+  if (host.includes("x.com") || host.includes("twitter.")) return "X";
+  return "";
+}
+
+function usernameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return parts.at(-1) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function isSectionHeading(value: string): boolean {
+  return [
+    "about",
+    "awards",
+    "certifications",
+    "cv",
+    "education",
+    "experience",
+    "interests",
+    "languages",
+    "profile",
+    "projects",
+    "publications",
+    "references",
+    "resume",
+    "skills",
+    "summary",
+    "work experience",
+  ].includes(value.trim().toLowerCase());
+}
+
+function isLikelyNameLine(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 80) return false;
+  if (isSectionHeading(trimmed)) return false;
+  if (/[0-9@]|https?:\/\/|www\./i.test(trimmed)) return false;
+  const letters = trimmed.match(/\p{L}/gu)?.length ?? 0;
+  if (letters < 2) return false;
+  return /^[\p{L}][\p{L} .,'’`-]+$/u.test(trimmed);
+}
+
+function extractDeterministicName(lines: string[]): string {
+  return lines.find(isLikelyNameLine) ?? "";
+}
+
+function extractDeterministicHeadline(lines: string[], name: string): string {
+  return (
+    lines.find((line) => {
+      if (line === name || line.length > 120) return false;
+      if (isSectionHeading(line)) return false;
+      if (/@|https?:\/\/|www\./i.test(line)) return false;
+      return (line.match(/\p{L}/gu)?.length ?? 0) >= 3;
+    }) ?? ""
+  );
+}
+
+function buildDeterministicDocxImport(
+  documentText: string,
+): DeterministicDocxImport {
+  const lines = getPlainTextLines(documentText);
+  const name = extractDeterministicName(lines);
+  const headline = extractDeterministicHeadline(lines, name);
+  const email = extractFirstEmail(documentText);
+  const phone = extractFirstPhone(documentText);
+  const urls = extractUrls(documentText);
+  const profiles = urls
+    .map((url) => ({
+      id: "",
+      hidden: false,
+      icon: "",
+      network: detectProfileNetwork(url),
+      username: usernameFromUrl(url),
+      website: { url, label: "" },
+      options: { showLinkInTitle: false },
+    }))
+    .filter((profile) => profile.network);
+  const websiteUrl =
+    urls.find((url) => !detectProfileNetwork(url)) ?? urls[0] ?? "";
+
+  const resumeJson = sanitizeNormalizedResume({
+    basics: {
+      name,
+      headline,
+      email,
+      phone,
+      website: { url: websiteUrl, label: "" },
+    },
+    sections: {
+      profiles: { items: profiles },
+    },
+    metadata: {
+      notes:
+        "Imported from DOCX with deterministic local metadata extraction because AI resume extraction was unavailable.",
+    },
+  });
+
+  return {
+    resumeJson,
+    extracted: {
+      hasName: Boolean(name),
+      hasEmail: Boolean(email),
+      hasPhone: Boolean(phone),
+      hasWebsite: Boolean(websiteUrl),
+      profileCount: profiles.length,
+    },
+  };
+}
+
 function buildDocxPrompt(documentText: string, fileName: string): string {
   return `
 The resume file was uploaded as DOCX and converted locally to plain text before extraction.
@@ -1238,22 +1414,43 @@ export async function importDesignResumeFromFile(
     byteSize: decoded.byteLength,
   });
 
-  if (!provider) {
-    throw serviceUnavailable(
-      buildCapabilityErrorMessage(runtime.provider ?? "unknown"),
-    );
-  }
-
-  const isGeminiCli = provider === "gemini_cli";
-  if (!isGeminiCli && !runtime.apiKey) {
-    throw serviceUnavailable(
-      "Connect your AI provider in Settings before importing a resume file.",
-    );
-  }
-
   try {
     let documentText: string | null =
       mediaType === DOCX_MIME ? await extractDocxText(decoded) : null;
+    const isGeminiCli = provider === "gemini_cli";
+    const aiUnavailableMessage = !provider
+      ? buildCapabilityErrorMessage(runtime.provider ?? "unknown")
+      : "Connect your AI provider in Settings before importing a resume file.";
+
+    if (!provider || (!isGeminiCli && !runtime.apiKey)) {
+      if (mediaType === DOCX_MIME && documentText) {
+        const deterministic = buildDeterministicDocxImport(documentText);
+        const saved = await replaceCurrentDesignResumeDocument({
+          importedAt: new Date().toISOString(),
+          resumeJson: deterministic.resumeJson,
+          sourceMode: null,
+          sourceResumeId: null,
+        });
+
+        logger.info(
+          "Design resume file import completed with deterministic DOCX fallback",
+          {
+            requestId: requestId ?? null,
+            provider: runtime.provider ?? null,
+            model: runtime.model,
+            fileName,
+            mediaType,
+            documentId: saved.id,
+            extracted: deterministic.extracted,
+          },
+        );
+
+        return saved;
+      }
+
+      throw serviceUnavailable(aiUnavailableMessage);
+    }
+
     if (isGeminiCli && mediaType === "application/pdf") {
       documentText = await extractPdfText(decoded);
     }
@@ -1298,6 +1495,17 @@ export async function importDesignResumeFromFile(
     });
 
     if (error instanceof AppError) {
+      if (
+        error.status === 503 &&
+        (error.message.startsWith(
+          "Resume file import is not available for the current AI provider",
+        ) ||
+          error.message ===
+            "Connect your AI provider in Settings before importing a resume file.")
+      ) {
+        throw error;
+      }
+
       if (isFileCapabilityError(error.message)) {
         throw serviceUnavailable(
           `The configured ${provider} model could not accept this attached ${mediaType === "application/pdf" ? "PDF" : "DOCX"} file directly. Choose a model with native file support and try again.`,
