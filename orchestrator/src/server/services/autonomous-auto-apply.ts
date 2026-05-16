@@ -31,6 +31,7 @@ export type AutonomousAutoApplyConfig = {
   intervalMs: number;
   batchLimit: number;
   retryDelayMs: number;
+  runOnStart: boolean;
 };
 
 type AutonomousAutoApplyDependencies = {
@@ -42,6 +43,7 @@ export type AutonomousAutoApplyService = {
   start(): void;
   stop(): void;
   isRunning(): boolean;
+  requestScan(reason?: string): Promise<"started" | "disabled" | "in_flight">;
 };
 
 function parseBoolean(value: string | undefined): boolean {
@@ -75,6 +77,7 @@ export function getAutonomousAutoApplyConfigFromEnv(
       parsePositiveInteger(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_RETRY_DELAY_MS) ??
         DEFAULT_RETRY_DELAY_MS,
     ),
+    runOnStart: parseBoolean(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START),
   };
 }
 
@@ -85,7 +88,9 @@ function containsCaptchaSignal(value: string | null | undefined): boolean {
   );
 }
 
-export function classifyAutonomousAutoApply(job: Job): AutonomousAutoApplyDecision {
+export function classifyAutonomousAutoApply(
+  job: Job,
+): AutonomousAutoApplyDecision {
   if (job.status !== "ready") {
     return { action: "not_ready", reason: "Job is not READY." };
   }
@@ -109,7 +114,8 @@ export function classifyAutonomousAutoApply(job: Job): AutonomousAutoApplyDecisi
   if (!recipient) {
     return {
       action: "review_only_portal",
-      reason: "No application email found; portal applications stay human-in-loop.",
+      reason:
+        "No application email found; portal applications stay human-in-loop.",
     };
   }
 
@@ -155,6 +161,19 @@ export async function enqueueAutonomousAutoApplyForJob(input: {
   });
 }
 
+function readyPriorityTimestamp(job: Job): number {
+  const value = job.readyAt ?? job.discoveredAt;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortReadyJobsNewestFirst(jobs: Job[]): Job[] {
+  return [...jobs].sort(
+    (left, right) =>
+      readyPriorityTimestamp(right) - readyPriorityTimestamp(left),
+  );
+}
+
 export async function enqueueAutonomousAutoApplyForReadyJobs(input: {
   requestedBy: "system" | "user";
   limit?: number;
@@ -165,7 +184,7 @@ export async function enqueueAutonomousAutoApplyForReadyJobs(input: {
   let reviewOnly = 0;
   let skipped = 0;
 
-  for (const job of jobs.slice(0, limit)) {
+  for (const job of sortReadyJobsNewestFirst(jobs).slice(0, limit)) {
     const hydratedJob = await hydratePdfFreshness(job);
     const decision = classifyAutonomousAutoApply(hydratedJob);
     if (decision.action === "email_ready") {
@@ -300,7 +319,10 @@ async function processQueuedAutonomousAutoApply(
         return "processed";
       }
 
-      if (hydratedJob.pdfRegenerating || hydratedJob.pdfFreshness === "regenerating") {
+      if (
+        hydratedJob.pdfRegenerating ||
+        hydratedJob.pdfFreshness === "regenerating"
+      ) {
         return "retry_later";
       }
 
@@ -337,34 +359,54 @@ export function createAutonomousAutoApplyService(
   const setIntervalFn = dependencies.setInterval ?? setInterval;
   const clearIntervalFn = dependencies.clearInterval ?? clearInterval;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let scanInFlight = false;
 
-  async function scanAndQueue(): Promise<void> {
+  async function requestScan(
+    reason = "manual",
+  ): Promise<"started" | "disabled" | "in_flight"> {
+    if (!config.queueEnabled) return "disabled";
+    if (scanInFlight) return "in_flight";
+
+    scanInFlight = true;
     try {
       await runWithRequestContext(
-        { tenantId: DEFAULT_TENANT_ID, requestId: "autonomous-auto-apply-scan" },
+        {
+          tenantId: DEFAULT_TENANT_ID,
+          requestId: "autonomous-auto-apply-scan",
+        },
         () =>
           enqueueAutonomousAutoApplyForReadyJobs({
             requestedBy: "system",
             limit: config.batchLimit,
           }),
       );
+      logger.info("Autonomous auto-apply scan completed", { reason });
     } catch (error) {
       logger.warn("Autonomous auto-apply scan failed", {
+        reason,
         error: sanitizeUnknown(error),
       });
+    } finally {
+      scanInFlight = false;
     }
+
+    return "started";
   }
 
   return {
     start(): void {
       if (!config.queueEnabled || timer) return;
       timer = setIntervalFn(() => {
-        void scanAndQueue();
+        void requestScan("interval");
       }, config.intervalMs);
+      if (config.runOnStart) {
+        void requestScan("startup");
+      }
       logger.info("Autonomous auto-apply queue scanner started", {
         intervalMs: config.intervalMs,
         batchLimit: config.batchLimit,
         emailApplyEnabled: config.emailApplyEnabled,
+        runOnStart: config.runOnStart,
       });
     },
     stop(): void {
@@ -376,6 +418,7 @@ export function createAutonomousAutoApplyService(
     isRunning(): boolean {
       return timer !== null;
     },
+    requestScan,
   };
 }
 
@@ -392,4 +435,15 @@ export function startAutonomousAutoApplyService(): AutonomousAutoApplyService | 
 export function stopAutonomousAutoApplyService(): void {
   activeService?.stop();
   activeService = null;
+}
+
+export async function requestAutonomousAutoApplyScan(
+  reason = "external",
+): Promise<"started" | "disabled" | "in_flight"> {
+  const config = getAutonomousAutoApplyConfigFromEnv();
+  if (!config.queueEnabled) return "disabled";
+  if (!activeService) {
+    activeService = createAutonomousAutoApplyService(config);
+  }
+  return activeService.requestScan(reason);
 }

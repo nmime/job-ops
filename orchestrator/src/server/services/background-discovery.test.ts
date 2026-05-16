@@ -88,6 +88,55 @@ describe("background discovery service", () => {
     expect(runPipeline).toHaveBeenCalledTimes(1);
   });
 
+  it("requests an immediate autonomous auto-apply scan after successful discovery", async () => {
+    const runPipeline = vi.fn().mockResolvedValue({
+      success: true,
+      jobsDiscovered: 2,
+      jobsProcessed: 2,
+    });
+    const requestAutoApplyScan = vi.fn().mockResolvedValue("started");
+    const service = createBackgroundDiscoveryService(
+      getBackgroundDiscoveryConfigFromEnv({
+        JOBOPS_BACKGROUND_DISCOVERY_ENABLED: "true",
+        JOBOPS_BACKGROUND_DISCOVERY_MIN_INTERVAL_MS: "0",
+      }),
+      {
+        runPipeline,
+        requestAutoApplyScan,
+        autoSolvePendingChallengesWhile: vi.fn(),
+      },
+    );
+
+    await expect(service.triggerOnce("manual")).resolves.toBe("started");
+
+    expect(requestAutoApplyScan).toHaveBeenCalledWith("background-discovery");
+  });
+
+  it("does not request auto-apply scan after failed discovery", async () => {
+    const runPipeline = vi.fn().mockResolvedValue({
+      success: false,
+      jobsDiscovered: 0,
+      jobsProcessed: 0,
+      error: "pipeline failed",
+    });
+    const requestAutoApplyScan = vi.fn();
+    const service = createBackgroundDiscoveryService(
+      getBackgroundDiscoveryConfigFromEnv({
+        JOBOPS_BACKGROUND_DISCOVERY_ENABLED: "true",
+        JOBOPS_BACKGROUND_DISCOVERY_MIN_INTERVAL_MS: "0",
+      }),
+      {
+        runPipeline,
+        requestAutoApplyScan,
+        autoSolvePendingChallengesWhile: vi.fn(),
+      },
+    );
+
+    await expect(service.triggerOnce("manual")).resolves.toBe("started");
+
+    expect(requestAutoApplyScan).not.toHaveBeenCalled();
+  });
+
   it("auto-solves only when enabled and pending extractor challenges exist", async () => {
     const solveChallenge = vi.fn().mockResolvedValue({
       attempted: true,
@@ -148,5 +197,4 @@ describe("background discovery service", () => {
     });
     expect(resolvePipelineChallenge).toHaveBeenCalledWith("naukri");
   });
-
 });

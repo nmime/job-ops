@@ -3,6 +3,7 @@ import { runWithRequestContext } from "@infra/request-context";
 import { sanitizeUnknown } from "@infra/sanitize";
 import { DEFAULT_TENANT_ID } from "@server/tenancy/constants";
 import type { PipelineConfig, PipelinePendingChallenge } from "@shared/types";
+import { requestAutonomousAutoApplyScan } from "./autonomous-auto-apply";
 import {
   isAutomaticCaptchaSolvingEnabled,
   solveExtractorChallenge,
@@ -25,9 +26,7 @@ export type BackgroundDiscoveryConfig = {
 
 type BackgroundDiscoveryRunReason = "startup" | "interval" | "manual";
 
-type RunPipeline = (
-  config?: Partial<PipelineConfig>,
-) => Promise<{
+type RunPipeline = (config?: Partial<PipelineConfig>) => Promise<{
   success: boolean;
   jobsDiscovered: number;
   jobsProcessed: number;
@@ -39,14 +38,19 @@ type BackgroundDiscoveryDependencies = {
   now?: () => number;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
-  autoSolvePendingChallengesWhile?: (runPromise: Promise<unknown>) => Promise<void>;
+  autoSolvePendingChallengesWhile?: (
+    runPromise: Promise<unknown>,
+  ) => Promise<void>;
+  requestAutoApplyScan?: (reason: string) => Promise<unknown>;
 };
 
 export type BackgroundDiscoveryService = {
   start(): void;
   stop(): void;
   isRunning(): boolean;
-  triggerOnce(reason?: BackgroundDiscoveryRunReason): Promise<"started" | "disabled" | "in_flight" | "cooldown">;
+  triggerOnce(
+    reason?: BackgroundDiscoveryRunReason,
+  ): Promise<"started" | "disabled" | "in_flight" | "cooldown">;
 };
 
 function parseBoolean(value: string | undefined): boolean {
@@ -59,7 +63,9 @@ function parsePositiveInteger(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function parseSources(value: string | undefined): NonNullable<PipelineConfig["sources"]> | undefined {
+function parseSources(
+  value: string | undefined,
+): NonNullable<PipelineConfig["sources"]> | undefined {
   const sources = value
     ?.split(",")
     .map((source) => source.trim())
@@ -110,20 +116,21 @@ function buildPipelineConfig(
   };
 }
 
-
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function autoSolvePendingExtractorChallengesOnce(dependencies: {
-  isAutomaticCaptchaSolvingEnabled?: () => Promise<boolean>;
-  getPendingChallenges?: () => PipelinePendingChallenge[];
-  resolvePipelineChallenge?: (extractorId: string) => {
-    resolved: boolean;
-    remaining: number;
-  };
-  solveChallenge?: typeof solveExtractorChallenge;
-} = {}): Promise<{ enabled: boolean; attempted: number; solved: number }> {
+export async function autoSolvePendingExtractorChallengesOnce(
+  dependencies: {
+    isAutomaticCaptchaSolvingEnabled?: () => Promise<boolean>;
+    getPendingChallenges?: () => PipelinePendingChallenge[];
+    resolvePipelineChallenge?: (extractorId: string) => {
+      resolved: boolean;
+      remaining: number;
+    };
+    solveChallenge?: typeof solveExtractorChallenge;
+  } = {},
+): Promise<{ enabled: boolean; attempted: number; solved: number }> {
   const enabled = await (
     dependencies.isAutomaticCaptchaSolvingEnabled ??
     isAutomaticCaptchaSolvingEnabled
@@ -193,10 +200,12 @@ export function createBackgroundDiscoveryService(
   config: BackgroundDiscoveryConfig = getBackgroundDiscoveryConfigFromEnv(),
   dependencies: BackgroundDiscoveryDependencies = {},
 ): BackgroundDiscoveryService {
-  const run = dependencies.runPipeline ?? (async (pipelineConfig) => {
-    const { runPipeline } = await import("@server/pipeline");
-    return runPipeline(pipelineConfig);
-  });
+  const run =
+    dependencies.runPipeline ??
+    (async (pipelineConfig) => {
+      const { runPipeline } = await import("@server/pipeline");
+      return runPipeline(pipelineConfig);
+    });
   const now = dependencies.now ?? Date.now;
   const setIntervalFn = dependencies.setInterval ?? setInterval;
   const clearIntervalFn = dependencies.clearInterval ?? clearInterval;
@@ -222,16 +231,28 @@ export function createBackgroundDiscoveryService(
     inFlight = true;
     lastStartedAt = startedAt;
     try {
-      await runWithRequestContext(
+      const result = await runWithRequestContext(
         { tenantId: DEFAULT_TENANT_ID, requestId: "background-discovery" },
         async () => {
           const runPromise = run(buildPipelineConfig(config));
-          await (dependencies.autoSolvePendingChallengesWhile ??
-            autoSolvePendingChallengesWhile)(runPromise);
+          await (
+            dependencies.autoSolvePendingChallengesWhile ??
+            autoSolvePendingChallengesWhile
+          )(runPromise);
           return runPromise;
         },
       );
-      logger.info("Background discovery pipeline completed", { reason });
+      if (result.success) {
+        await (
+          dependencies.requestAutoApplyScan ?? requestAutonomousAutoApplyScan
+        )("background-discovery");
+      }
+      logger.info("Background discovery pipeline completed", {
+        reason,
+        success: result.success,
+        jobsDiscovered: result.jobsDiscovered,
+        jobsProcessed: result.jobsProcessed,
+      });
     } catch (error) {
       logger.warn("Background discovery pipeline failed", {
         reason,

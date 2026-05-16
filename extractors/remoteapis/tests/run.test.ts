@@ -288,4 +288,160 @@ describe("runRemoteApiJobs", () => {
     ]);
   });
 
+  it("maps Himalayas browse API jobs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      createJsonResponse({
+        jobs: [
+          {
+            guid: "https://himalayas.app/jobs/acme-platform",
+            title: "Remote Platform Engineer",
+            companyName: "Himalaya Co",
+            applicationLink: "https://himalayas.app/jobs/acme-platform/apply",
+            pubDate: "2026-05-10T00:00:00.000Z",
+            excerpt: "TypeScript platform work",
+            locationRestrictions: ["Worldwide"],
+            categories: ["Engineering"],
+            salary: "$120k - $150k",
+          },
+        ],
+      }),
+    );
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["himalayas"],
+      searchTerms: ["platform engineer"],
+      himalayasPages: 1,
+      fetchImpl: fetchMock,
+    });
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://himalayas.app/jobs/api?limit=20&offset=0",
+      expect.any(Object),
+    );
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        source: "himalayas",
+        employer: "Himalaya Co",
+        title: "Remote Platform Engineer",
+        applicationLink: "https://himalayas.app/jobs/acme-platform/apply",
+        location: "Worldwide",
+        salary: "$120k - $150k",
+      }),
+    ]);
+  });
+
+  it("maps HN Who is Hiring top-level comments from Algolia APIs", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("search_by_date")) {
+        return Promise.resolve(
+          createJsonResponse({
+            hits: [
+              {
+                objectID: "123",
+                title: "Ask HN: Who is hiring? (May 2026)",
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.resolve(
+        createJsonResponse({
+          id: 123,
+          children: [
+            {
+              id: 456,
+              author: "founder",
+              created_at: "2026-05-01T00:00:00.000Z",
+              text: "Acme | Backend Engineer | Remote<br/>We are hiring TypeScript engineers.",
+            },
+            { id: 457, author: "reply", text: "thanks" },
+          ],
+        }),
+      );
+    });
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["hnhiring"],
+      searchTerms: ["backend engineer"],
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        source: "hnhiring",
+        sourceJobId: "456",
+        employer: "Acme",
+        title: "Backend Engineer",
+        jobUrl: "https://news.ycombinator.com/item?id=456",
+      }),
+    ]);
+  });
+
+  it("skips USAJOBS without credentials and maps federal jobs with opt-in credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      createJsonResponse({
+        SearchResult: {
+          SearchResultItems: [
+            {
+              MatchedObjectDescriptor: {
+                PositionID: "usa-1",
+                PositionTitle: "Software Engineer",
+                OrganizationName: "NASA",
+                PositionURI: "https://www.usajobs.gov/job/usa-1",
+                ApplyURI: "https://www.usajobs.gov/job/usa-1/apply",
+                PublicationStartDate: "2026-05-02",
+                PositionLocation: [{ LocationName: "Remote" }],
+                UserArea: {
+                  Details: { JobSummary: "Build federal platforms" },
+                },
+                PositionRemuneration: [
+                  { MinimumRange: 100000, MaximumRange: 150000 },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await expect(
+      runRemoteApiJobs({
+        selectedSources: ["usajobs"],
+        searchTerms: ["software engineer"],
+        fetchImpl: fetchMock,
+      }),
+    ).resolves.toMatchObject({ success: true, jobs: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["usajobs"],
+      searchTerms: ["software engineer"],
+      usajobsApiKey: "secret-key",
+      usajobsUserAgent: "dev@example.com",
+      fetchImpl: fetchMock,
+    });
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://data.usajobs.gov/api/Search?Keyword=software+engineer&ResultsPerPage=100",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Host: "data.usajobs.gov",
+          "User-Agent": "dev@example.com",
+          "Authorization-Key": "secret-key",
+        }),
+      }),
+    );
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        source: "usajobs",
+        sourceJobId: "usa-1",
+        employer: "NASA",
+        salary: "USD100000 - USD150000",
+      }),
+    ]);
+  });
 });

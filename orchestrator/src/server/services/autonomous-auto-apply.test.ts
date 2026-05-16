@@ -50,6 +50,7 @@ vi.mock("./pdf-fingerprint", () => ({
 
 import {
   classifyAutonomousAutoApply,
+  createAutonomousAutoApplyService,
   drainAutonomousAutoApplyQueue,
   enqueueAutonomousAutoApplyForJob,
   enqueueAutonomousAutoApplyForReadyJobs,
@@ -91,12 +92,15 @@ describe("autonomous auto-apply", () => {
   afterEach(() => {
     delete process.env.JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED;
     delete process.env.JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED;
+    delete process.env.JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START;
+    vi.useRealTimers();
   });
 
   it("is disabled and dry-run by default", () => {
     expect(getAutonomousAutoApplyConfigFromEnv({})).toMatchObject({
       queueEnabled: false,
       emailApplyEnabled: false,
+      runOnStart: false,
     });
   });
 
@@ -183,7 +187,10 @@ describe("autonomous auto-apply", () => {
     );
     expect(mocks.updateJob).toHaveBeenCalledWith(
       "job-1",
-      expect.objectContaining({ status: "applied", appliedAt: expect.any(String) }),
+      expect.objectContaining({
+        status: "applied",
+        appliedAt: expect.any(String),
+      }),
     );
     expect(mocks.transitionStage).toHaveBeenCalled();
     expect(mocks.acknowledge).toHaveBeenCalledWith("queue-job-1");
@@ -250,5 +257,97 @@ describe("autonomous auto-apply", () => {
     );
     expect(result).toEqual({ enqueued: 0, reviewOnly: 2, skipped: 0 });
     expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("runs a safe scanner pass on start only when explicitly configured", async () => {
+    vi.useFakeTimers();
+    mocks.getAllJobs.mockResolvedValue([
+      createJob({
+        id: "job-start",
+        status: "ready",
+        applicationLink: "mailto:jobs@example.com",
+      }),
+    ]);
+    const service = createAutonomousAutoApplyService(
+      getAutonomousAutoApplyConfigFromEnv({
+        JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED: "true",
+        JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START: "true",
+        JOBOPS_AUTONOMOUS_AUTO_APPLY_INTERVAL_MS: "10000",
+      }),
+    );
+
+    service.start();
+    expect(service.isRunning()).toBe(true);
+    for (let i = 0; i < 10 && mocks.enqueue.mock.calls.length === 0; i += 1) {
+      await Promise.resolve();
+    }
+    expect(mocks.getAllJobs).toHaveBeenCalled();
+    expect(mocks.enqueue).toHaveBeenCalledWith(
+      "autonomous_auto_apply",
+      expect.objectContaining({ jobId: "job-start", mode: "dry_run" }),
+      expect.any(Object),
+    );
+    service.stop();
+  });
+
+  it("does not overlap scanner requests", async () => {
+    let resolveScan: ((value: unknown[]) => void) | undefined;
+    mocks.getAllJobs.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveScan = resolve;
+        }),
+    );
+    const service = createAutonomousAutoApplyService(
+      getAutonomousAutoApplyConfigFromEnv({
+        JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED: "true",
+      }),
+    );
+
+    const first = service.requestScan("manual");
+    await Promise.resolve();
+
+    await expect(service.requestScan("manual")).resolves.toBe("in_flight");
+    resolveScan?.([]);
+    await expect(first).resolves.toBe("started");
+    expect(mocks.getAllJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it("prioritizes newest READY jobs by readyAt then discoveredAt", async () => {
+    mocks.getAllJobs.mockResolvedValue([
+      createJob({
+        id: "old-ready",
+        status: "ready",
+        applicationLink: "mailto:jobs@example.com",
+        readyAt: "2026-05-01T00:00:00.000Z",
+        discoveredAt: "2026-05-01T00:00:00.000Z",
+      }),
+      createJob({
+        id: "new-ready",
+        status: "ready",
+        applicationLink: "mailto:jobs@example.com",
+        readyAt: "2026-05-03T00:00:00.000Z",
+        discoveredAt: "2026-05-03T00:00:00.000Z",
+      }),
+      createJob({
+        id: "new-discovered",
+        status: "ready",
+        applicationLink: "mailto:jobs@example.com",
+        readyAt: null,
+        discoveredAt: "2026-05-02T00:00:00.000Z",
+      }),
+    ]);
+
+    const result = await enqueueAutonomousAutoApplyForReadyJobs({
+      requestedBy: "system",
+      limit: 1,
+    });
+
+    expect(result).toEqual({ enqueued: 1, reviewOnly: 0, skipped: 0 });
+    expect(mocks.enqueue).toHaveBeenCalledWith(
+      "autonomous_auto_apply",
+      expect.objectContaining({ jobId: "new-ready" }),
+      expect.any(Object),
+    );
   });
 });

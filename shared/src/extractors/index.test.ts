@@ -33,12 +33,23 @@ describe("extractor source catalog", () => {
       "ashby",
       "smartrecruiters",
       "telegram",
+      "himalayas",
+      "hnhiring",
+      "usajobs",
     ] as const) {
       expect(isExtractorSourceId(source)).toBe(true);
       expect(EXTRACTOR_SOURCE_METADATA[source]).toMatchObject({
         category: "pipeline",
       });
     }
+  });
+
+  it("marks USAJOBS as credential-backed", () => {
+    expect(EXTRACTOR_SOURCE_METADATA.usajobs).toMatchObject({
+      label: "USAJOBS",
+      category: "pipeline",
+      requiresCredentials: true,
+    });
   });
 
   it("includes naukri as a pipeline source", () => {

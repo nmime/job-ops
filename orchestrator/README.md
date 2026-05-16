@@ -109,12 +109,16 @@ orchestrator/
    - Click "View Job" to open application
    - Download PDF and apply manually
    - Click "Mark Applied" to mark application status
-   - Optional self-hosted automation can queue READY email candidates in dry-run mode; set `JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED=true` plus SMTP settings only if you explicitly want real email sending. Portal/CAPTCHA applications remain manual. CAPTCHA solver settings are unified for server-known extractor challenges only; portal/application CAPTCHA flows remain human-review.
+   - Optional self-hosted automation can queue READY email candidates in dry-run mode with no-overlap scans and newest-ready-first ordering; set `JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START=true` only if you want an immediate startup scan, and set `JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED=true` plus SMTP settings only if you explicitly want real email sending. Portal/CAPTCHA applications remain manual. CAPTCHA solver settings are unified for server-known extractor challenges only; portal/application CAPTCHA flows remain human-review.
 
 3. **Track responses (optional):**
    - Connect Gmail in Tracking Inbox settings
    - Automatic email monitoring for interview invites, offers, rejections
    - Review and approve/ignore matched emails in the Inbox
+
+## Optional public feed settings
+
+Remote API discovery includes safe/public feeds such as Himalayas and HN Who is Hiring. USAJOBS is skipped non-fatally unless `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT` (email/user-agent) are configured.
 
 ## n8n Setup
 

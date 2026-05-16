@@ -115,6 +115,30 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
       jobspyResultsWanted: "1",
     },
   },
+  himalayas: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      himalayasPages: "1",
+      jobspyResultsWanted: "1",
+    },
+  },
+  hnhiring: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "worldwide",
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
+  usajobs: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "united states",
+    settings: {
+      // Credentials are intentionally absent for public/demo health checks;
+      // remoteapis treats missing USAJOBS credentials as a non-fatal empty result.
+      jobspyResultsWanted: "1",
+    },
+  },
   gradcracker: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,

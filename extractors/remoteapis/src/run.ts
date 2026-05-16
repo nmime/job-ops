@@ -20,6 +20,9 @@ export const REMOTE_API_SOURCES = [
   "ashby",
   "smartrecruiters",
   "telegram",
+  "himalayas",
+  "hnhiring",
+  "usajobs",
 ] as const;
 
 export type RemoteApiSource = (typeof REMOTE_API_SOURCES)[number];
@@ -59,6 +62,9 @@ export interface RunRemoteApiJobsOptions {
   ashbyJobBoardNames?: string[];
   smartrecruitersCompanies?: string[];
   telegramChannels?: string[];
+  himalayasPages?: number;
+  usajobsApiKey?: string;
+  usajobsUserAgent?: string;
 }
 
 export interface RemoteApiJobsResult {
@@ -301,11 +307,13 @@ async function fetchJson(args: {
   fetchImpl: typeof fetch;
   url: string;
   source: RemoteApiSource;
+  headers?: Record<string, string>;
 }): Promise<unknown> {
   const response = await args.fetchImpl(args.url, {
     headers: {
       accept: "application/json, text/plain, */*",
       "user-agent": "job-ops/1.0 (+https://github.com/nmime/job-ops)",
+      ...args.headers,
     },
   });
 
@@ -537,7 +545,9 @@ function objectNames(value: unknown): string[] {
 
 function mapGreenhouseJob(job: RawJob): CreateJobInput | null {
   const location =
-    objectString(job.location, "name") || objectNames(job.offices).join(", ") || undefined;
+    objectString(job.location, "name") ||
+    objectNames(job.offices).join(", ") ||
+    undefined;
   const departments = objectNames(job.departments);
 
   return buildJob({
@@ -782,6 +792,194 @@ function mapTelegramJob(job: RawJob): CreateJobInput | null {
   });
 }
 
+function salaryFromHimalayas(job: RawJob): string | undefined {
+  const compensation = asObject(job.compensation) ?? asObject(job.salary);
+  return (
+    asString(job.salary) ??
+    asString(job.salaryRange) ??
+    asString(job.compensation) ??
+    asString(compensation?.range) ??
+    asString(compensation?.label) ??
+    asString(compensation?.summary)
+  );
+}
+
+function mapHimalayasJob(job: RawJob): CreateJobInput | null {
+  const guid = asString(job.guid) ?? asString(job.id) ?? asString(job.slug);
+  const locationParts = [
+    ...asStringArray(job.locationRestrictions),
+    ...asStringArray(job.locations),
+    asString(job.location),
+  ].filter((item): item is string => Boolean(item));
+
+  return buildJob({
+    source: "himalayas",
+    sourceJobId: guid,
+    title: asString(job.title),
+    employer:
+      asString(job.companyName) ??
+      objectString(job.company, "name") ??
+      asString(job.company),
+    jobUrl:
+      asString(job.applicationLink) ??
+      asString(job.url) ??
+      asString(job.link) ??
+      (guid?.startsWith("http") ? guid : undefined),
+    applicationLink:
+      asString(job.applicationLink) ??
+      asString(job.applyUrl) ??
+      asString(job.url) ??
+      asString(job.link),
+    location: locationParts.join(", ") || "Remote",
+    datePosted: asString(job.pubDate) ?? asString(job.publishedAt),
+    description: asString(job.description) ?? asString(job.excerpt),
+    jobFunction: asStringArray(job.categories).join(", ") || undefined,
+    skills: asStringArray(job.tags),
+    salary: salaryFromHimalayas(job),
+    salaryMinAmount:
+      asNumber(job.salaryMin) ?? asNumber(asObject(job.salary)?.min),
+    salaryMaxAmount:
+      asNumber(job.salaryMax) ?? asNumber(asObject(job.salary)?.max),
+    salaryCurrency:
+      asString(job.salaryCurrency) ?? asString(asObject(job.salary)?.currency),
+    companyLogo: asString(job.companyLogo) ?? objectString(job.company, "logo"),
+    companyUrl:
+      objectString(job.company, "website") ?? asString(job.companyUrl),
+  });
+}
+
+function extractFirstMeaningfulLine(
+  value: string | undefined,
+): string | undefined {
+  return stripHtml(value)
+    ?.split(/\r?\n|\s{2,}/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+}
+
+function parseHnHiringHeadline(firstLine: string | undefined): {
+  employer?: string;
+  role?: string;
+} {
+  if (!firstLine) return {};
+  const parts = firstLine
+    .split(/\s*(?:\||\u2013|\u2014)\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length >= 2) {
+    return { employer: parts[0], role: parts[1] };
+  }
+  const dashMatch = firstLine.match(/^(.{2,80}?)\s+-\s+(.{2,160})$/);
+  if (dashMatch) {
+    return { employer: dashMatch[1].trim(), role: dashMatch[2].trim() };
+  }
+  return { role: firstLine };
+}
+
+function isHnHiringComment(job: RawJob): boolean {
+  const text = normalizeText(asString(job.text) ?? "");
+  if (!text) return false;
+  if (
+    /\b(hiring|looking for|we are seeking|join us|role|roles|engineer|developer|designer|founder|remote|onsite|hybrid)\b/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function mapHnHiringJob(job: RawJob): CreateJobInput | null {
+  if (!isHnHiringComment(job)) return null;
+  const id = String(job.id ?? "") || undefined;
+  const text = asString(job.text);
+  const firstLine = extractFirstMeaningfulLine(text);
+  const headline = parseHnHiringHeadline(firstLine);
+  const employer = headline.employer ?? asString(job.author) ?? "HN Who is Hiring";
+  const role = headline.role ?? firstLine ?? "HN Who is Hiring posting";
+  const title = role.length > 140 ? `${role.slice(0, 137)}...` : role;
+  const url = id
+    ? `https://news.ycombinator.com/item?id=${encodeURIComponent(id)}`
+    : asString(job.url);
+
+  return buildJob({
+    source: "hnhiring",
+    sourceJobId: id,
+    title,
+    employer,
+    jobUrl: url,
+    applicationLink: url,
+    location: /\b(remote|worldwide)\b/i.test(stripHtml(text) ?? "")
+      ? "Remote"
+      : undefined,
+    datePosted: asDateString(job.created_at) ?? asDateString(job.createdAt),
+    description: text,
+    skills: [asString(job.author)].filter((item): item is string =>
+      Boolean(item),
+    ),
+  });
+}
+
+function mapUsaJobsJob(job: RawJob): CreateJobInput | null {
+  const descriptor = asObject(job.MatchedObjectDescriptor) ?? job;
+  const positionLocation = Array.isArray(descriptor.PositionLocation)
+    ? descriptor.PositionLocation
+    : [];
+  const location =
+    positionLocation
+      .map((item) => {
+        const object = asObject(item) ?? {};
+        return [asString(object.LocationName), asString(object.CountryCode)]
+          .filter(Boolean)
+          .join(", ");
+      })
+      .filter(Boolean)
+      .join("; ") || asString(descriptor.PositionLocationDisplay);
+  const remuneration = Array.isArray(descriptor.PositionRemuneration)
+    ? asObject(descriptor.PositionRemuneration[0])
+    : undefined;
+  const schedule = Array.isArray(descriptor.PositionSchedule)
+    ? asObject(descriptor.PositionSchedule[0])
+    : undefined;
+  const category = Array.isArray(descriptor.JobCategory)
+    ? asObject(descriptor.JobCategory[0])
+    : undefined;
+  const offeringType = Array.isArray(descriptor.PositionOfferingType)
+    ? asObject(descriptor.PositionOfferingType[0])
+    : undefined;
+
+  return buildJob({
+    source: "usajobs",
+    sourceJobId:
+      asString(descriptor.PositionID) ?? asString(descriptor.PositionURI),
+    title: asString(descriptor.PositionTitle),
+    employer:
+      asString(descriptor.OrganizationName) ??
+      asString(descriptor.DepartmentName),
+    jobUrl: asString(descriptor.PositionURI),
+    applicationLink:
+      asString(descriptor.ApplyURI) ?? asString(descriptor.PositionURI),
+    location: location || "United States",
+    datePosted: asString(descriptor.PublicationStartDate),
+    description:
+      asString(descriptor.UserArea) ??
+      asString(asObject(descriptor.UserArea)?.Details) ??
+      asString(asObject(asObject(descriptor.UserArea)?.Details)?.JobSummary),
+    jobType: asString(schedule?.Name),
+    jobFunction: asString(category?.Name),
+    salaryMinAmount: asNumber(remuneration?.MinimumRange),
+    salaryMaxAmount: asNumber(remuneration?.MaximumRange),
+    salaryCurrency: "USD",
+    jobLevel: asString(offeringType?.Name),
+  });
+}
+
+function hnChildren(value: unknown): RawJob[] {
+  const object = asObject(value);
+  const children = Array.isArray(object?.children) ? object.children : [];
+  return children.filter((item): item is RawJob => Boolean(asObject(item)));
+}
+
 async function fetchJsonLists(args: {
   fetchImpl: typeof fetch;
   source: RemoteApiSource;
@@ -961,6 +1159,96 @@ async function fetchSourceJobs(args: {
       });
       return { source: args.source, jobs };
     }
+    case "himalayas": {
+      const pages = Math.min(
+        10,
+        toPositiveIntOrFallback(args.options.himalayasPages, 2),
+      );
+      const jobs: RawJob[] = [];
+      for (let page = 0; page < pages; page += 1) {
+        const payload = await fetchJson({
+          fetchImpl: args.fetchImpl,
+          source: args.source,
+          url: `https://himalayas.app/jobs/api?limit=20&offset=${page * 20}`,
+        });
+        if (Array.isArray(payload)) {
+          jobs.push(...(payload as RawJob[]));
+        } else if (payload && typeof payload === "object") {
+          const object = payload as RawJob;
+          const pageJobs = Array.isArray(object.jobs)
+            ? object.jobs
+            : Array.isArray(object.data)
+              ? object.data
+              : [];
+          jobs.push(...(pageJobs as RawJob[]));
+        }
+      }
+      return { source: args.source, jobs };
+    }
+    case "hnhiring": {
+      const searchPayload = await fetchJson({
+        fetchImpl: args.fetchImpl,
+        source: args.source,
+        url: "https://hn.algolia.com/api/v1/search_by_date?tags=story&query=Ask%20HN%3A%20Who%20is%20hiring%3F",
+      });
+      const hits =
+        searchPayload &&
+        typeof searchPayload === "object" &&
+        Array.isArray((searchPayload as RawJob).hits)
+          ? ((searchPayload as RawJob).hits as RawJob[])
+          : [];
+      const latest = hits.find((hit) =>
+        normalizeText(asString(hit.title) ?? "").includes(
+          "ask hn who is hiring",
+        ),
+      );
+      const storyId = asString(latest?.objectID) ?? String(latest?.id ?? "");
+      if (!storyId) return { source: args.source, jobs: [] };
+      const itemPayload = await fetchJson({
+        fetchImpl: args.fetchImpl,
+        source: args.source,
+        url: `https://hn.algolia.com/api/v1/items/${encodeURIComponent(storyId)}`,
+      });
+      return { source: args.source, jobs: hnChildren(itemPayload) };
+    }
+    case "usajobs": {
+      const apiKey = args.options.usajobsApiKey?.trim();
+      const userAgent = args.options.usajobsUserAgent?.trim();
+      if (!apiKey || !userAgent) return { source: args.source, jobs: [] };
+      const jobs: RawJob[] = [];
+      for (const term of args.options.searchTerms?.length
+        ? args.options.searchTerms
+        : ["software engineer"]) {
+        const params = new URLSearchParams({
+          Keyword: term,
+          ResultsPerPage: String(Math.max(args.maxJobsPerTerm * 2, 25)),
+        });
+        if (args.options.locations?.[0]) {
+          params.set("LocationName", args.options.locations[0]);
+        }
+        const payload = await fetchJson({
+          fetchImpl: args.fetchImpl,
+          source: args.source,
+          url: `https://data.usajobs.gov/api/Search?${params.toString()}`,
+          headers: {
+            Host: "data.usajobs.gov",
+            "User-Agent": userAgent,
+            "Authorization-Key": apiKey,
+          },
+        });
+        const items =
+          payload &&
+          typeof payload === "object" &&
+          Array.isArray(
+            asObject((payload as RawJob).SearchResult)?.SearchResultItems,
+          )
+            ? (asObject((payload as RawJob).SearchResult)
+                ?.SearchResultItems as RawJob[])
+            : [];
+        jobs.push(...items);
+      }
+      return { source: args.source, jobs };
+    }
     case "telegram": {
       const jobs: RawJob[] = [];
       for (const channel of telegramChannels(args.options.telegramChannels)) {
@@ -1007,6 +1295,12 @@ function mapSourceJob(
       return mapSmartRecruitersJob(job);
     case "telegram":
       return mapTelegramJob(job);
+    case "himalayas":
+      return mapHimalayasJob(job);
+    case "hnhiring":
+      return mapHnHiringJob(job);
+    case "usajobs":
+      return mapUsaJobsJob(job);
   }
 }
 

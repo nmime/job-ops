@@ -37,6 +37,9 @@ describe("remoteapis manifest", () => {
         ashbyJobBoardNames: "ashbyco",
         smartrecruitersCompanies: "smartco",
         telegramChannels: "@nodejsjobsfeed, https://t.me/s/devjobs",
+        himalayasPages: "3",
+        usajobsApiKey: "test-usajobs-key",
+        usajobsUserAgent: "dev@example.com",
       },
       searchTerms: ["backend engineer"],
       selectedCountry: "germany",
@@ -56,6 +59,9 @@ describe("remoteapis manifest", () => {
         ashbyJobBoardNames: ["ashbyco"],
         smartrecruitersCompanies: ["smartco"],
         telegramChannels: ["@nodejsjobsfeed", "https://t.me/s/devjobs"],
+        himalayasPages: 3,
+        usajobsApiKey: "test-usajobs-key",
+        usajobsUserAgent: "dev@example.com",
       }),
     );
   });

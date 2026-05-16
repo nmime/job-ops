@@ -12,6 +12,9 @@ export const EXTRACTOR_SOURCE_IDS = [
   "ashby",
   "smartrecruiters",
   "telegram",
+  "himalayas",
+  "hnhiring",
+  "usajobs",
   "workingnomads",
   "hiringcafe",
   "startupjobs",
@@ -61,6 +64,18 @@ export const EXTRACTOR_SOURCE_METADATA: Record<
     category: "pipeline",
   },
   telegram: { label: "Telegram", order: 60, category: "pipeline" },
+  himalayas: { label: "Himalayas", order: 61, category: "pipeline" },
+  hnhiring: {
+    label: "HN Who is Hiring",
+    order: 62,
+    category: "pipeline",
+  },
+  usajobs: {
+    label: "USAJOBS",
+    order: 63,
+    category: "pipeline",
+    requiresCredentials: true,
+  },
   workingnomads: {
     label: "Working Nomads",
     order: 65,
