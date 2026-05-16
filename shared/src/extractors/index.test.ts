@@ -26,6 +26,21 @@ describe("extractor source catalog", () => {
     }
   });
 
+  it("includes public API and Telegram sources as pipeline sources", () => {
+    for (const source of [
+      "greenhouse",
+      "lever",
+      "ashby",
+      "smartrecruiters",
+      "telegram",
+    ] as const) {
+      expect(isExtractorSourceId(source)).toBe(true);
+      expect(EXTRACTOR_SOURCE_METADATA[source]).toMatchObject({
+        category: "pipeline",
+      });
+    }
+  });
+
   it("includes naukri as a pipeline source", () => {
     expect(isExtractorSourceId("naukri")).toBe(true);
     expect(EXTRACTOR_SOURCE_METADATA.naukri).toMatchObject({

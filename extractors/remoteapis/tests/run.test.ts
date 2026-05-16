@@ -143,4 +143,149 @@ describe("runRemoteApiJobs", () => {
       }),
     ]);
   });
+
+  it("maps configured public board API jobs", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("greenhouse.io")) {
+        return Promise.resolve(
+          createJsonResponse({
+            jobs: [
+              {
+                id: 101,
+                title: "Backend Engineer",
+                company_name: "Green Co",
+                absolute_url: "https://boards.greenhouse.io/green/jobs/101",
+                location: { name: "Remote - US" },
+                content: "Build backend services",
+                departments: [{ name: "Engineering" }],
+              },
+            ],
+          }),
+        );
+      }
+
+      if (url.includes("api.lever.co")) {
+        return Promise.resolve(
+          createJsonResponse([
+            {
+              id: "lever-1",
+              text: "Backend Engineer",
+              hostedUrl: "https://jobs.lever.co/acme/lever-1",
+              applyUrl: "https://jobs.lever.co/acme/lever-1/apply",
+              categories: {
+                location: "Remote",
+                team: "Engineering",
+                commitment: "Full-time",
+              },
+              descriptionPlain: "Backend APIs",
+            },
+          ]),
+        );
+      }
+
+      if (url.includes("ashbyhq.com")) {
+        return Promise.resolve(
+          createJsonResponse({
+            jobs: [
+              {
+                id: "ashby-1",
+                title: "Backend Engineer",
+                jobUrl: "https://jobs.ashbyhq.com/acme/ashby-1",
+                location: "Remote",
+                department: "Engineering",
+                descriptionPlain: "Backend platform role",
+                compensation: { compensationTierSummary: "$100k - $140k" },
+              },
+            ],
+          }),
+        );
+      }
+
+      return Promise.resolve(
+        createJsonResponse({
+          content: [
+            {
+              id: "smart-1",
+              name: "Backend Engineer",
+              company: { name: "Smart Co" },
+              postingUrl: "https://jobs.smartrecruiters.com/acme/smart-1",
+              location: { city: "Remote" },
+              jobAd: { sections: { jobDescription: "Backend systems" } },
+            },
+          ],
+        }),
+      );
+    });
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["greenhouse", "lever", "ashby", "smartrecruiters"],
+      searchTerms: ["backend engineer"],
+      greenhouseBoardTokens: ["green"],
+      leverSites: ["acme"],
+      ashbyJobBoardNames: ["acme"],
+      smartrecruitersCompanies: ["acme"],
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.jobs.map((job) => job.source)).toEqual([
+      "greenhouse",
+      "lever",
+      "ashby",
+      "smartrecruiters",
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://boards-api.greenhouse.io/v1/boards/green/jobs",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.lever.co/v0/postings/acme?mode=json",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.ashbyhq.com/posting-api/job-board/acme?includeCompensation=true",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.smartrecruiters.com/v1/companies/acme/postings?limit=100",
+      expect.any(Object),
+    );
+  });
+
+  it("scrapes Telegram public channel HTML and filters by search term", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      createTextResponse(`
+        <section>
+          <div class="tgme_widget_message" data-post="nodejsjobsfeed/42">
+            <div class="tgme_widget_message_text">
+              Node.js Backend Engineer<br/>Remote friendly<br/>
+              <a href="https://example.com/apply">Apply now</a>
+            </div>
+            <a class="tgme_widget_message_date" href="https://t.me/nodejsjobsfeed/42"></a>
+          </div>
+        </section>
+      `),
+    );
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["telegram"],
+      searchTerms: ["node backend"],
+      fetchImpl: fetchMock,
+    });
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://t.me/s/nodejsjobsfeed",
+      expect.any(Object),
+    );
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        source: "telegram",
+        employer: "nodejsjobsfeed",
+        applicationLink: "https://example.com/apply",
+        sourceJobId: "nodejsjobsfeed/42",
+      }),
+    ]);
+  });
+
 });

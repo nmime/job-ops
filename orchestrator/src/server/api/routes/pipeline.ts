@@ -27,17 +27,15 @@ import {
   subscribeToProgress,
 } from "@server/pipeline/index";
 import * as pipelineRepo from "@server/repositories/pipeline";
-import * as settingsRepo from "@server/repositories/settings";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
 import {
   buildChallengeViewerUrl,
   createChallengeViewerSession,
   ensureChallengeViewer,
 } from "@server/services/challenge-viewer";
+import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import { simulatePipelineRun } from "@server/services/demo-simulator";
-import { getOriginalEnvValue } from "@server/services/envSettings";
 import { PIPELINE_EXTRACTOR_SOURCE_IDS } from "@shared/extractors";
-import { settingsRegistry } from "@shared/settings-registry";
 import {
   createLocationIntent,
   planLocationSources,
@@ -441,29 +439,6 @@ const solveChallengeSchema = z.object({
   extractorId: z.string().min(1),
 });
 
-async function getPaidChallengeSolverOptions(): Promise<
-  | { provider: "2captcha"; apiKey: string }
-  | null
-> {
-  const settings = await settingsRepo.getAllSettings();
-  const provider =
-    settingsRegistry.captchaSolverProvider.parse(
-      settings.captchaSolverProvider ??
-        getOriginalEnvValue("CAPTCHA_SOLVER_PROVIDER"),
-    ) ?? settingsRegistry.captchaSolverProvider.default();
-  const enabled =
-    settingsRegistry.captchaSolverAutoSolveEnabled.parse(
-      settings.captchaSolverAutoSolveEnabled ??
-        getOriginalEnvValue("CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED"),
-    ) ?? settingsRegistry.captchaSolverAutoSolveEnabled.default();
-  const apiKey =
-    settings.captchaSolverApiKey ?? getOriginalEnvValue("CAPTCHA_SOLVER_API_KEY");
-
-  return enabled && provider === "2captcha" && apiKey
-    ? { provider, apiKey }
-    : null;
-}
-
 pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
   try {
     const body = solveChallengeSchema.parse(req.body);
@@ -493,29 +468,21 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
     // DATA_DIR rather than under extractor source directories.
     const storageDir = join(getDataDir(), "cloudflare-cookies");
 
-    const { solveChallenge } = await import("browser-utils");
-    const paidSolver = await getPaidChallengeSolverOptions();
-    if (paidSolver) {
-      logger.info("Using paid CAPTCHA solver", {
-        route: "/api/pipeline/solve-challenge",
-        extractorId: body.extractorId,
-        provider: paidSolver.provider,
-      });
-    }
-    let result = paidSolver
-      ? await solveChallenge(challengeUrl, body.extractorId, storageDir, undefined, {
-          paidCaptcha: paidSolver,
-          headless: true,
-          manualFallback: false,
-        })
-      : null;
+    const paidAttempt = await solveExtractorChallenge({
+      extractorId: body.extractorId,
+      url: challengeUrl,
+      storageDir,
+      logContext: { route: "/api/pipeline/solve-challenge" },
+    });
+    let result = paidAttempt.result;
 
+    const { solveChallenge } = await import("browser-utils");
     if (result?.status !== "solved") {
-      if (paidSolver) {
+      if (paidAttempt.attempted) {
         logger.info("Opening manual challenge viewer after paid solver result", {
           route: "/api/pipeline/solve-challenge",
           extractorId: body.extractorId,
-          provider: paidSolver.provider,
+          provider: paidAttempt.provider,
           status: result?.status ?? "not_attempted",
         });
       }

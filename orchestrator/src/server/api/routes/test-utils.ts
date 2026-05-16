@@ -150,6 +150,9 @@ const isolatedEnvKeys = [
   "UKVISAJOBS_PASSWORD",
   "ADZUNA_APP_ID",
   "ADZUNA_APP_KEY",
+  "CAPTCHA_SOLVER_PROVIDER",
+  "CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED",
+  "CAPTCHA_SOLVER_API_KEY",
 ] as const;
 
 const nativeFetch = globalThis.fetch;

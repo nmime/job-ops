@@ -109,6 +109,7 @@ orchestrator/
    - Click "View Job" to open application
    - Download PDF and apply manually
    - Click "Mark Applied" to mark application status
+   - Optional self-hosted automation can queue READY email candidates in dry-run mode; set `JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED=true` plus SMTP settings only if you explicitly want real email sending. Portal/CAPTCHA applications remain manual. CAPTCHA solver settings are unified for server-known extractor challenges only; portal/application CAPTCHA flows remain human-review.
 
 3. **Track responses (optional):**
    - Connect Gmail in Tracking Inbox settings

@@ -45,6 +45,43 @@ function parseSelectedSources(values: readonly string[]): RemoteApiSource[] {
   );
 }
 
+function parseListSetting(value: string | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean);
+    }
+  } catch {
+    // Fall through to comma/newline parsing.
+  }
+
+  return trimmed
+    .split(/[\n,]+/)
+    .map((item) => item.trim().replace(/^['"]|['"]$/g, ""))
+    .filter(Boolean);
+}
+
+function parseBooleanSetting(value: string | undefined): boolean {
+  return /^(1|true|yes|y|on)$/i.test(value?.trim() ?? "");
+}
+
+function firstSetting(
+  settings: Record<string, string | undefined>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = settings[key];
+    if (value?.trim()) return value;
+  }
+  return undefined;
+}
+
 export const manifest: ExtractorManifest = {
   id: "remoteapis",
   displayName: "Remote API Boards",
@@ -74,6 +111,27 @@ export const manifest: ExtractorManifest = {
         ? JSON.parse(context.settings.workplaceTypes)
         : undefined,
       maxJobsPerTerm,
+      // Source-specific public board settings accept JSON arrays, comma-separated,
+      // or newline-separated values. Supported keys:
+      // greenhouseBoardTokens/greenhouseBoards, leverSites, leverEuSites,
+      // leverUseEu, ashbyJobBoardNames/ashbyBoards,
+      // smartrecruitersCompanies, telegramChannels.
+      greenhouseBoardTokens: parseListSetting(
+        firstSetting(context.settings, [
+          "greenhouseBoardTokens",
+          "greenhouseBoards",
+        ]),
+      ),
+      leverSites: parseListSetting(context.settings.leverSites),
+      leverEuSites: parseListSetting(context.settings.leverEuSites),
+      leverUseEu: parseBooleanSetting(context.settings.leverUseEu),
+      ashbyJobBoardNames: parseListSetting(
+        firstSetting(context.settings, ["ashbyJobBoardNames", "ashbyBoards"]),
+      ),
+      smartrecruitersCompanies: parseListSetting(
+        context.settings.smartrecruitersCompanies,
+      ),
+      telegramChannels: parseListSetting(context.settings.telegramChannels),
       shouldCancel: context.shouldCancel,
       onProgress: (event) => {
         if (context.shouldCancel?.()) return;
