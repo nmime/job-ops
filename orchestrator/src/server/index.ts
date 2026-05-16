@@ -10,6 +10,8 @@ import { initializeExtractorRegistry } from "./extractors/registry";
 import { deleteExpiredOrRevokedAuthSessions } from "./repositories/auth-sessions";
 import * as settingsRepo from "./repositories/settings";
 import { initializeActivationAnalyticsSafely } from "./services/activation-funnel";
+import { startAutonomousAutoApplyService } from "./services/autonomous-auto-apply";
+import { startBackgroundDiscoveryService } from "./services/background-discovery";
 import {
   getBackupSettings,
   setBackupSettings,
@@ -147,6 +149,22 @@ async function startServer() {
       await initializeDemoModeServices();
     } catch (error) {
       logger.warn("Failed to initialize demo mode services", {
+        error: sanitizeUnknown(error),
+      });
+    }
+
+    try {
+      startBackgroundDiscoveryService();
+    } catch (error) {
+      logger.warn("Failed to initialize background discovery service", {
+        error: sanitizeUnknown(error),
+      });
+    }
+
+    try {
+      startAutonomousAutoApplyService();
+    } catch (error) {
+      logger.warn("Failed to initialize autonomous auto-apply service", {
         error: sanitizeUnknown(error),
       });
     }

@@ -31,7 +31,7 @@ Your ironman suit for job hunting. You still apply to every job yourself. JobOps
 
 JobOps searches LinkedIn, Indeed, Glassdoor and 10+ job boards from one screen, rewrites your CV for each role, scores your fit, checks visa sponsorship status, and tracks every application in one place.
 
-It does not auto-apply. Recruiters can tell when applications are automated and it gets you blacklisted. JobOps gives you the speed without sacrificing quality.
+By default it does not auto-apply: you stay in the loop and apply yourself. Self-hosters can opt into a guarded email-only auto-apply queue for READY jobs, but it is dry-run by default, requires explicit `JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED=true` plus SMTP settings to send real email, and never submits portal/CAPTCHA applications.
 
 <div align="center">
 
@@ -65,6 +65,8 @@ Open `http://localhost:3005` and follow the onboarding wizard. You'll be searchi
 | **Export** | Creates a polished PDF locally, or via [Reactive Resume](https://rxresu.me) |
 | **Track** | Connects to Gmail and auto-detects interviews, offers, and rejections |
 
+Optional background automation is available for self-hosters: `JOBOPS_BACKGROUND_DISCOVERY_ENABLED=true` periodically runs discovery, and `JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED=true` queues READY email-apply candidates. The auto-apply scanner uses no-overlap scans, newest-ready-first ordering, and can be explicitly run at startup with `JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START=true`. Real autonomous email sending remains off unless `JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED=true`; portal and CAPTCHA/challenge jobs stay human-in-loop. CAPTCHA solver settings are unified for server-known extractor challenges only; portal/application CAPTCHA flows remain human-review.
+
 ---
 
 ## Supported Job Boards
@@ -74,6 +76,9 @@ Open `http://localhost:3005` and follow the onboarding wizard. You'll be searchi
 | LinkedIn | Global |
 | Indeed | Global |
 | Glassdoor | Global |
+| Himalayas | Remote public API |
+| HN Who is Hiring | Public Hacker News/Algolia feed |
+| USAJOBS | US federal jobs API (API key required) |
 | Adzuna | Multi-country API |
 | Hiring Cafe | Global |
 | startup.jobs | Startup/remote roles |

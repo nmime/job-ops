@@ -1,4 +1,7 @@
-export const JOB_QUEUE_NAMES = ["auto_pdf_regeneration"] as const;
+export const JOB_QUEUE_NAMES = [
+  "auto_pdf_regeneration",
+  "autonomous_auto_apply",
+] as const;
 
 export type JobQueueName = (typeof JOB_QUEUE_NAMES)[number];
 
@@ -16,8 +19,17 @@ export interface AutoPdfRegenerationJobPayload {
   requestedBy: "system" | "user";
 }
 
+export interface AutonomousAutoApplyJobPayload {
+  tenantId: string;
+  jobId: string;
+  requestedAt: string;
+  requestedBy: "system" | "user";
+  mode: "dry_run" | "send_email";
+}
+
 export interface JobQueuePayloadByName {
   auto_pdf_regeneration: AutoPdfRegenerationJobPayload;
+  autonomous_auto_apply: AutonomousAutoApplyJobPayload;
 }
 
 export interface EnqueueJobOptions {
