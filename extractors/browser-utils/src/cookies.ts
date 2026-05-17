@@ -82,7 +82,7 @@ export async function saveCookies(
   let userAgent: string | undefined;
   const page = context.pages()[0];
   if (page) {
-    userAgent = await page.evaluate(() => navigator.userAgent);
+    userAgent = await page.evaluate<string>("navigator.userAgent");
   }
 
   const jar: PersistedCookieJar = {

@@ -174,21 +174,22 @@ function buildCoverLetter(job: Job, profile: ResumeProfile | null): string {
 }
 
 async function installStealth(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, "languages", {
-      get: () => ["en-US", "en"],
-    });
-    const originalQuery = window.navigator.permissions?.query;
-    if (originalQuery) {
-      window.navigator.permissions.query = (parameters) =>
-        parameters.name === "notifications"
-          ? Promise.resolve({
-              state: Notification.permission,
-            } as PermissionStatus)
-          : originalQuery.call(window.navigator.permissions, parameters);
-    }
+  await page.addInitScript({
+    content: `(() => {
+      Object.defineProperty(navigator, "webdriver", { get: function () { return undefined; } });
+      Object.defineProperty(navigator, "plugins", { get: function () { return [1, 2, 3, 4, 5]; } });
+      Object.defineProperty(navigator, "languages", {
+        get: function () { return ["en-US", "en"]; },
+      });
+      var originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+      if (originalQuery) {
+        window.navigator.permissions.query = function (parameters) {
+          return parameters.name === "notifications"
+            ? Promise.resolve({ state: Notification.permission })
+            : originalQuery.call(window.navigator.permissions, parameters);
+        };
+      }
+    })();`,
   });
 }
 
@@ -352,55 +353,54 @@ async function uploadResume(page: Page, job: Job): Promise<boolean> {
 }
 
 async function detectCaptcha(page: Page): Promise<CaptchaDetection> {
-  return await page.evaluate(() => {
-    const getSitekey = (selector: string) =>
-      document.querySelector<HTMLElement>(selector)?.dataset.sitekey?.trim() ||
-      "";
-    const pageUrl = window.location.href;
-    const turnstile = document.querySelector<HTMLElement>(
-      ".cf-turnstile,[name='cf-turnstile-response'],[data-sitekey][data-action]",
+  return await page.evaluate<CaptchaDetection>(`(() => {
+    function getSitekey(selector) {
+      var element = document.querySelector(selector);
+      return (element && element.dataset && element.dataset.sitekey && element.dataset.sitekey.trim()) || "";
+    }
+    var pageUrl = window.location.href;
+    var turnstile = document.querySelector(
+      ".cf-turnstile,[name='cf-turnstile-response'],[data-sitekey][data-action]"
     );
-    if (turnstile?.dataset.sitekey?.trim()) {
-      const turnstileKey = turnstile.dataset.sitekey.trim();
+    if (turnstile && turnstile.dataset && turnstile.dataset.sitekey && turnstile.dataset.sitekey.trim()) {
+      var turnstileKey = turnstile.dataset.sitekey.trim();
       return {
-        type: "turnstile" as const,
+        type: "turnstile",
         sitekey: turnstileKey,
-        pageUrl,
-        action: turnstile.dataset.action?.trim() || undefined,
+        pageUrl: pageUrl,
+        action: (turnstile.dataset.action && turnstile.dataset.action.trim()) || undefined,
         cData:
-          turnstile.dataset.cdata?.trim() ||
-          turnstile.getAttribute("data-cData")?.trim() ||
+          (turnstile.dataset.cdata && turnstile.dataset.cdata.trim()) ||
+          (turnstile.getAttribute("data-cData") && turnstile.getAttribute("data-cData").trim()) ||
           undefined,
       };
     }
-    const hcaptchaKey =
+    var hcaptchaElement = document.querySelector("[data-hcaptcha-sitekey]");
+    var hcaptchaKey =
       getSitekey(".h-captcha,[data-hcaptcha-sitekey]") ||
-      document
-        .querySelector<HTMLElement>("[data-hcaptcha-sitekey]")
-        ?.dataset.hcaptchaSitekey?.trim();
-    if (hcaptchaKey)
-      return { type: "hcaptcha" as const, sitekey: hcaptchaKey, pageUrl };
-    const recaptcha = document.querySelector<HTMLElement>(
-      ".g-recaptcha,[name='g-recaptcha-response'],[data-sitekey]",
+      (hcaptchaElement && hcaptchaElement.dataset && hcaptchaElement.dataset.hcaptchaSitekey && hcaptchaElement.dataset.hcaptchaSitekey.trim());
+    if (hcaptchaKey) return { type: "hcaptcha", sitekey: hcaptchaKey, pageUrl: pageUrl };
+    var recaptcha = document.querySelector(
+      ".g-recaptcha,[name='g-recaptcha-response'],[data-sitekey]"
     );
-    if (recaptcha?.dataset.sitekey?.trim()) {
-      const recaptchaKey = recaptcha.dataset.sitekey.trim();
+    if (recaptcha && recaptcha.dataset && recaptcha.dataset.sitekey && recaptcha.dataset.sitekey.trim()) {
+      var recaptchaKey = recaptcha.dataset.sitekey.trim();
       return {
-        type: "recaptcha-v2" as const,
+        type: "recaptcha-v2",
         sitekey: recaptchaKey,
-        pageUrl,
+        pageUrl: pageUrl,
         invisible: recaptcha.dataset.size === "invisible",
       };
     }
     if (
       document.querySelector(
-        'img[src*="captcha" i], img[alt*="captcha" i], input[name*="captcha" i]',
+        'img[src*="captcha" i], img[alt*="captcha" i], input[name*="captcha" i]'
       )
     ) {
-      return { type: "image" as const, pageUrl };
+      return { type: "image", pageUrl: pageUrl };
     }
-    return { type: null, pageUrl };
-  });
+    return { type: null, pageUrl: pageUrl };
+  })()`);
 }
 
 function captchaTaskFor(
@@ -495,70 +495,70 @@ async function injectCaptchaSolution(
   detection: CaptchaDetection,
   solution: string,
 ): Promise<void> {
-  await page.evaluate(
-    ({ type, token }) => {
-      if (type === "image") {
-        const input = document.querySelector<HTMLInputElement>(
-          'input[name*="captcha" i], input[id*="captcha" i]',
-        );
-        if (input) {
-          input.value = token;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          input.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        return;
+  const payload = JSON.stringify({ type: detection.type, token: solution });
+  await page.evaluate(`(() => {
+    var payload = ${payload};
+    var type = payload.type;
+    var token = payload.token;
+    if (type === "image") {
+      var input = document.querySelector('input[name*="captcha" i], input[id*="captcha" i]');
+      if (input) {
+        input.value = token;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
       }
+      return;
+    }
 
-      const names = [
-        "g-recaptcha-response",
-        "h-captcha-response",
-        "cf-turnstile-response",
-      ];
-      for (const name of names) {
-        let textarea = document.querySelector<HTMLTextAreaElement>(
-          `textarea[name="${name}"]`,
-        );
-        if (!textarea) {
-          textarea = document.createElement("textarea");
-          textarea.name = name;
-          textarea.style.display = "none";
-          document.body.appendChild(textarea);
-        }
-        textarea.value = token;
-        textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    var names = [
+      "g-recaptcha-response",
+      "h-captcha-response",
+      "cf-turnstile-response",
+    ];
+    for (var index = 0; index < names.length; index += 1) {
+      var name = names[index];
+      var textarea = document.querySelector('textarea[name="' + name + '"]');
+      if (!textarea) {
+        textarea = document.createElement("textarea");
+        textarea.name = name;
+        textarea.style.display = "none";
+        document.body.appendChild(textarea);
       }
+      textarea.value = token;
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new Event("change", { bubbles: true }));
+    }
 
-      const callbackName = document
-        .querySelector<HTMLElement>("[data-callback]")
-        ?.dataset.callback?.trim();
-      const callback = callbackName
-        ?.split(".")
-        .reduce<unknown>((target, key) => {
-          return target && typeof target === "object"
-            ? (target as Record<string, unknown>)[key]
-            : undefined;
-        }, window);
-      if (typeof callback === "function") callback(token);
-
-      const grecaptchaClients = (
-        window as unknown as {
-          ___grecaptcha_cfg?: { clients?: Record<string, unknown> };
+    var callbackElement = document.querySelector("[data-callback]");
+    var callbackName = callbackElement && callbackElement.dataset && callbackElement.dataset.callback && callbackElement.dataset.callback.trim();
+    var callback = undefined;
+    if (callbackName) {
+      var target = window;
+      var parts = callbackName.split(".");
+      for (var partIndex = 0; partIndex < parts.length; partIndex += 1) {
+        if (!target || typeof target !== "object") {
+          target = undefined;
+          break;
         }
-      ).___grecaptcha_cfg?.clients;
-      if (grecaptchaClients) {
-        for (const client of Object.values(grecaptchaClients)) {
-          for (const value of Object.values(
-            client as Record<string, unknown>,
-          )) {
-            const maybe = value as { callback?: unknown };
-            if (typeof maybe.callback === "function") maybe.callback(token);
-          }
+        target = target[parts[partIndex]];
+      }
+      callback = target;
+    }
+    if (typeof callback === "function") callback(token);
+
+    var cfg = window.___grecaptcha_cfg;
+    var grecaptchaClients = cfg && cfg.clients;
+    if (grecaptchaClients) {
+      var clients = Object.values(grecaptchaClients);
+      for (var clientIndex = 0; clientIndex < clients.length; clientIndex += 1) {
+        var values = Object.values(clients[clientIndex] || {});
+        for (var valueIndex = 0; valueIndex < values.length; valueIndex += 1) {
+          var maybe = values[valueIndex];
+          if (maybe && typeof maybe.callback === "function") maybe.callback(token);
         }
       }
-    },
-    { type: detection.type, token: solution },
-  );
+    }
+  })()`);
 }
 
 async function solveCaptchaIfPresent(
@@ -675,9 +675,9 @@ async function clickSubmit(page: Page): Promise<boolean> {
 
 async function hasSuccessSignal(page: Page): Promise<boolean> {
   return await page
-    .evaluate(() => {
-      const text = document.body.innerText.toLowerCase();
-      return [
+    .evaluate<boolean>(`(() => {
+      var text = document.body.innerText.toLowerCase();
+      var signals = [
         "application submitted",
         "application received",
         "thank you for applying",
@@ -685,23 +685,25 @@ async function hasSuccessSignal(page: Page): Promise<boolean> {
         "your application has been submitted",
         "we received your application",
         "successfully submitted",
-      ].some((signal) => text.includes(signal));
-    })
+      ];
+      return signals.some(function (signal) { return text.includes(signal); });
+    })()`)
     .catch(() => false);
 }
 
 async function hasBlockingErrorSignal(page: Page): Promise<boolean> {
   return await page
-    .evaluate(() => {
-      const text = document.body.innerText.toLowerCase();
-      return [
+    .evaluate<boolean>(`(() => {
+      var text = document.body.innerText.toLowerCase();
+      var signals = [
         "required",
         "invalid",
         "captcha",
         "verification failed",
         "please complete",
-      ].some((signal) => text.includes(signal));
-    })
+      ];
+      return signals.some(function (signal) { return text.includes(signal); });
+    })()`)
     .catch(() => false);
 }
 

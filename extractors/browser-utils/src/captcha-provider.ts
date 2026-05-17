@@ -85,22 +85,20 @@ export async function extractTurnstileChallenge(
   page: Page,
   pageUrl?: string,
 ): Promise<TurnstileChallengeData | null> {
-  const domData = await page.evaluate(() => {
-    const element = document.querySelector<HTMLElement>(
-      ".cf-turnstile,[data-sitekey]",
-    );
-    const sitekey = element?.dataset.sitekey?.trim();
+  const domData = await page.evaluate<TurnstileChallengeData | null>(`(() => {
+    var element = document.querySelector(".cf-turnstile,[data-sitekey]");
+    var sitekey = element && element.dataset && element.dataset.sitekey && element.dataset.sitekey.trim();
     if (!element || !sitekey) return null;
     return {
-      sitekey,
+      sitekey: sitekey,
       pageUrl: window.location.href,
-      action: element.dataset.action?.trim() || undefined,
+      action: (element.dataset.action && element.dataset.action.trim()) || undefined,
       cData:
-        element.dataset.cdata?.trim() ||
-        element.getAttribute("data-cData")?.trim() ||
+        (element.dataset.cdata && element.dataset.cdata.trim()) ||
+        (element.getAttribute("data-cData") && element.getAttribute("data-cData").trim()) ||
         undefined,
     };
-  });
+  })()`);
 
   if (domData) {
     return { ...domData, pageUrl: pageUrl || domData.pageUrl };
@@ -166,15 +164,17 @@ async function get2CaptchaTaskToken(
 }
 
 async function injectTurnstileToken(page: Page, token: string): Promise<void> {
-  await page.evaluate((captchaToken) => {
-    for (const name of [
+  const payload = JSON.stringify({ token });
+  await page.evaluate(`(() => {
+    var captchaToken = (${payload}).token;
+    var names = [
       "cf-turnstile-response",
       "g-recaptcha-response",
       "h-captcha-response",
-    ]) {
-      let textarea = document.querySelector<HTMLTextAreaElement>(
-        `textarea[name="${name}"]`,
-      );
+    ];
+    for (var index = 0; index < names.length; index += 1) {
+      var name = names[index];
+      var textarea = document.querySelector('textarea[name="' + name + '"]');
       if (!textarea) {
         textarea = document.createElement("textarea");
         textarea.name = name;
@@ -186,21 +186,28 @@ async function injectTurnstileToken(page: Page, token: string): Promise<void> {
       textarea.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
-    const callbackName = document
-      .querySelector<HTMLElement>("[data-callback]")
-      ?.dataset.callback?.trim();
-    const callback = callbackName?.split(".").reduce<unknown>((target, key) => {
-      return target && typeof target === "object"
-        ? (target as Record<string, unknown>)[key]
-        : undefined;
-    }, window);
+    var callbackElement = document.querySelector("[data-callback]");
+    var callbackName = callbackElement && callbackElement.dataset && callbackElement.dataset.callback && callbackElement.dataset.callback.trim();
+    var callback = undefined;
+    if (callbackName) {
+      var target = window;
+      var parts = callbackName.split(".");
+      for (var partIndex = 0; partIndex < parts.length; partIndex += 1) {
+        if (!target || typeof target !== "object") {
+          target = undefined;
+          break;
+        }
+        target = target[parts[partIndex]];
+      }
+      callback = target;
+    }
 
     if (typeof callback === "function") {
       callback(captchaToken);
       return;
     }
 
-    const form = document.forms.length === 1 ? document.forms[0] : null;
-    form?.requestSubmit();
-  }, token);
+    var form = document.forms.length === 1 ? document.forms[0] : null;
+    if (form) form.requestSubmit();
+  })()`);
 }
