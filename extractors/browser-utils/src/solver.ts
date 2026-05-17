@@ -1,5 +1,8 @@
 import type { BrowserContext } from "playwright";
-import { solvePaidCaptcha, type PaidCaptchaSolverOptions } from "./captcha-provider.js";
+import {
+  type PaidCaptchaSolverOptions,
+  solvePaidCaptcha,
+} from "./captcha-provider.js";
 import { isChallengePage } from "./challenge.js";
 import { saveCookies } from "./cookies.js";
 import { createLaunchOptions } from "./launch.js";

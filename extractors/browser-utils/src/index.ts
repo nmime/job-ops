@@ -11,19 +11,19 @@
  */
 
 export {
+  extractTurnstileChallenge,
+  type PaidCaptchaProvider,
+  type PaidCaptchaResult,
+  type PaidCaptchaSolverOptions,
+  solvePaidCaptcha,
+} from "./captcha-provider.js";
+export {
   type ChallengeResult,
   isChallengePage,
   isChallengeResponse,
   navigateWithChallenge,
   waitForChallengeResolution,
 } from "./challenge.js";
-export {
-  type PaidCaptchaProvider,
-  type PaidCaptchaResult,
-  type PaidCaptchaSolverOptions,
-  extractTurnstileChallenge,
-  solvePaidCaptcha,
-} from "./captcha-provider.js";
 export {
   type CookieJarInfo,
   getCloudflareCookieStorageDir,

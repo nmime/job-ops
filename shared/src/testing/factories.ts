@@ -173,6 +173,17 @@ export const createAppSettings = (
     default: false,
     override: null,
   },
+  jobopsFullAutoEnabled: { value: false, default: false, override: null },
+  jobopsFullAutoBrowserSubmitEnabled: {
+    value: false,
+    default: false,
+    override: null,
+  },
+  jobopsFullAutoCaptchaEnabled: {
+    value: false,
+    default: false,
+    override: null,
+  },
   rxresumeBaseResumeId: null,
   onboardingBasicAuthDecision: null,
   ukvisajobsMaxJobs: { value: 50, default: 50, override: null },

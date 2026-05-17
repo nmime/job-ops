@@ -202,7 +202,9 @@ const resolveAutoApplyRecipient = (
   const applicationLink = job.applicationLink?.trim();
   if (applicationLink?.toLowerCase().startsWith("mailto:")) {
     try {
-      return normalizeEmail(decodeURIComponent(new URL(applicationLink).pathname));
+      return normalizeEmail(
+        decodeURIComponent(new URL(applicationLink).pathname),
+      );
     } catch {
       return normalizeEmail(applicationLink);
     }
@@ -629,15 +631,15 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       ? "Only ready jobs can be auto-applied."
       : !hasTailoredSummary || !hasTailoredSkills
         ? "Complete tailored summary and skills before auto-applying."
-      : !selectedJob.pdfPath
-        ? "Generate or upload a resume PDF before auto-applying."
-        : isRegeneratingPdf
-          ? PDF_REGENERATING_MESSAGE
-          : isStalePdf
-            ? "Regenerate the stale resume PDF before auto-applying."
-            : !autoApplyRecipient
-              ? "Add an application email or mailto link before auto-applying."
-            : null;
+        : !selectedJob.pdfPath
+          ? "Generate or upload a resume PDF before auto-applying."
+          : isRegeneratingPdf
+            ? PDF_REGENERATING_MESSAGE
+            : isStalePdf
+              ? "Regenerate the stale resume PDF before auto-applying."
+              : !autoApplyRecipient
+                ? "Add an application email or mailto link before auto-applying."
+                : null;
   const autoApplyDisabled = primaryBusy || Boolean(autoApplyDisabledReason);
   const tone = statusTone[selectedJob.status];
   const openListingIsPrimary =

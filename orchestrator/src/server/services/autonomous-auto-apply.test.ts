@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getJobById: vi.fn(),
   updateJob: vi.fn(),
   sendAutoApplication: vi.fn(),
+  submitPortalApplication: vi.fn(),
   resolveAutoApplyRecipient: vi.fn(),
   transitionStage: vi.fn(),
   getJobPdfFreshness: vi.fn(),
@@ -38,6 +39,14 @@ vi.mock("./auto-apply", () => ({
   resolveAutoApplyRecipient: mocks.resolveAutoApplyRecipient,
   sendAutoApplication: mocks.sendAutoApplication,
 }));
+
+vi.mock("./application-browser", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./application-browser")>();
+  return {
+    ...actual,
+    submitPortalApplication: mocks.submitPortalApplication,
+  };
+});
 
 vi.mock("./applicationTracking", () => ({
   transitionStage: mocks.transitionStage,
@@ -79,6 +88,17 @@ describe("autonomous auto-apply", () => {
       messageId: "msg-1",
       attachedResume: true,
     });
+    mocks.submitPortalApplication.mockResolvedValue({
+      mode: "browser",
+      status: "submitted",
+      url: "https://example.com/apply",
+      finalUrl: "https://example.com/thanks",
+      submittedAt: "2026-05-04T10:00:00.000Z",
+      fieldsFilled: 5,
+      resumeUploaded: true,
+      submitClicked: true,
+      captcha: { attempted: false, solved: false, type: null, provider: null },
+    });
     mocks.resolveAutoApplyRecipient.mockImplementation((job) =>
       String(job.applicationLink ?? "").startsWith("mailto:") ||
       String(job.emails ?? "").includes("@") ||
@@ -93,6 +113,12 @@ describe("autonomous auto-apply", () => {
     delete process.env.JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED;
     delete process.env.JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED;
     delete process.env.JOBOPS_AUTONOMOUS_AUTO_APPLY_RUN_ON_START;
+    delete process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED;
+    delete process.env.JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED;
+    delete process.env.JOBOPS_FULL_AUTO_ENABLED;
+    delete process.env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED;
+    delete process.env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED;
     vi.useRealTimers();
   });
 
@@ -257,6 +283,78 @@ describe("autonomous auto-apply", () => {
     );
     expect(result).toEqual({ enqueued: 0, reviewOnly: 2, skipped: 0 });
     expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("explicit FULL_AUTO enqueues and submits portal jobs via browser", async () => {
+    process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    const portalJob = createJob({
+      id: "job-portal",
+      status: "ready",
+      applicationLink: "https://example.com/apply",
+      pdfPath: "data/pdfs/job-portal.pdf",
+      pdfSource: "uploaded",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        portalJob,
+        getAutonomousAutoApplyConfigFromEnv(process.env),
+      ).action,
+    ).toBe("portal_ready");
+
+    mocks.reserveNext
+      .mockResolvedValueOnce({
+        id: "queue-job-portal",
+        queue: "autonomous_auto_apply",
+        payload: {
+          tenantId: "tenant-test",
+          jobId: "job-portal",
+          requestedAt: "2026-05-04T10:00:00.000Z",
+          requestedBy: "system",
+          mode: "full_auto",
+        },
+        acceptedAt: "2026-05-04T10:00:00.000Z",
+      })
+      .mockResolvedValueOnce(null);
+    mocks.getJobById.mockResolvedValue(portalJob);
+
+    await drainAutonomousAutoApplyQueue();
+
+    expect(mocks.submitPortalApplication).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "job-portal" }),
+      { allowCaptcha: false },
+    );
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      "job-portal",
+      expect.objectContaining({ status: "applied" }),
+    );
+  });
+
+  it("FULL_AUTO CAPTCHA path requires the explicit CAPTCHA gate", async () => {
+    const captchaJob = createJob({
+      id: "job-captcha",
+      status: "ready",
+      applicationLink: "https://example.com/apply",
+      jobDescription: "Includes reCAPTCHA",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        captchaJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+        }),
+      ).action,
+    ).toBe("captcha_ready");
+    expect(
+      classifyAutonomousAutoApply(
+        captchaJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED: "false",
+        }),
+      ).action,
+    ).toBe("review_only_captcha");
   });
 
   it("runs a safe scanner pass on start only when explicitly configured", async () => {

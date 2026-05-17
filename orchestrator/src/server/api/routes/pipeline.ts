@@ -28,12 +28,12 @@ import {
 } from "@server/pipeline/index";
 import * as pipelineRepo from "@server/repositories/pipeline";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
+import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import {
   buildChallengeViewerUrl,
   createChallengeViewerSession,
   ensureChallengeViewer,
 } from "@server/services/challenge-viewer";
-import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import { simulatePipelineRun } from "@server/services/demo-simulator";
 import { PIPELINE_EXTRACTOR_SOURCE_IDS } from "@shared/extractors";
 import {
@@ -203,30 +203,32 @@ pipelineRouter.get(
 /**
  * POST /api/pipeline/run - Trigger the pipeline manually
  */
-const runPipelineSchema = z.object({
-  topN: z.number().min(1).max(50).optional(),
-  minSuitabilityScore: z.number().min(0).max(100).optional(),
-  sources: z
-    .array(
-      z.enum(
-        PIPELINE_EXTRACTOR_SOURCE_IDS as [
-          (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
-          ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
-        ],
-      ),
-    )
-    .min(1)
-    .optional(),
-  country: z.string().trim().optional(),
-  cityLocations: z.array(z.string().trim().min(1)).optional(),
-  workplaceTypes: z
-    .array(z.enum(WORKPLACE_TYPE_VALUES))
-    .min(1)
-    .max(3)
-    .optional(),
-  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
-  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
-}).strict();
+const runPipelineSchema = z
+  .object({
+    topN: z.number().min(1).max(50).optional(),
+    minSuitabilityScore: z.number().min(0).max(100).optional(),
+    sources: z
+      .array(
+        z.enum(
+          PIPELINE_EXTRACTOR_SOURCE_IDS as [
+            (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
+            ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
+          ],
+        ),
+      )
+      .min(1)
+      .optional(),
+    country: z.string().trim().optional(),
+    cityLocations: z.array(z.string().trim().min(1)).optional(),
+    workplaceTypes: z
+      .array(z.enum(WORKPLACE_TYPE_VALUES))
+      .min(1)
+      .max(3)
+      .optional(),
+    searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
+    matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
+  })
+  .strict();
 
 pipelineRouter.post("/run", async (req: Request, res: Response) => {
   try {
@@ -479,12 +481,15 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
     const { solveChallenge } = await import("browser-utils");
     if (result?.status !== "solved") {
       if (paidAttempt.attempted) {
-        logger.info("Opening manual challenge viewer after paid solver result", {
-          route: "/api/pipeline/solve-challenge",
-          extractorId: body.extractorId,
-          provider: paidAttempt.provider,
-          status: result?.status ?? "not_attempted",
-        });
+        logger.info(
+          "Opening manual challenge viewer after paid solver result",
+          {
+            route: "/api/pipeline/solve-challenge",
+            extractorId: body.extractorId,
+            provider: paidAttempt.provider,
+            status: result?.status ?? "not_attempted",
+          },
+        );
       }
       await ensureChallengeViewer();
       result = await solveChallenge(challengeUrl, body.extractorId, storageDir);

@@ -361,7 +361,9 @@ describe("JobDetailPanel", () => {
       within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
     ).toBeDisabled();
     expect(
-      screen.getByText("Add an application email or mailto link before auto-applying."),
+      screen.getByText(
+        "Add an application email or mailto link before auto-applying.",
+      ),
     ).toBeInTheDocument();
     fireEvent.click(
       within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),

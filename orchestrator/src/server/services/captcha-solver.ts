@@ -42,7 +42,8 @@ export async function getPaidChallengeSolverOptions(): Promise<PaidChallengeSolv
         getOriginalEnvValue("CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED"),
     ) ?? settingsRegistry.captchaSolverAutoSolveEnabled.default();
   const apiKey =
-    settings.captchaSolverApiKey ?? getOriginalEnvValue("CAPTCHA_SOLVER_API_KEY");
+    settings.captchaSolverApiKey ??
+    getOriginalEnvValue("CAPTCHA_SOLVER_API_KEY");
 
   return enabled && provider === "2captcha" && apiKey
     ? { provider, apiKey }

@@ -68,7 +68,8 @@ export async function processJobsStep(args: {
           }
           return result;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           processErrors.push({
             jobId: job.id,
             title: job.title,

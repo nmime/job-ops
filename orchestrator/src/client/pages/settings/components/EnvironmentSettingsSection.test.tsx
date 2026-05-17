@@ -42,8 +42,22 @@ const EnvironmentSettingsHarness = () => {
                 adzunaAppKeyHint: "adzu",
                 basicAuthPasswordHint: "abcd",
                 webhookSecretHint: "sec-",
+                captchaSolverApiKeyHint: null,
               },
               basicAuthActive: true,
+              fullAuto: {
+                enabled: { effective: false, default: false },
+                browserSubmitEnabled: { effective: false, default: false },
+                captchaEnabled: { effective: false, default: false },
+                captchaSolverAutoSolveEnabled: {
+                  effective: false,
+                  default: false,
+                },
+                captchaSolverProvider: {
+                  effective: "manual",
+                  default: "manual",
+                },
+              },
             }}
             isLoading={false}
             isSaving={false}

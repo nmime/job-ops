@@ -975,7 +975,9 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
                     </div>
                   </div>
                   <p className="mt-3 text-xs text-muted-foreground">
-                    Auto-apply stays in draft mode: selected jobs get tailored materials only; nothing is submitted without your confirmation.
+                    Auto-apply stays in draft mode: selected jobs get tailored
+                    materials only; nothing is submitted without your
+                    confirmation.
                   </p>
                 </AccordionContent>
               </AccordionItem>
@@ -987,7 +989,8 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
           <CardHeader className="pb-3">
             <CardTitle>CV-derived search terms</CardTitle>
             <CardDescription>
-              These terms are generated from your CV profile and can be edited before each run.
+              These terms are generated from your CV profile and can be edited
+              before each run.
             </CardDescription>
           </CardHeader>
           <CardContent>

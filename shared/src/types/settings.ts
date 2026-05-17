@@ -170,6 +170,9 @@ export interface AppSettings {
   pdfRenderer: Resolved<PdfRenderer>;
   captchaSolverProvider: Resolved<CaptchaSolverProvider>;
   captchaSolverAutoSolveEnabled: Resolved<boolean>;
+  jobopsFullAutoEnabled: Resolved<boolean>;
+  jobopsFullAutoBrowserSubmitEnabled: Resolved<boolean>;
+  jobopsFullAutoCaptchaEnabled: Resolved<boolean>;
   ukvisajobsMaxJobs: Resolved<number>;
   adzunaMaxJobsPerTerm: Resolved<number>;
   gradcrackerMaxJobsPerTerm: Resolved<number>;

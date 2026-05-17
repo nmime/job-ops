@@ -421,13 +421,10 @@ describe("design resume service", () => {
 
     const result = await importDesignResumeFromReactiveResume();
 
-    const defaultCss = (buildDefaultReactiveResumeDocument().metadata as Record<
-      string,
-      unknown
-    >).css;
-    expect(result.resumeJson.metadata.css).toEqual(
-      defaultCss,
-    );
+    const defaultCss = (
+      buildDefaultReactiveResumeDocument().metadata as Record<string, unknown>
+    ).css;
+    expect(result.resumeJson.metadata.css).toEqual(defaultCss);
   });
 
   it("rejects legacy local documents and requires re-import", async () => {

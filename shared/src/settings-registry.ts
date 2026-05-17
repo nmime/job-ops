@@ -295,6 +295,50 @@ export const settingsRegistry = {
     parse: parseBitBoolOrNull,
     serialize: serializeBitBool,
   },
+  jobopsFullAutoEnabled: {
+    kind: "typed" as const,
+    envKey: "JOBOPS_FULL_AUTO_APPLY_ENABLED",
+    schema: z.boolean(),
+    default: (): boolean =>
+      parseBitBoolOrNull(
+        typeof process !== "undefined"
+          ? (process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED ??
+              process.env.JOBOPS_FULL_AUTO_ENABLED ??
+              process.env.FULL_AUTO_ENABLED ??
+              process.env.FULL_AUTO)
+          : undefined,
+      ) ?? false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
+  jobopsFullAutoBrowserSubmitEnabled: {
+    kind: "typed" as const,
+    envKey: "JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED",
+    schema: z.boolean(),
+    default: (): boolean =>
+      parseBitBoolOrNull(
+        typeof process !== "undefined"
+          ? (process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED ??
+              process.env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED)
+          : undefined,
+      ) ?? false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
+  jobopsFullAutoCaptchaEnabled: {
+    kind: "typed" as const,
+    envKey: "JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED",
+    schema: z.boolean(),
+    default: (): boolean =>
+      parseBitBoolOrNull(
+        typeof process !== "undefined"
+          ? (process.env.JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED ??
+              process.env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED)
+          : undefined,
+      ) ?? false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
   ukvisajobsMaxJobs: {
     kind: "typed" as const,
     schema: z.number().int().min(1).max(1000),

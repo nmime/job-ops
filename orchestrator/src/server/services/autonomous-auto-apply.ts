@@ -1,12 +1,18 @@
 import { logger } from "@infra/logger";
 import { runWithRequestContext } from "@infra/request-context";
 import { sanitizeUnknown } from "@infra/sanitize";
-import { getJobQueue } from "@server/infra/job-queue-registry";
 import type { AutonomousAutoApplyJobPayload } from "@server/infra/job-queue";
+import { getJobQueue } from "@server/infra/job-queue-registry";
 import * as jobsRepo from "@server/repositories/jobs";
 import { DEFAULT_TENANT_ID } from "@server/tenancy/constants";
 import { getActiveTenantId } from "@server/tenancy/context";
 import type { Job } from "@shared/types";
+import {
+  isFullAutoBrowserSubmitEnabled,
+  isFullAutoCaptchaEnabled,
+  isFullAutoEnabled,
+  submitPortalApplication,
+} from "./application-browser";
 import { transitionStage } from "./applicationTracking";
 import { resolveAutoApplyRecipient, sendAutoApplication } from "./auto-apply";
 import {
@@ -21,6 +27,8 @@ const MIN_QUEUE_INTERVAL_MS = 10_000;
 
 export type AutonomousAutoApplyDecision =
   | { action: "email_ready"; recipient: string }
+  | { action: "portal_ready"; url: string }
+  | { action: "captcha_ready"; url: string; reason: string }
   | { action: "review_only_portal"; reason: string }
   | { action: "review_only_captcha"; reason: string }
   | { action: "not_ready"; reason: string };
@@ -28,6 +36,9 @@ export type AutonomousAutoApplyDecision =
 export type AutonomousAutoApplyConfig = {
   queueEnabled: boolean;
   emailApplyEnabled: boolean;
+  fullAutoEnabled: boolean;
+  browserSubmitEnabled: boolean;
+  captchaApplyEnabled: boolean;
   intervalMs: number;
   batchLimit: number;
   retryDelayMs: number;
@@ -62,6 +73,9 @@ export function getAutonomousAutoApplyConfigFromEnv(
   return {
     queueEnabled: parseBoolean(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_QUEUE_ENABLED),
     emailApplyEnabled: parseBoolean(env.JOBOPS_AUTONOMOUS_EMAIL_APPLY_ENABLED),
+    fullAutoEnabled: isFullAutoEnabled(env),
+    browserSubmitEnabled: isFullAutoBrowserSubmitEnabled(env),
+    captchaApplyEnabled: isFullAutoCaptchaEnabled(env),
     intervalMs: Math.max(
       MIN_QUEUE_INTERVAL_MS,
       parsePositiveInteger(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_INTERVAL_MS) ??
@@ -90,42 +104,65 @@ function containsCaptchaSignal(value: string | null | undefined): boolean {
 
 export function classifyAutonomousAutoApply(
   job: Job,
+  config: AutonomousAutoApplyConfig = getAutonomousAutoApplyConfigFromEnv(),
 ): AutonomousAutoApplyDecision {
   if (job.status !== "ready") {
     return { action: "not_ready", reason: "Job is not READY." };
   }
 
-  // Safety boundary: autonomous auto-apply never attempts portal/CAPTCHA
-  // submission or solver bypass. Extractor challenge solving is handled only by
-  // the pipeline CAPTCHA service for server-known discovery challenges.
-  if (
+  const applicationUrl =
+    cleanHttpUrl(job.applicationLink) ??
+    cleanHttpUrl(job.jobUrlDirect) ??
+    cleanHttpUrl(job.jobUrl);
+  const hasCaptchaSignal =
     containsCaptchaSignal(job.applicationLink) ||
     containsCaptchaSignal(job.jobUrl) ||
     containsCaptchaSignal(job.jobDescription) ||
-    containsCaptchaSignal(job.jobBrief)
-  ) {
+    containsCaptchaSignal(job.jobBrief);
+
+  if (hasCaptchaSignal) {
+    if (
+      config.browserSubmitEnabled &&
+      config.captchaApplyEnabled &&
+      applicationUrl
+    ) {
+      return {
+        action: "captcha_ready",
+        url: applicationUrl,
+        reason:
+          "CAPTCHA/challenge signal detected and explicit full-auto CAPTCHA submission is enabled.",
+      };
+    }
     return {
       action: "review_only_captcha",
-      reason: "CAPTCHA/challenge signal detected; human review is required.",
+      reason:
+        "CAPTCHA/challenge signal detected; set JOBOPS_FULL_AUTO_APPLY_ENABLED=true plus CAPTCHA solver envs to submit autonomously.",
     };
   }
 
   const recipient = resolveAutoApplyRecipient(job);
-  if (!recipient) {
-    return {
-      action: "review_only_portal",
-      reason:
-        "No application email found; portal applications stay human-in-loop.",
-    };
+  if (recipient) return { action: "email_ready", recipient };
+
+  if (applicationUrl && config.browserSubmitEnabled) {
+    return { action: "portal_ready", url: applicationUrl };
   }
 
-  return { action: "email_ready", recipient };
+  return {
+    action: "review_only_portal",
+    reason:
+      "No application email found; portal applications stay human-in-loop unless JOBOPS_FULL_AUTO_APPLY_ENABLED=true.",
+  };
+}
+
+function cleanHttpUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed && /^https?:\/\//i.test(trimmed) ? trimmed : null;
 }
 
 function getAutonomousMode(): AutonomousAutoApplyJobPayload["mode"] {
-  return getAutonomousAutoApplyConfigFromEnv().emailApplyEnabled
-    ? "send_email"
-    : "dry_run";
+  const config = getAutonomousAutoApplyConfigFromEnv();
+  if (config.browserSubmitEnabled) return "full_auto";
+  return config.emailApplyEnabled ? "send_email" : "dry_run";
 }
 
 async function hydratePdfFreshness(job: Job): Promise<Job> {
@@ -187,7 +224,11 @@ export async function enqueueAutonomousAutoApplyForReadyJobs(input: {
   for (const job of sortReadyJobsNewestFirst(jobs).slice(0, limit)) {
     const hydratedJob = await hydratePdfFreshness(job);
     const decision = classifyAutonomousAutoApply(hydratedJob);
-    if (decision.action === "email_ready") {
+    if (
+      decision.action === "email_ready" ||
+      decision.action === "portal_ready" ||
+      decision.action === "captcha_ready"
+    ) {
       await enqueueAutonomousAutoApplyForJob({
         jobId: job.id,
         requestedBy: input.requestedBy,
@@ -299,22 +340,18 @@ async function processQueuedAutonomousAutoApply(
       if (!job) return "processed";
 
       const hydratedJob = await hydratePdfFreshness(job);
-      const decision = classifyAutonomousAutoApply(hydratedJob);
-      if (decision.action !== "email_ready") {
+      const config = getAutonomousAutoApplyConfigFromEnv();
+      const decision = classifyAutonomousAutoApply(hydratedJob, config);
+      if (
+        decision.action !== "email_ready" &&
+        decision.action !== "portal_ready" &&
+        decision.action !== "captcha_ready"
+      ) {
         logger.info("Autonomous auto-apply skipped review-only job", {
           tenantId: input.tenantId,
           jobId: input.jobId,
           decision: decision.action,
           reason: decision.reason,
-        });
-        return "processed";
-      }
-
-      if (!getAutonomousAutoApplyConfigFromEnv().emailApplyEnabled) {
-        logger.info("Autonomous auto-apply dry run candidate", {
-          tenantId: input.tenantId,
-          jobId: input.jobId,
-          recipient: decision.recipient,
         });
         return "processed";
       }
@@ -326,18 +363,78 @@ async function processQueuedAutonomousAutoApply(
         return "retry_later";
       }
 
-      const autoApply = await sendAutoApplication(hydratedJob);
-      const appliedAtDate = new Date();
-      const appliedAt = appliedAtDate.toISOString();
+      if (decision.action === "email_ready") {
+        if (!config.emailApplyEnabled && !config.browserSubmitEnabled) {
+          logger.info("Autonomous auto-apply dry run email candidate", {
+            tenantId: input.tenantId,
+            jobId: input.jobId,
+            recipient: decision.recipient,
+          });
+          return "processed";
+        }
 
+        const autoApply = await sendAutoApplication(hydratedJob);
+        const appliedAtDate = new Date();
+        const appliedAt = appliedAtDate.toISOString();
+
+        transitionStage(
+          hydratedJob.id,
+          "applied",
+          Math.floor(appliedAtDate.getTime() / 1000),
+          {
+            eventLabel: "Autonomous email auto-apply",
+            actor: "system",
+            note: `Sent ${autoApply.mode} application to ${autoApply.recipient}`,
+          },
+          null,
+        );
+
+        await jobsRepo.updateJob(hydratedJob.id, {
+          status: "applied",
+          appliedAt,
+        });
+
+        return "processed";
+      }
+
+      if (!config.browserSubmitEnabled) {
+        logger.info("Autonomous full-auto browser candidate left as dry run", {
+          tenantId: input.tenantId,
+          jobId: input.jobId,
+          decision: decision.action,
+        });
+        return "processed";
+      }
+
+      const browserApply = await submitPortalApplication(hydratedJob, {
+        allowCaptcha:
+          decision.action === "captcha_ready" && config.captchaApplyEnabled,
+      });
+      if (browserApply.status !== "submitted") {
+        logger.warn("Autonomous full-auto browser application needs review", {
+          tenantId: input.tenantId,
+          jobId: input.jobId,
+          decision: decision.action,
+          reason: browserApply.reason ?? null,
+          captchaType: browserApply.captcha.type,
+          captchaAttempted: browserApply.captcha.attempted,
+          captchaSolved: browserApply.captcha.solved,
+          screenshotPath: browserApply.screenshotPath ?? null,
+        });
+        return "processed";
+      }
+
+      const appliedAtDate = new Date(browserApply.submittedAt ?? Date.now());
+      const appliedAt = appliedAtDate.toISOString();
       transitionStage(
         hydratedJob.id,
         "applied",
         Math.floor(appliedAtDate.getTime() / 1000),
         {
-          eventLabel: "Autonomous email auto-apply",
+          eventLabel: "Autonomous full-auto browser apply",
           actor: "system",
-          note: `Sent ${autoApply.mode} application to ${autoApply.recipient}`,
+          externalUrl: browserApply.finalUrl,
+          note: `Submitted portal application via browser automation; fields=${browserApply.fieldsFilled}; resumeUploaded=${browserApply.resumeUploaded}; captcha=${browserApply.captcha.type ?? "none"}/${browserApply.captcha.solved ? "solved" : "not-needed"}`,
         },
         null,
       );
@@ -406,6 +503,9 @@ export function createAutonomousAutoApplyService(
         intervalMs: config.intervalMs,
         batchLimit: config.batchLimit,
         emailApplyEnabled: config.emailApplyEnabled,
+        fullAutoEnabled: config.fullAutoEnabled,
+        browserSubmitEnabled: config.browserSubmitEnabled,
+        captchaApplyEnabled: config.captchaApplyEnabled,
         runOnStart: config.runOnStart,
       });
     },

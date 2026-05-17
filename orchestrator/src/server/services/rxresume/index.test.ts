@@ -1,6 +1,7 @@
 import { getSetting } from "@server/repositories/settings";
 import { getActiveTenantId } from "@server/tenancy/context";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildDefaultReactiveResumeDocument } from "./document";
 import {
   clearRxResumeResumeCache,
   exportResumePdf,
@@ -10,7 +11,6 @@ import {
   validateCredentials,
   validateResumeSchema,
 } from "./index";
-import { buildDefaultReactiveResumeDocument } from "./document";
 import * as v5 from "./v5";
 
 vi.mock("@server/repositories/settings", () => ({
@@ -287,10 +287,12 @@ describe("RxResume Service (index.ts)", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const defaultCss = (buildDefaultReactiveResumeDocument().metadata as Record<
-          string,
-          unknown
-        >).css;
+        const defaultCss = (
+          buildDefaultReactiveResumeDocument().metadata as Record<
+            string,
+            unknown
+          >
+        ).css;
         expect((result.data.metadata as Record<string, unknown>).css).toEqual(
           defaultCss,
         );

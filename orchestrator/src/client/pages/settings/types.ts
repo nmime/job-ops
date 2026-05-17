@@ -46,8 +46,16 @@ export type EnvSettingsValues = {
     adzunaAppKeyHint: string | null;
     basicAuthPasswordHint: string | null;
     webhookSecretHint: string | null;
+    captchaSolverApiKeyHint: string | null;
   };
   basicAuthActive: boolean;
+  fullAuto: {
+    enabled: EffectiveDefault<boolean>;
+    browserSubmitEnabled: EffectiveDefault<boolean>;
+    captchaEnabled: EffectiveDefault<boolean>;
+    captchaSolverAutoSolveEnabled: EffectiveDefault<boolean>;
+    captchaSolverProvider: EffectiveDefault<string>;
+  };
 };
 
 export type BackupValues = {

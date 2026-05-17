@@ -135,7 +135,11 @@ async function create2CaptchaTask(
   const body = (await response.json()) as CreateTaskResponse;
 
   if (!response.ok || body.errorId !== 0 || !body.taskId) {
-    throw new Error(body.errorDescription || body.errorCode || "2Captcha task creation failed");
+    throw new Error(
+      body.errorDescription ||
+        body.errorCode ||
+        "2Captcha task creation failed",
+    );
   }
 
   return body.taskId;
@@ -153,7 +157,9 @@ async function get2CaptchaTaskToken(
   const body = (await response.json()) as TaskResultResponse;
 
   if (!response.ok || body.errorId !== 0) {
-    throw new Error(body.errorDescription || body.errorCode || "2Captcha task failed");
+    throw new Error(
+      body.errorDescription || body.errorCode || "2Captcha task failed",
+    );
   }
 
   return body.status === "ready" ? body.solution?.token || null : null;
@@ -183,13 +189,11 @@ async function injectTurnstileToken(page: Page, token: string): Promise<void> {
     const callbackName = document
       .querySelector<HTMLElement>("[data-callback]")
       ?.dataset.callback?.trim();
-    const callback = callbackName
-      ?.split(".")
-      .reduce<unknown>((target, key) => {
-        return target && typeof target === "object"
-          ? (target as Record<string, unknown>)[key]
-          : undefined;
-      }, window);
+    const callback = callbackName?.split(".").reduce<unknown>((target, key) => {
+      return target && typeof target === "object"
+        ? (target as Record<string, unknown>)[key]
+        : undefined;
+    }, window);
 
     if (typeof callback === "function") {
       callback(captchaToken);

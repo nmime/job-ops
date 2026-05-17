@@ -175,7 +175,9 @@ describe("AutomaticRunTab", () => {
     expect(
       screen.getByRole("button", { name: "Start run now" }),
     ).toBeDisabled();
-    expect(screen.getByText("Select a country before starting.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Select a country before starting."),
+    ).toBeInTheDocument();
   });
 
   it("loads persisted country from settings", () => {

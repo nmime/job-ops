@@ -24,7 +24,7 @@ export interface AutonomousAutoApplyJobPayload {
   jobId: string;
   requestedAt: string;
   requestedBy: "system" | "user";
-  mode: "dry_run" | "send_email";
+  mode: "dry_run" | "send_email" | "full_auto";
 }
 
 export interface JobQueuePayloadByName {
