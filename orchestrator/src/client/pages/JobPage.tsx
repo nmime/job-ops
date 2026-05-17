@@ -418,6 +418,31 @@ export const JobPage: React.FC = () => {
     });
   };
 
+  const handleAutoApply = async () => {
+    if (!job || autoApplyDisabledReason) return;
+    const recipient = autoApplyRecipient;
+    if (
+      !window.confirm(
+        [
+          `Send a real application email with attached resume for ${job.title} at ${job.employer}?`,
+          recipient ? `Recipient: ${recipient}` : null,
+          "The job will be marked applied only after the email sends successfully.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      )
+    ) {
+      return;
+    }
+
+    await runAction("auto-apply", async () => {
+      await api.autoApplyJob(job.id, { confirm: true });
+      toast.success("Application sent", {
+        description: `${job.title} at ${job.employer}`,
+      });
+    });
+  };
+
   const handleMoveToInProgress = async () => {
     await runAction("move-in-progress", async () => {
       if (!job) return;
@@ -527,6 +552,28 @@ export const JobPage: React.FC = () => {
   const isReady = job?.status === "ready";
   const isApplied = job?.status === "applied";
   const isInProgress = job?.status === "in_progress";
+  const autoApplyRecipient = job ? resolveAutoApplyRecipient(job) : null;
+  const hasCaptchaSignal = job
+    ? containsCaptchaSignal(job.applicationLink) ||
+      containsCaptchaSignal(job.jobUrl) ||
+      containsCaptchaSignal(job.jobDescription) ||
+      containsCaptchaSignal(job.jobBrief)
+    : false;
+  const autoApplyDisabledReason = !isReady
+    ? "Only ready jobs can be auto-applied."
+    : hasCaptchaSignal
+      ? "CAPTCHA/challenge signal detected. Keep this application human-in-loop; configure CAPTCHA_SOLVER_* only for extractor challenges."
+      : !job?.tailoredSummary || !job?.tailoredSkills
+        ? "Complete tailored summary and skills before auto-applying."
+        : !job?.pdfPath
+          ? "Generate or upload a resume PDF before auto-applying."
+          : isRegeneratingPdf
+            ? PDF_REGENERATING_MESSAGE
+            : isStalePdf
+              ? "Regenerate the stale resume PDF before auto-applying."
+              : !autoApplyRecipient
+                ? "Add an application email or mailto link before auto-applying."
+                : null;
   const baseJobPath = id ? `/job/${id}` : "";
   const latestNote = notes[0] ?? null;
   const latestEvent = events.at(-1) ?? null;
@@ -945,6 +992,8 @@ export const JobPage: React.FC = () => {
               pdfRegeneratingReason={pdfRegeneratingReason}
               pdfViewLabel={pdfLabels.view}
               onStartTailoring={() => navigate(`/jobs/discovered/${job.id}`)}
+              onAutoApply={() => void handleAutoApply()}
+              autoApplyDisabledReason={autoApplyDisabledReason}
               onMarkApplied={() => void handleMarkApplied()}
               onMoveToInProgress={() => void handleMoveToInProgress()}
               onOpenLogEvent={() => setIsLogModalOpen(true)}
@@ -1010,6 +1059,47 @@ export const JobPage: React.FC = () => {
         }}
       />
     </main>
+  );
+};
+
+const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+const normalizeEmail = (value: string): string | null => {
+  const match = value.match(emailPattern);
+  return match ? match[0].toLowerCase() : null;
+};
+
+const resolveAutoApplyRecipient = (
+  job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief" | "emails">,
+): string | null => {
+  const applicationLink = job.applicationLink?.trim();
+  if (applicationLink?.toLowerCase().startsWith("mailto:")) {
+    try {
+      return normalizeEmail(
+        decodeURIComponent(new URL(applicationLink).pathname),
+      );
+    } catch {
+      return normalizeEmail(applicationLink);
+    }
+  }
+
+  for (const candidate of [
+    job.applicationLink,
+    job.emails,
+    job.jobDescription,
+    job.jobBrief,
+  ]) {
+    const email = normalizeEmail(candidate ?? "");
+    if (email) return email;
+  }
+
+  return null;
+};
+
+const containsCaptchaSignal = (value: string | null | undefined): boolean => {
+  const normalized = value?.toLowerCase() ?? "";
+  return ["captcha", "recaptcha", "hcaptcha", "cloudflare challenge"].some(
+    (signal) => normalized.includes(signal),
   );
 };
 

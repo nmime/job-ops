@@ -6,6 +6,7 @@ import {
   Edit2,
   ExternalLink,
   FileText,
+  Mail,
   MoreHorizontal,
   PlusCircle,
   RefreshCcw,
@@ -41,6 +42,8 @@ type JobPageRightSidebarProps = {
   pdfRegeneratingReason: string | null;
   pdfViewLabel: string;
   onStartTailoring: () => void;
+  onAutoApply: () => void;
+  autoApplyDisabledReason: string | null;
   onMarkApplied: () => void;
   onMoveToInProgress: () => void;
   onOpenLogEvent: () => void;
@@ -70,6 +73,8 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
   pdfRegeneratingReason,
   pdfViewLabel,
   onStartTailoring,
+  onAutoApply,
+  autoApplyDisabledReason,
   onMarkApplied,
   onMoveToInProgress,
   onOpenLogEvent,
@@ -114,6 +119,23 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
             <Sparkles className="mr-1.5 h-3.5 w-3.5" />
             Start Tailoring
           </Button>
+        )}
+
+        {isReady && (
+          <TooltipWhenDisabled
+            reason={autoApplyDisabledReason}
+            className="w-full"
+          >
+            <Button
+              size="sm"
+              className="w-full justify-start border-emerald-500/40 bg-emerald-600 text-white hover:bg-emerald-500 hover:text-white"
+              onClick={onAutoApply}
+              disabled={isBusy || Boolean(autoApplyDisabledReason)}
+            >
+              <Mail className="mr-1.5 h-3.5 w-3.5" />
+              Auto-send Application
+            </Button>
+          </TooltipWhenDisabled>
         )}
 
         {isReady && (
