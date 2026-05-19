@@ -255,6 +255,7 @@ function buildJob(args: {
   employer?: string;
   jobUrl?: string;
   applicationLink?: string;
+  emails?: string;
   location?: string;
   datePosted?: string;
   description?: string;
@@ -279,6 +280,7 @@ function buildJob(args: {
     employer: args.employer,
     jobUrl: args.jobUrl,
     applicationLink: args.applicationLink ?? args.jobUrl,
+    emails: args.emails,
     location: args.location ?? "Remote",
     locationEvidence: locationEvidence(args.location, args.source),
     datePosted: args.datePosted,
@@ -876,16 +878,36 @@ function parseHnHiringHeadline(firstLine: string | undefined): {
   return { role: firstLine };
 }
 
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const HN_STALE_APPLICATION_RE =
+  /\b(no\s+longer|not\s+hiring|position\s+filled|role\s+filled|closed|expired|not\s+monitored|old\s+address|do\s+not\s+(?:email|reply)|don'?t\s+(?:email|reply))\b/i;
+const HN_CANDIDATE_REPLY_RE =
+  /\b(i\s+am\s+interested|i'?m\s+interested|interested\s+in\s+this|my\s+(?:resume|cv|experience|background)|i\s+(?:have|am|can|build|built)|available\s+for|looking\s+for\s+(?:work|a\s+job)|sent\s+you|dm\s+me|reach\s+out\s+to\s+me)\b/i;
+const HN_HIRING_SIGNAL_RE =
+  /\b(we\s+are\s+hiring|we'?re\s+hiring|hiring\s+(?:for|a|multiple)|looking\s+for|we\s+are\s+seeking|seeking\s+(?:a|an)|join\s+(?:us|our\s+team)|apply\s+(?:at|to|by)|send\s+(?:your\s+)?(?:resume|cv)|roles?\s*:)\b/i;
+const HN_ROLE_RE = /\b(engineer|developer|designer|founder|manager|scientist|analyst|product|backend|frontend|full[- ]stack|devops|security|data)\b/i;
+
+function extractFirstEmail(value: string | undefined): string | undefined {
+  const plain = stripHtml(value);
+  const email = plain?.match(EMAIL_RE)?.[0]?.toLowerCase();
+  return email;
+}
+
 function isHnHiringComment(job: RawJob): boolean {
-  const text = normalizeText(asString(job.text) ?? "");
-  if (!text) return false;
-  if (
-    /\b(hiring|looking for|we are seeking|join us|role|roles|engineer|developer|designer|founder|remote|onsite|hybrid)\b/.test(
-      text,
-    )
-  ) {
+  const plainText = stripHtml(asString(job.text)) ?? "";
+  if (!plainText) return false;
+  if (HN_STALE_APPLICATION_RE.test(plainText)) return false;
+  if (HN_CANDIDATE_REPLY_RE.test(plainText) && !HN_HIRING_SIGNAL_RE.test(plainText)) {
+    return false;
+  }
+
+  const firstLine = extractFirstMeaningfulLine(asString(job.text));
+  const headline = parseHnHiringHeadline(firstLine);
+  if (headline.employer && headline.role && HN_ROLE_RE.test(headline.role)) {
     return true;
   }
+
+  if (HN_HIRING_SIGNAL_RE.test(plainText)) return true;
   return false;
 }
 
@@ -895,12 +917,14 @@ function mapHnHiringJob(job: RawJob): CreateJobInput | null {
   const text = asString(job.text);
   const firstLine = extractFirstMeaningfulLine(text);
   const headline = parseHnHiringHeadline(firstLine);
-  const employer = headline.employer ?? asString(job.author) ?? "HN Who is Hiring";
+  const employer =
+    headline.employer ?? asString(job.author) ?? "HN Who is Hiring";
   const role = headline.role ?? firstLine ?? "HN Who is Hiring posting";
   const title = role.length > 140 ? `${role.slice(0, 137)}...` : role;
   const url = id
     ? `https://news.ycombinator.com/item?id=${encodeURIComponent(id)}`
     : asString(job.url);
+  const applicationEmail = extractFirstEmail(text);
 
   return buildJob({
     source: "hnhiring",
@@ -908,7 +932,8 @@ function mapHnHiringJob(job: RawJob): CreateJobInput | null {
     title,
     employer,
     jobUrl: url,
-    applicationLink: url,
+    applicationLink: applicationEmail ? `mailto:${applicationEmail}` : url,
+    emails: applicationEmail ? JSON.stringify([applicationEmail]) : undefined,
     location: /\b(remote|worldwide)\b/i.test(stripHtml(text) ?? "")
       ? "Remote"
       : undefined,
