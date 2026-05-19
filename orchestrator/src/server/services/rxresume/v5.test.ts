@@ -4,6 +4,7 @@ import {
   deleteResume,
   exportResumePdf,
   fetchRxResume,
+  setRxResumeRetrySleepForTests,
   getResume,
   importResume,
   listResumes,
@@ -55,8 +56,46 @@ function pdfResponse(bytes: Uint8Array, ok = true, status = 200) {
 
 describe("rxresume v5 endpoints", () => {
   afterEach(() => {
+    setRxResumeRetrySleepForTests(null);
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it("retries retry-after rate limits before succeeding", async () => {
+    const sleeps: number[] = [];
+    setRxResumeRetrySleepForTests((ms) => {
+      sleeps.push(ms);
+      return Promise.resolve();
+    });
+    process.env.RXRESUME_API_RETRY_ATTEMPTS = "2";
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === "retry-after" ? "2" : null,
+        },
+        json: async () => ({ error: "slow down" }),
+        text: async () => "slow down",
+      })
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", mockFetch);
+
+    await expect(
+      fetchRxResume(
+        "/resumes",
+        {},
+        { baseUrl: "https://rxresu.me", apiKey: "test-key" },
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(sleeps).toEqual([2000]);
+    setRxResumeRetrySleepForTests(null);
+    delete process.env.RXRESUME_API_RETRY_ATTEMPTS;
   });
 
   it("normalizes base URL and calls /api/openapi", async () => {
