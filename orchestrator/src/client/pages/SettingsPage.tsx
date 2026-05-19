@@ -80,6 +80,12 @@ const DEFAULT_FORM_VALUES: UpdateSettingsInput = {
   jobCompleteWebhookUrl: "",
   resumeProjects: null,
   pdfRenderer: "rxresume",
+  jobopsFullAutoEnabled: null,
+  jobopsFullAutoBrowserSubmitEnabled: null,
+  jobopsFullAutoCaptchaEnabled: null,
+  captchaSolverProvider: null,
+  captchaSolverAutoSolveEnabled: null,
+  captchaSolverApiKey: "",
   rxresumeBaseResumeId: null,
   showSponsorInfo: null,
   renderMarkdownInJobDescriptions: null,
@@ -439,6 +445,13 @@ const mapSettingsToForm = (data: AppSettings): UpdateSettingsInput => ({
   jobCompleteWebhookUrl: data.jobCompleteWebhookUrl.override ?? "",
   resumeProjects: data.resumeProjects.override,
   pdfRenderer: data.pdfRenderer.override ?? data.pdfRenderer.value,
+  jobopsFullAutoEnabled: data.jobopsFullAutoEnabled.override,
+  jobopsFullAutoBrowserSubmitEnabled:
+    data.jobopsFullAutoBrowserSubmitEnabled.override,
+  jobopsFullAutoCaptchaEnabled: data.jobopsFullAutoCaptchaEnabled.override,
+  captchaSolverProvider: data.captchaSolverProvider.override,
+  captchaSolverAutoSolveEnabled: data.captchaSolverAutoSolveEnabled.override,
+  captchaSolverApiKey: "",
   rxresumeBaseResumeId: data.rxresumeBaseResumeId,
   showSponsorInfo: data.showSponsorInfo.override,
   renderMarkdownInJobDescriptions:
@@ -618,8 +631,33 @@ const getDerivedSettings = (settings: AppSettings | null) => {
         adzunaAppKeyHint: settings?.adzunaAppKeyHint ?? null,
         basicAuthPasswordHint: settings?.basicAuthPasswordHint ?? null,
         webhookSecretHint: settings?.webhookSecretHint ?? null,
+        captchaSolverApiKeyHint: settings?.captchaSolverApiKeyHint ?? null,
       },
       basicAuthActive: settings?.basicAuthActive ?? false,
+      fullAuto: {
+        enabled: {
+          effective: settings?.jobopsFullAutoEnabled?.value ?? false,
+          default: settings?.jobopsFullAutoEnabled?.default ?? false,
+        },
+        browserSubmitEnabled: {
+          effective:
+            settings?.jobopsFullAutoBrowserSubmitEnabled?.value ?? false,
+          default:
+            settings?.jobopsFullAutoBrowserSubmitEnabled?.default ?? false,
+        },
+        captchaEnabled: {
+          effective: settings?.jobopsFullAutoCaptchaEnabled?.value ?? false,
+          default: settings?.jobopsFullAutoCaptchaEnabled?.default ?? false,
+        },
+        captchaSolverAutoSolveEnabled: {
+          effective: settings?.captchaSolverAutoSolveEnabled?.value ?? false,
+          default: settings?.captchaSolverAutoSolveEnabled?.default ?? false,
+        },
+        captchaSolverProvider: {
+          effective: settings?.captchaSolverProvider?.value ?? "manual",
+          default: settings?.captchaSolverProvider?.default ?? "manual",
+        },
+      },
     },
     defaultResumeProjects: settings?.resumeProjects?.default ?? null,
 
@@ -736,7 +774,7 @@ export const SettingsPage: React.FC = () => {
 
   const methods = useForm<UpdateSettingsInput>({
     resolver: zodResolver(
-      updateSettingsSchema,
+      updateSettingsSchema as never,
     ) as Resolver<UpdateSettingsInput>,
     mode: "onChange",
     defaultValues: DEFAULT_FORM_VALUES,
@@ -1090,6 +1128,11 @@ export const SettingsPage: React.FC = () => {
         if (value !== undefined) envPayload.webhookSecret = value;
       }
 
+      if (dirtyFields.captchaSolverApiKey) {
+        const value = normalizePrivateInput(data.captchaSolverApiKey);
+        if (value !== undefined) envPayload.captchaSolverApiKey = value;
+      }
+
       const payload: Partial<UpdateSettingsInput> = {
         model: dirtyFields.llmProvider
           ? dirtyFields.model
@@ -1117,6 +1160,26 @@ export const SettingsPage: React.FC = () => {
         pdfRenderer: nullIfSame(
           data.pdfRenderer,
           reactiveResume.pdfRenderer.default,
+        ),
+        jobopsFullAutoEnabled: nullIfSame(
+          data.jobopsFullAutoEnabled,
+          envSettings.fullAuto.enabled.default,
+        ),
+        jobopsFullAutoBrowserSubmitEnabled: nullIfSame(
+          data.jobopsFullAutoBrowserSubmitEnabled,
+          envSettings.fullAuto.browserSubmitEnabled.default,
+        ),
+        jobopsFullAutoCaptchaEnabled: nullIfSame(
+          data.jobopsFullAutoCaptchaEnabled,
+          envSettings.fullAuto.captchaEnabled.default,
+        ),
+        captchaSolverProvider: nullIfSame(
+          data.captchaSolverProvider,
+          envSettings.fullAuto.captchaSolverProvider.default,
+        ),
+        captchaSolverAutoSolveEnabled: nullIfSame(
+          data.captchaSolverAutoSolveEnabled,
+          envSettings.fullAuto.captchaSolverAutoSolveEnabled.default,
         ),
         ...(dirtyFields.rxresumeBaseResumeId
           ? { rxresumeBaseResumeId: normalizeString(data.rxresumeBaseResumeId) }
@@ -1443,8 +1506,14 @@ export const SettingsPage: React.FC = () => {
       case "environment":
         return envSettings.readable.ukvisajobsEmail ||
           envSettings.readable.adzunaAppId ||
-          envSettings.basicAuthActive
-          ? { label: "Configured", variant: "outline" as const }
+          envSettings.basicAuthActive ||
+          envSettings.fullAuto.enabled.effective
+          ? {
+              label: envSettings.fullAuto.enabled.effective
+                ? "Full-auto on"
+                : "Configured",
+              variant: "outline" as const,
+            }
           : null;
       case "display":
         return { label: "Active", variant: "secondary" as const };
