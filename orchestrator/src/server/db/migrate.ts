@@ -1149,6 +1149,33 @@ sqlite.exec(
 sqlite.exec(
   "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)",
 );
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS application_email_attempts (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    job_id TEXT NOT NULL,
+    intended_recipient TEXT NOT NULL,
+    resolved_recipient TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed_transient', 'failed_permanent')),
+    provider_message_id TEXT,
+    failure_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_application_email_attempts_job_updated ON application_email_attempts(job_id, updated_at)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_application_email_attempts_idempotency ON application_email_attempts(tenant_id, job_id, resolved_recipient, content_hash)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_application_email_attempts_status ON application_email_attempts(tenant_id, status)",
+);
 seedLegacyOwnerFromBasicAuth();
 
 sqlite.close();
