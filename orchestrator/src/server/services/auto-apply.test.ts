@@ -45,6 +45,27 @@ describe("resolveAutoApplyRecipient", () => {
     expect(resolveAutoApplyRecipient(job)).toBe("recruiting@example.net");
   });
 
+  it("chooses alternate or preferred application recipients over generic addresses", () => {
+    const job = createJob({
+      applicationLink: "https://example.com/apply",
+      jobDescription:
+        "For support email support@example.com. To apply, send your resume to jobs@example.com instead.",
+    });
+
+    expect(resolveAutoApplyRecipient(job)).toBe("jobs@example.com");
+  });
+
+  it("skips stale and no-reply addresses", () => {
+    const job = createJob({
+      applicationLink: "https://example.com/apply",
+      jobDescription:
+        "Do not reply to noreply@example.com. The old address careers-old@example.com is no longer monitored.",
+      jobBrief: null,
+    });
+
+    expect(resolveAutoApplyRecipient(job)).toBeNull();
+  });
+
   it("returns null when no application email is available", () => {
     const job = createJob({
       applicationLink: "https://example.com/apply",
