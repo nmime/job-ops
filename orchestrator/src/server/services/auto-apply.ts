@@ -5,6 +5,16 @@ import net from "node:net";
 import tls from "node:tls";
 import { badRequest, serviceUnavailable, upstreamError } from "@infra/errors";
 import { logger } from "@infra/logger";
+import {
+  chooseApplicationRecipient,
+  normalizeRecipientAddress,
+  redactEmailAddress,
+} from "@server/services/application-email-analysis";
+import {
+  createApplicationEmailAttempt,
+  findSuccessfulApplicationEmailAttempt,
+  updateApplicationEmailAttemptStatus,
+} from "@server/repositories/application-email-attempts";
 import { getPdfPath } from "@server/services/pdf";
 import { getProfile } from "@server/services/profile";
 import type { Job, ResumeProfile } from "@shared/types";
@@ -41,6 +51,8 @@ export type AutoApplyResult = {
   subject: string;
   messageId: string;
   attachedResume: boolean;
+  attemptId?: string;
+  idempotent?: boolean;
 };
 
 function cleanString(value: unknown): string | null {
@@ -62,31 +74,47 @@ function stripHtml(value: string): string {
     .trim();
 }
 
-function normalizeEmail(value: string): string | null {
-  const match = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return match ? match[0].toLowerCase() : null;
-}
-
 export function resolveAutoApplyRecipient(
   job: Pick<Job, "applicationLink" | "jobDescription" | "jobBrief" | "emails">,
 ): string | null {
-  const applicationLink = cleanString(job.applicationLink);
-  if (applicationLink?.toLowerCase().startsWith("mailto:")) {
-    const parsed = new URL(applicationLink);
-    return normalizeEmail(decodeURIComponent(parsed.pathname));
-  }
+  return (
+    chooseApplicationRecipient({
+      applicationLink: job.applicationLink,
+      emails: job.emails,
+      jobDescription: job.jobDescription,
+      jobBrief: job.jobBrief,
+    })?.address ?? null
+  );
+}
 
-  for (const candidate of [
-    job.applicationLink,
-    job.emails,
-    job.jobDescription,
-    job.jobBrief,
-  ]) {
-    const email = normalizeEmail(candidate ?? "");
-    if (email) return email;
-  }
+function hashAutoApplicationContent(input: {
+  job: Job;
+  recipient: string;
+  subject: string;
+  body: string;
+  attachments: MailAttachment[];
+}): string {
+  const attachmentFingerprints = input.attachments.map((attachment) => ({
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    sha256: createHash("sha256").update(attachment.content).digest("hex"),
+  }));
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        jobId: input.job.id,
+        recipient: input.recipient,
+        subject: input.subject,
+        body: input.body,
+        attachmentFingerprints,
+      }),
+    )
+    .digest("hex");
+}
 
-  return null;
+function isTransientSendFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timeout|temporar|try again|rate|421|450|451|452|5\d\d/i.test(message);
 }
 
 function getSmtpConfig(profile: ResumeProfile | null): SmtpConfig {
@@ -363,10 +391,22 @@ export async function sendAutoApplication(job: Job): Promise<AutoApplyResult> {
     );
   }
 
-  const recipient = resolveAutoApplyRecipient(job);
+  const recipientCandidate = chooseApplicationRecipient({
+    applicationLink: job.applicationLink,
+    emails: job.emails,
+    jobDescription: job.jobDescription,
+    jobBrief: job.jobBrief,
+  });
+  const recipient = recipientCandidate?.address ?? null;
   if (!recipient) {
     throw badRequest(
       "Auto-apply currently supports jobs with an application email or mailto application link.",
+    );
+  }
+  const normalizedRecipient = normalizeRecipientAddress(recipient);
+  if (!normalizedRecipient) {
+    throw badRequest(
+      "Auto-apply could not normalize the selected application recipient.",
     );
   }
 
@@ -379,26 +419,86 @@ export async function sendAutoApplication(job: Job): Promise<AutoApplyResult> {
   });
   const config = getSmtpConfig(profile);
   const subject = `Application for ${job.title} at ${job.employer}`;
+  const body = buildBody(job, profile);
   const attachments = await buildAttachments(job);
   if (attachments.length === 0) {
     throw badRequest(
       "Auto-apply needs a generated or uploaded resume PDF before sending.",
     );
   }
-  const messageId = await sendSmtpMail(config, {
-    from: config.from,
-    fromName: config.fromName,
-    to: recipient,
+
+  const contentHash = hashAutoApplicationContent({
+    job,
+    recipient: normalizedRecipient,
     subject,
-    text: buildBody(job, profile),
+    body,
     attachments,
   });
+  const existingSuccess = await findSuccessfulApplicationEmailAttempt({
+    jobId: job.id,
+    resolvedRecipient: normalizedRecipient,
+    contentHash,
+  });
+  if (existingSuccess) {
+    return {
+      mode: "email",
+      recipient: normalizedRecipient,
+      subject,
+      messageId: existingSuccess.providerMessageId ?? existingSuccess.id,
+      attachedResume: true,
+      attemptId: existingSuccess.id,
+      idempotent: true,
+    };
+  }
 
-  return {
-    mode: "email",
-    recipient,
+  const attempt = await createApplicationEmailAttempt({
+    jobId: job.id,
+    intendedRecipient: recipient,
+    resolvedRecipient: normalizedRecipient,
     subject,
-    messageId,
-    attachedResume: attachments.length > 0,
-  };
+    contentHash,
+  });
+
+  try {
+    const messageId = await sendSmtpMail(config, {
+      from: config.from,
+      fromName: config.fromName,
+      to: normalizedRecipient,
+      subject,
+      text: body,
+      attachments,
+    });
+    await updateApplicationEmailAttemptStatus({
+      id: attempt.id,
+      status: "sent",
+      providerMessageId: messageId,
+    });
+
+    return {
+      mode: "email",
+      recipient: normalizedRecipient,
+      subject,
+      messageId,
+      attachedResume: attachments.length > 0,
+      attemptId: attempt.id,
+    };
+  } catch (error) {
+    const transient = isTransientSendFailure(error);
+    await updateApplicationEmailAttemptStatus({
+      id: attempt.id,
+      status: transient ? "failed_transient" : "failed_permanent",
+      failureReason:
+        error instanceof Error
+          ? error.message.slice(0, 500)
+          : String(error).slice(0, 500),
+    });
+    logger.warn("Auto-apply email send failed", {
+      jobId: job.id,
+      attemptId: attempt.id,
+      recipient: redactEmailAddress(normalizedRecipient),
+      transient,
+      error,
+    });
+    throw error;
+  }
 }
