@@ -14,6 +14,10 @@ import {
 
 const AUTO_PDF_REGEN_BATCH_LIMIT = 25;
 const AUTO_PDF_REGEN_RETRY_DELAY_MS = 5000;
+const AUTO_PDF_REGEN_TEMPORARY_RETRY_DELAY_MS = 60_000;
+
+const TEMPORARY_UPSTREAM_PDF_ERROR_RE =
+  /temporary|rate[- ]?limit|too many requests|retries exhausted|timeout|try again|\b(?:408|425|429|500|502|503|504)\b/i;
 
 const SETTINGS_INVALIDATION_KEYS = new Set<SettingKey>([
   "pdfRenderer",
@@ -98,16 +102,28 @@ async function drainQueue(): Promise<void> {
         );
       }
     } catch (error) {
+      const temporary = isTemporaryUpstreamPdfError(error);
       logger.warn("Auto PDF regeneration job failed", {
         queue: "auto_pdf_regeneration",
         tenantId: queuedJob.payload.tenantId,
         jobId: queuedJob.payload.jobId,
         reason: queuedJob.payload.reason,
+        temporary,
         error,
       });
-      await queue.reject(queuedJob.id);
+      await queue.acknowledge(queuedJob.id);
+      if (temporary) {
+        await enqueueAutoPdfRegenerationPayload(queuedJob.payload, {
+          delayMs: AUTO_PDF_REGEN_TEMPORARY_RETRY_DELAY_MS,
+        });
+      }
     }
   }
+}
+
+function isTemporaryUpstreamPdfError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return TEMPORARY_UPSTREAM_PDF_ERROR_RE.test(message);
 }
 
 function shouldTopUpReadyPdfRegeneration(
