@@ -331,6 +331,58 @@ describe("runRemoteApiJobs", () => {
     ]);
   });
 
+  it("skips HN candidate and stale comments while extracting explicit mailto", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("search_by_date")) {
+        return Promise.resolve(
+          createJsonResponse({ hits: [{ objectID: "123", title: "Ask HN: Who is hiring? (May 2026)" }] }),
+        );
+      }
+
+      return Promise.resolve(
+        createJsonResponse({
+          id: 123,
+          children: [
+            {
+              id: 501,
+              author: "candidate",
+              created_at: "2026-05-01T00:00:00.000Z",
+              text: "I'm interested in this role. My resume is at example.com and I have backend experience.",
+            },
+            {
+              id: 502,
+              author: "oldco",
+              created_at: "2026-05-01T00:00:00.000Z",
+              text: "OldCo | Backend Engineer | Remote<br/>This role is filled and the old address jobs@oldco.example is no longer monitored.",
+            },
+            {
+              id: 503,
+              author: "newco",
+              created_at: "2026-05-01T00:00:00.000Z",
+              text: "NewCo | Backend Engineer | Remote<br/>We are hiring. Send your resume to jobs@newco.example.",
+            },
+          ],
+        }),
+      );
+    });
+
+    const result = await runRemoteApiJobs({
+      selectedSources: ["hnhiring"],
+      searchTerms: ["backend engineer"],
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.jobs).toEqual([
+      expect.objectContaining({
+        sourceJobId: "503",
+        employer: "NewCo",
+        applicationLink: "mailto:jobs@newco.example",
+        emails: JSON.stringify(["jobs@newco.example"]),
+      }),
+    ]);
+  });
+
   it("maps HN Who is Hiring top-level comments from Algolia APIs", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.includes("search_by_date")) {
