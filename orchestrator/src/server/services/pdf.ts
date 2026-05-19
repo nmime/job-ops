@@ -4,7 +4,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import { AppError, type AppErrorCode, notFound } from "@infra/errors";
 import { logger } from "@infra/logger";
 import { getSetting } from "@server/repositories/settings";
@@ -71,6 +71,107 @@ function sanitizePdfFileName(value: string): string {
   return `${base || "Design_Resume"}.pdf`;
 }
 
+const TEMPORARY_RXRESUME_STATUS_RE = /\b(?:408|425|429|500|502|503|504)\b/;
+const TEMPORARY_RXRESUME_TEXT_RE =
+  /temporary|rate[- ]?limit|too many requests|retries exhausted|timeout|try again/i;
+const MAX_RXRESUME_PDF_DOWNLOAD_RETRIES = 4;
+const MAX_RXRESUME_PDF_DELAY_MS = 120_000;
+
+type QueueTask<T> = {
+  run: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+
+const rxResumePdfQueue: QueueTask<unknown>[] = [];
+let rxResumePdfActive = 0;
+
+function rxResumePdfConcurrency(): number {
+  const parsed = Number.parseInt(
+    process.env.RXRESUME_PDF_CONCURRENCY ?? "",
+    10,
+  );
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 4) : 1;
+}
+
+function pumpRxResumePdfQueue(): void {
+  while (
+    rxResumePdfActive < rxResumePdfConcurrency() &&
+    rxResumePdfQueue.length > 0
+  ) {
+    const task = rxResumePdfQueue.shift();
+    if (!task) return;
+    rxResumePdfActive += 1;
+    task
+      .run()
+      .then(task.resolve, task.reject)
+      .finally(() => {
+        rxResumePdfActive -= 1;
+        pumpRxResumePdfQueue();
+      });
+  }
+}
+
+function runRxResumePdfQueued<T>(run: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    rxResumePdfQueue.push({
+      run,
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    });
+    pumpRxResumePdfQueue();
+  });
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number.parseFloat(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, MAX_RXRESUME_PDF_DELAY_MS);
+  }
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return Math.min(
+      Math.max(0, dateMs - Date.now()),
+      MAX_RXRESUME_PDF_DELAY_MS,
+    );
+  }
+  return null;
+}
+
+function pdfRetryDelayMs(
+  attemptIndex: number,
+  retryAfterHeader: string | null,
+): number {
+  const retryAfter = parseRetryAfterMs(retryAfterHeader);
+  if (retryAfter !== null) return retryAfter;
+  return Math.min(
+    1000 * 2 ** attemptIndex + Math.floor(Math.random() * 250),
+    30_000,
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTemporaryRxResumePdfError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    TEMPORARY_RXRESUME_TEXT_RE.test(message) ||
+    TEMPORARY_RXRESUME_STATUS_RE.test(message)
+  );
+}
+
+async function hasUsablePdf(outputPath: string): Promise<boolean> {
+  try {
+    const info = await stat(outputPath);
+    return info.isFile() && info.size > 1024;
+  } catch {
+    return false;
+  }
+}
+
 async function resolvePdfRenderer(): Promise<PdfRenderer> {
   const storedValue = await getSetting("pdfRenderer");
   return (
@@ -91,15 +192,45 @@ async function downloadRxResumePdf(
   url: string,
   outputPath: string,
 ): Promise<void> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `Reactive Resume PDF download failed with HTTP ${response.status}.`,
+  let lastStatus = 0;
+  for (
+    let attempt = 0;
+    attempt < MAX_RXRESUME_PDF_DOWNLOAD_RETRIES;
+    attempt += 1
+  ) {
+    const response = await fetch(url);
+    lastStatus = response.status;
+    if (response.ok) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      await writeFile(outputPath, bytes);
+      return;
+    }
+
+    const temporary = [408, 425, 429, 500, 502, 503, 504].includes(
+      response.status,
     );
+    if (!temporary || attempt >= MAX_RXRESUME_PDF_DOWNLOAD_RETRIES - 1) {
+      throw new Error(
+        `${temporary ? "Temporary " : ""}Reactive Resume PDF download failed with HTTP ${response.status}.`,
+      );
+    }
+
+    const delayMs = pdfRetryDelayMs(
+      attempt,
+      response.headers.get("retry-after"),
+    );
+    logger.warn("Reactive Resume PDF download temporary failure; retrying", {
+      status: response.status,
+      attempt: attempt + 1,
+      maxAttempts: MAX_RXRESUME_PDF_DOWNLOAD_RETRIES,
+      delayMs,
+    });
+    await wait(delayMs);
   }
 
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  await writeFile(outputPath, bytes);
+  throw new Error(
+    `Temporary Reactive Resume PDF download failed with HTTP ${lastStatus}; retries exhausted.`,
+  );
 }
 
 async function stripPictureWhenJobOpsIsNotHosted(args: {
@@ -157,21 +288,40 @@ async function renderRxResumePdf(args: {
   );
 
   try {
-    importedResumeId = await importRxResume({
-      name: args.name?.trim() || `JobOps Tailored Resume ${jobId}`,
-      data: importData,
-    });
+    await runRxResumePdfQueued(async () => {
+      importedResumeId = await importRxResume({
+        name: args.name?.trim() || `JobOps Tailored Resume ${jobId}`,
+        data: importData,
+      });
 
-    const exportResult = await exportRxResumePdf(importedResumeId);
-    if (exportResult.kind === "pdf") {
-      await writeFile(outputPath, exportResult.bytes);
-    } else {
-      await downloadRxResumePdf(exportResult.url, outputPath);
+      const exportResult = await exportRxResumePdf(importedResumeId);
+      if (exportResult.kind === "pdf") {
+        await writeFile(outputPath, exportResult.bytes);
+      } else {
+        await downloadRxResumePdf(exportResult.url, outputPath);
+      }
+    });
+  } catch (error) {
+    if (
+      isTemporaryRxResumePdfError(error) &&
+      (await hasUsablePdf(outputPath))
+    ) {
+      logger.warn(
+        "Reusing existing PDF after temporary Reactive Resume failure",
+        {
+          jobId,
+          outputPath,
+          error,
+        },
+      );
+      return;
     }
+    throw error;
   } finally {
     if (importedResumeId) {
+      const resumeId = importedResumeId;
       try {
-        await deleteRxResume(importedResumeId);
+        await runRxResumePdfQueued(async () => deleteRxResume(resumeId));
       } catch (error) {
         logger.warn("Failed to clean up temporary Reactive Resume PDF export", {
           jobId,
