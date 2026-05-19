@@ -670,6 +670,49 @@ export const postApplicationMessages = sqliteTable(
   }),
 );
 
+export const applicationEmailAttempts = sqliteTable(
+  "application_email_attempts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    intendedRecipient: text("intended_recipient").notNull(),
+    resolvedRecipient: text("resolved_recipient").notNull(),
+    subject: text("subject").notNull().default(""),
+    contentHash: text("content_hash").notNull(),
+    status: text("status", {
+      enum: ["pending", "sent", "failed_transient", "failed_permanent"],
+    })
+      .notNull()
+      .default("pending"),
+    providerMessageId: text("provider_message_id"),
+    failureReason: text("failure_reason"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    jobUpdatedIndex: index("idx_application_email_attempts_job_updated").on(
+      table.jobId,
+      table.updatedAt,
+    ),
+    idempotencyIndex: index("idx_application_email_attempts_idempotency").on(
+      table.tenantId,
+      table.jobId,
+      table.resolvedRecipient,
+      table.contentHash,
+    ),
+    statusIndex: index("idx_application_email_attempts_status").on(
+      table.tenantId,
+      table.status,
+    ),
+  }),
+);
+
 export const tracerLinks = sqliteTable(
   "tracer_links",
   {
