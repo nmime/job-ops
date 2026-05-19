@@ -15,6 +15,10 @@ import {
   startPostApplicationSyncRun,
 } from "@server/repositories/post-application-sync-runs";
 import { transitionStage } from "@server/services/applicationTracking";
+import {
+  analyzeInboundApplicationEmail,
+  redactEmailAddress,
+} from "@server/services/application-email-analysis";
 import { resolveStageTransitionForTarget } from "@server/services/post-application/stage-target";
 import type { PostApplicationRouterStageTarget } from "@shared/types";
 import { classifyWithSmartRouter, minifyActiveJobs } from "./email-router";
@@ -101,6 +105,27 @@ function parseFromHeader(fromHeader: string): {
 function parseReceivedAt(dateHeader: string): number {
   const parsed = Date.parse(dateHeader);
   return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function redactedApplicationEmailAnalysis(input: {
+  subject: string;
+  snippet: string;
+  body: string;
+}): Record<string, unknown> {
+  const analysis = analyzeInboundApplicationEmail(input);
+  return {
+    hasBounceOrStaleSignal: analysis.hasBounceOrStaleSignal,
+    hasAlternateRecipient: analysis.hasAlternateRecipient,
+    reasons: analysis.reasons,
+    candidates: analysis.candidates.map((candidate) => ({
+      address: redactEmailAddress(candidate.address),
+      score: candidate.score,
+      category: candidate.category,
+      reason: candidate.reason,
+      source: candidate.source,
+      stale: candidate.stale,
+    })),
+  };
 }
 
 function resolveProcessingStatus(input: {
@@ -332,6 +357,11 @@ export async function runGmailIngestionSync(args: {
           emailText,
           activeJobs: activeJobMinified,
         });
+        const applicationEmailAnalysis = redactedApplicationEmailAnalysis({
+          subject,
+          snippet: metadata.snippet,
+          body,
+        });
 
         const matchedJobId =
           routerResult.bestMatchId && activeJobIds.has(routerResult.bestMatchId)
@@ -366,6 +396,7 @@ export async function runGmailIngestionSync(args: {
               method: "smart_router",
               reason: routerResult.reason,
               stageTarget: routerResult.stageTarget,
+              applicationEmailAnalysis,
             },
             relevanceLlmScore: routerResult.confidence,
             relevanceDecision: routerResult.isRelevant
