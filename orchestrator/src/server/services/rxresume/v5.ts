@@ -71,6 +71,55 @@ function extractErrorMessage(data: unknown, fallback: string): string {
   return fallback.slice(0, MAX_ERROR_SNIPPET);
 }
 
+const RXRESUME_RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const DEFAULT_RXRESUME_RETRY_ATTEMPTS = 4;
+const MAX_RXRESUME_RETRY_DELAY_MS = 120_000;
+
+type RetrySleep = (ms: number) => Promise<void>;
+let retrySleep: RetrySleep = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+export function setRxResumeRetrySleepForTests(fn: RetrySleep | null): void {
+  retrySleep =
+    fn ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number.parseFloat(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, MAX_RXRESUME_RETRY_DELAY_MS);
+  }
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return Math.min(
+      Math.max(0, dateMs - Date.now()),
+      MAX_RXRESUME_RETRY_DELAY_MS,
+    );
+  }
+  return null;
+}
+
+function retryDelayMs(
+  attemptIndex: number,
+  retryAfterHeader: string | null,
+): number {
+  const retryAfter = parseRetryAfterMs(retryAfterHeader);
+  if (retryAfter !== null) return retryAfter;
+  const base = Math.min(1000 * 2 ** attemptIndex, 30_000);
+  const jitter = Math.floor(Math.random() * 250);
+  return Math.min(base + jitter, MAX_RXRESUME_RETRY_DELAY_MS);
+}
+
+function isTemporaryRxResumeStatus(status: number): boolean {
+  return RXRESUME_RETRY_STATUSES.has(status);
+}
+
 async function executeWithKeyRetries(
   url: string,
   options: RequestInit,
@@ -89,55 +138,89 @@ async function executeWithKeyRetries(
     throw new Error("RXRESUME_API_KEY not configured in environment");
   }
 
-  for (let attempt = 0; attempt < apiKeys.length; attempt++) {
-    const apiKey = apiKeys[attempt];
-    const headers = {
-      "x-api-key": apiKey,
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    } as Record<string, string>;
+  const maxAttempts = parsePositiveInt(
+    process.env.RXRESUME_API_RETRY_ATTEMPTS,
+    DEFAULT_RXRESUME_RETRY_ATTEMPTS,
+  );
+  let lastTemporaryError: { status: number; message: string } | null = null;
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
+  for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex += 1) {
+    const apiKey = apiKeys[keyIndex];
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const headers = {
+        "x-api-key": apiKey,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      } as Record<string, string>;
 
-    if (!response.ok) {
-      const errorBody = await response
-        .json()
-        .catch(async () => await response.text().catch(() => null));
-      const errorMsg = extractErrorMessage(errorBody, response.statusText);
-
-      if (
-        response.status === 401 &&
-        apiKeys.length > 1 &&
-        attempt < apiKeys.length - 1
-      ) {
-        continue;
-      }
-
-      logger.warn("Reactive Resume upstream request failed", {
-        endpoint: pathFromUrl(url),
-        method: options.method ?? "GET",
-        status: response.status,
-        upstreamError: errorBody,
+      const response = await fetch(url, {
+        ...options,
+        headers,
       });
 
-      throw new Error(
-        `Reactive Resume API error (${response.status}): ${errorMsg}`,
-      );
-    }
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => await response.text().catch(() => null));
+        const errorMsg = extractErrorMessage(errorBody, response.statusText);
 
-    const contentType = response.headers.get("content-type");
-    if (contentType?.includes("application/json")) {
-      return response.json();
+        if (response.status === 401 && keyIndex < apiKeys.length - 1) {
+          break;
+        }
+
+        const temporary = isTemporaryRxResumeStatus(response.status);
+        if (temporary && attempt < maxAttempts - 1) {
+          const delayMs = retryDelayMs(
+            attempt,
+            response.headers.get("retry-after"),
+          );
+          lastTemporaryError = { status: response.status, message: errorMsg };
+          logger.warn(
+            "Reactive Resume temporary upstream request failed; retrying",
+            {
+              endpoint: pathFromUrl(url),
+              method: options.method ?? "GET",
+              status: response.status,
+              attempt: attempt + 1,
+              maxAttempts,
+              delayMs,
+            },
+          );
+          await retrySleep(delayMs);
+          continue;
+        }
+
+        logger.warn("Reactive Resume upstream request failed", {
+          endpoint: pathFromUrl(url),
+          method: options.method ?? "GET",
+          status: response.status,
+          temporary,
+          attempts: attempt + 1,
+          upstreamError: errorBody,
+        });
+
+        const prefix = temporary
+          ? "Temporary Reactive Resume API error; retries exhausted"
+          : "Reactive Resume API error";
+        throw new Error(`${prefix} (${response.status}): ${errorMsg}`);
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (contentType?.includes("application/json")) {
+        return response.json();
+      }
+      if (contentType?.includes("application/pdf")) {
+        return new Uint8Array(await response.arrayBuffer());
+      }
+      return response.text();
     }
-    if (contentType?.includes("application/pdf")) {
-      return new Uint8Array(await response.arrayBuffer());
-    }
-    return response.text();
   }
 
+  if (lastTemporaryError) {
+    throw new Error(
+      `Temporary Reactive Resume API error; retries exhausted (${lastTemporaryError.status}): ${lastTemporaryError.message}`,
+    );
+  }
   throw new Error("All Reactive Resume API keys failed.");
 }
 
