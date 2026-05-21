@@ -59,4 +59,12 @@ describe("extractor source catalog", () => {
       category: "pipeline",
     });
   });
+
+  it("includes Ever Jobs as a pipeline source", () => {
+    expect(isExtractorSourceId("everjobs")).toBe(true);
+    expect(EXTRACTOR_SOURCE_METADATA.everjobs).toMatchObject({
+      label: "Ever Jobs",
+      category: "pipeline",
+    });
+  });
 });

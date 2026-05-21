@@ -98,6 +98,7 @@ COPY extractors/gradcracker ./extractors/gradcracker
 COPY extractors/jobindex ./extractors/jobindex
 COPY extractors/jobspy ./extractors/jobspy
 COPY extractors/naukri ./extractors/naukri
+COPY extractors/everjobs ./extractors/everjobs
 COPY extractors/remoteapis ./extractors/remoteapis
 COPY extractors/startupjobs ./extractors/startupjobs
 COPY extractors/workingnomads ./extractors/workingnomads
@@ -198,6 +199,7 @@ COPY extractors/gradcracker ./extractors/gradcracker
 COPY extractors/jobindex ./extractors/jobindex
 COPY extractors/jobspy ./extractors/jobspy
 COPY extractors/naukri ./extractors/naukri
+COPY extractors/everjobs ./extractors/everjobs
 COPY extractors/remoteapis ./extractors/remoteapis
 COPY extractors/startupjobs ./extractors/startupjobs
 COPY extractors/workingnomads ./extractors/workingnomads

@@ -28,6 +28,7 @@ export const EXTRACTOR_SOURCE_IDS = [
   "jobindex",
   "seek",
   "naukri",
+  "everjobs",
   "manual",
 ] as const;
 
@@ -126,6 +127,7 @@ export const EXTRACTOR_SOURCE_METADATA: Record<
     order: 180,
     category: "pipeline",
   },
+  everjobs: { label: "Ever Jobs", order: 185, category: "pipeline" },
   manual: { label: "Manual", order: 190, category: "manual" },
 };
 
