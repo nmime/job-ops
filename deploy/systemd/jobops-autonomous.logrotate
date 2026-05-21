@@ -1,0 +1,8 @@
+/opt/job-ops/logs/jobops-autonomous.log {
+  daily
+  rotate 14
+  compress
+  missingok
+  notifempty
+  copytruncate
+}

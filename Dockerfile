@@ -22,6 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     libgtk-3-0 libgtk-3-common \
     libdbus-glib-1-2 libxt6 libx11-xcb1 libasound2 \
+    libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
+    fonts-liberation \
     curl && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
@@ -47,7 +51,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages playwright python-jobspy
 
 # Install Firefox for Python Playwright.
-RUN python3 -m playwright install firefox
+RUN python3 -m playwright install chromium firefox
 
 FROM build-base AS node-deps
 
@@ -74,6 +78,9 @@ COPY extractors/browser-utils/package*.json ./extractors/browser-utils/
 RUN --mount=type=cache,target=/root/.npm \
     npm install --workspaces --include-workspace-root --include=dev \
     --no-audit --no-fund --progress=false
+
+# Install browsers for the Node Playwright version used by the app.
+RUN npx playwright install chromium firefox
 
 # Fetch Camoufox binaries before copying source to keep the download cached.
 RUN --mount=type=secret,id=github_token,required=false \
@@ -176,6 +183,7 @@ FROM runtime-node-deps AS production
 COPY --from=tectonic /usr/local/bin/tectonic /usr/local/bin/tectonic
 COPY --from=python-deps /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
 COPY --from=python-deps /ms-playwright /ms-playwright
+COPY --from=node-deps /ms-playwright /ms-playwright
 COPY --from=node-deps /root/.cache/camoufox /root/.cache/camoufox
 
 # Copy built assets and runtime source code.

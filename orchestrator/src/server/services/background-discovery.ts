@@ -113,6 +113,9 @@ function buildPipelineConfig(
     topN: config.topN,
     minSuitabilityScore: config.minSuitabilityScore,
     sources: config.sources,
+    // Autonomous discovery must not block forever waiting for interactive
+    // challenge solving. Manual/UI pipeline runs keep the default pause mode.
+    pauseOnChallenges: false,
   };
 }
 

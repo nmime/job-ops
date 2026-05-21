@@ -17,6 +17,13 @@ export interface PipelineConfig {
   enableScoring?: boolean;
   enableImporting?: boolean;
   enableAutoTailoring?: boolean;
+  /**
+   * When false, challenged extractors are logged and skipped instead of pausing
+   * the pipeline for human challenge resolution. Manual/UI runs keep the default
+   * pause behavior; autonomous background runs set this false to avoid a stuck
+   * scheduler.
+   */
+  pauseOnChallenges?: boolean;
 }
 
 export interface PipelineRunConfigSnapshot {

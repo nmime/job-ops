@@ -228,7 +228,10 @@ export async function runPipeline(
   tenantState.cancelRequestedAt = null;
   resetProgress();
   const locationIntent = await resolveLocationIntent(config);
-  const mergedConfig = { ...DEFAULT_CONFIG, ...config, locationIntent };
+  const configOverrides = Object.fromEntries(
+    Object.entries(config).filter(([, value]) => value !== undefined),
+  ) as Partial<PipelineConfig>;
+  const mergedConfig = { ...DEFAULT_CONFIG, ...configOverrides, locationIntent };
   const configSnapshot = {
     topN: mergedConfig.topN,
     minSuitabilityScore: mergedConfig.minSuitabilityScore,
@@ -291,66 +294,76 @@ export async function runPipeline(
 
       // ---------- Challenge pause/resume ----------
       if (pendingChallenges.length > 0) {
-        pipelineLogger.info("Challenges detected, pausing pipeline", {
-          challenges: pendingChallenges.map((c) => ({
-            extractorId: c.extractorId,
-            url: c.url,
-          })),
-        });
+        const challengeSummary = pendingChallenges.map((c) => ({
+          extractorId: c.extractorId,
+          url: c.url,
+        }));
 
-        progressHelpers.challengeRequired(pendingChallenges);
-
-        // Block until all challenges are resolved by the solve-challenge API.
-        // The Promise is resolved by `resolvePipelineChallenge()`, which is
-        // called from the POST /api/pipeline/solve-challenge endpoint (4d).
-        // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
-        // and ensureNotCancelled() fires after the Promise resolves.
-        const challengedSources = pendingChallenges.flatMap((c) => c.sources);
-
-        await new Promise<void>((resolve) => {
-          tenantState.activeChallengeState = {
-            challenges: new Map(
-              pendingChallenges.map((c) => [c.extractorId, c]),
-            ),
-            resolve,
-          };
-        });
-        tenantState.activeChallengeState = null;
-
-        ensureNotCancelled(tenantId);
-
-        // Re-run only the extractors that had challenges
-        pipelineLogger.info("Challenges resolved, re-running extractors", {
-          sources: challengedSources,
-        });
-
-        const retryConfig = { ...mergedConfig, sources: challengedSources };
-        const retryResult = await discoverJobsStep({
-          mergedConfig: retryConfig,
-          shouldCancel: () =>
-            getPipelineState(tenantId).cancelRequestedAt !== null,
-        });
-
-        discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
-        sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
-        pendingChallenges = retryResult.pendingChallenges;
-
-        // If the retry itself hits challenges again (e.g. cookie expired
-        // between solve and retry), we don't loop — just continue with whatever
-        // the first run discovered.  The user will see partial results and can
-        // re-run the pipeline.
-        if (retryResult.pendingChallenges.length > 0) {
+        if (mergedConfig.pauseOnChallenges === false) {
           pipelineLogger.warn(
-            "Retry after challenge still has challenges — continuing with partial results",
-            {
-              retryPendingChallenges: retryResult.pendingChallenges.map(
-                (c) => c.extractorId,
-              ),
-            },
+            "Challenges detected; continuing autonomous pipeline with non-challenged sources",
+            { challenges: challengeSummary },
           );
-        }
+          progressHelpers.crawlingComplete(discoveredJobs.length);
+        } else {
+          pipelineLogger.info("Challenges detected, pausing pipeline", {
+            challenges: challengeSummary,
+          });
 
-        progressHelpers.crawlingComplete(discoveredJobs.length);
+          progressHelpers.challengeRequired(pendingChallenges);
+
+          // Block until all challenges are resolved by the solve-challenge API.
+          // The Promise is resolved by `resolvePipelineChallenge()`, which is
+          // called from the POST /api/pipeline/solve-challenge endpoint (4d).
+          // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
+          // and ensureNotCancelled() fires after the Promise resolves.
+          const challengedSources = pendingChallenges.flatMap((c) => c.sources);
+
+          await new Promise<void>((resolve) => {
+            tenantState.activeChallengeState = {
+              challenges: new Map(
+                pendingChallenges.map((c) => [c.extractorId, c]),
+              ),
+              resolve,
+            };
+          });
+          tenantState.activeChallengeState = null;
+
+          ensureNotCancelled(tenantId);
+
+          // Re-run only the extractors that had challenges
+          pipelineLogger.info("Challenges resolved, re-running extractors", {
+            sources: challengedSources,
+          });
+
+          const retryConfig = { ...mergedConfig, sources: challengedSources };
+          const retryResult = await discoverJobsStep({
+            mergedConfig: retryConfig,
+            shouldCancel: () =>
+              getPipelineState(tenantId).cancelRequestedAt !== null,
+          });
+
+          discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
+          sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
+          pendingChallenges = retryResult.pendingChallenges;
+
+          // If the retry itself hits challenges again (e.g. cookie expired
+          // between solve and retry), we don't loop — just continue with whatever
+          // the first run discovered.  The user will see partial results and can
+          // re-run the pipeline.
+          if (retryResult.pendingChallenges.length > 0) {
+            pipelineLogger.warn(
+              "Retry after challenge still has challenges — continuing with partial results",
+              {
+                retryPendingChallenges: retryResult.pendingChallenges.map(
+                  (c) => c.extractorId,
+                ),
+              },
+            );
+          }
+
+          progressHelpers.crawlingComplete(discoveredJobs.length);
+        }
       }
 
       ensureNotCancelled(tenantId);

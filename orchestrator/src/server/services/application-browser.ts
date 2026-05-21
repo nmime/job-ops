@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { badRequest, serviceUnavailable, upstreamError } from "@infra/errors";
@@ -8,7 +8,7 @@ import { getPaidChallengeSolverOptions } from "@server/services/captcha-solver";
 import { getPdfPath } from "@server/services/pdf";
 import { getProfile } from "@server/services/profile";
 import type { Job, ResumeProfile } from "@shared/types";
-import type { Locator, Page } from "playwright";
+import type { Browser, Locator, Page } from "playwright";
 
 export type BrowserAutoApplyResult = {
   mode: "browser";
@@ -50,6 +50,7 @@ type CaptchaDetection =
       cData?: string;
     }
   | { type: "image"; pageUrl: string }
+  | { type: "cloudflare"; pageUrl: string }
   | { type: null; pageUrl: string };
 
 type CaptchaSolveOutcome = BrowserAutoApplyResult["captcha"];
@@ -392,12 +393,22 @@ async function detectCaptcha(page: Page): Promise<CaptchaDetection> {
         invisible: recaptcha.dataset.size === "invisible",
       };
     }
+    var bodyText = (document.body && document.body.innerText || "").toLowerCase();
+    var titleText = (document.title || "").toLowerCase();
     if (
       document.querySelector(
         'img[src*="captcha" i], img[alt*="captcha" i], input[name*="captcha" i]'
       )
     ) {
       return { type: "image", pageUrl: pageUrl };
+    }
+    if (
+      titleText.includes("just a moment") ||
+      bodyText.includes("performing security verification") ||
+      bodyText.includes("verify you are not a bot") ||
+      bodyText.includes("cloudflare") && bodyText.includes("ray id")
+    ) {
+      return { type: "cloudflare", pageUrl: pageUrl };
     }
     return { type: null, pageUrl: pageUrl };
   })()`);
@@ -431,6 +442,10 @@ function captchaTaskFor(
       };
     case "image":
       return { type: "ImageToTextTask", body: imageBody ?? "" };
+    case "cloudflare":
+      throw new Error(
+        "Cloudflare managed challenge cannot be solved without a Turnstile sitekey.",
+      );
   }
 }
 
@@ -579,6 +594,17 @@ async function solveCaptchaIfPresent(
     };
   }
 
+  if (detection.type === "cloudflare") {
+    return {
+      attempted: false,
+      solved: false,
+      type: detection.type,
+      provider: null,
+      message:
+        "Cloudflare managed challenge/security verification detected; no usable ATS form is reachable yet.",
+    };
+  }
+
   const paidSolver = await getPaidChallengeSolverOptions();
   if (!paidSolver) {
     return {
@@ -636,6 +662,7 @@ async function solveCaptchaIfPresent(
 async function humanClick(locator: Locator): Promise<boolean> {
   try {
     const target = locator.first();
+    if ((await target.count().catch(() => 0)) === 0) return false;
     if (!(await target.isVisible({ timeout: 1_000 }).catch(() => false)))
       return false;
     const box = await target.boundingBox({ timeout: 1_000 }).catch(() => null);
@@ -656,26 +683,249 @@ async function humanClick(locator: Locator): Promise<boolean> {
   }
 }
 
-async function clickSubmit(page: Page): Promise<boolean> {
+type ClickOutcome = { clicked: boolean; page: Page };
+
+async function dismissCookieOverlays(page: Page): Promise<void> {
   const selectors = [
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:has-text("Submit")',
-    'button:has-text("Apply")',
-    'button:has-text("Send")',
-    'button:has-text("Continue")',
-    '[role="button"]:has-text("Submit")',
-    '[role="button"]:has-text("Apply")',
+    'button:has-text("Accept all")',
+    'button:has-text("Accept All")',
+    'button:has-text("Accept")',
+    'button:has-text("I agree")',
+    'button:has-text("Agree")',
+    'button:has-text("Allow all")',
+    '[role="button"]:has-text("Accept")',
+    '[aria-label*="accept" i]',
+    "#onetrust-accept-btn-handler",
+    ".cc-allow",
+    ".cookie-accept",
   ];
   for (const selector of selectors) {
-    if (await humanClick(page.locator(selector))) return true;
+    const locator = page.locator(selector).first();
+    if ((await locator.count().catch(() => 0)) === 0) continue;
+    if (!(await locator.isVisible({ timeout: 500 }).catch(() => false)))
+      continue;
+    await locator.click({ timeout: 1_500 }).catch(() => undefined);
+    await page.waitForTimeout(250).catch(() => undefined);
+    return;
   }
-  return false;
+}
+
+async function clickAndFollow(locator: Locator): Promise<ClickOutcome | null> {
+  const target = locator.first();
+  if ((await target.count().catch(() => 0)) === 0) return null;
+  if (await target.isDisabled().catch(() => false)) return null;
+  const ariaDisabled = await target
+    .getAttribute("aria-disabled")
+    .catch(() => null);
+  if (ariaDisabled?.toLowerCase() === "true") return null;
+  const currentPage = target.page();
+  const popupPromise = currentPage
+    .waitForEvent("popup", { timeout: 7_500 })
+    .catch(() => null);
+  const clicked = await humanClick(target);
+  if (!clicked) return null;
+  const popup = await popupPromise;
+  const nextPage = popup ?? currentPage;
+  await nextPage
+    .waitForLoadState("domcontentloaded", { timeout: 20_000 })
+    .catch(() => undefined);
+  await nextPage
+    .waitForLoadState("networkidle", { timeout: 10_000 })
+    .catch(() => undefined);
+  await dismissCookieOverlays(nextPage).catch(() => undefined);
+  return { clicked: true, page: nextPage };
+}
+
+async function clickFirstMatching(
+  page: Page,
+  selectors: string[],
+): Promise<ClickOutcome | null> {
+  await dismissCookieOverlays(page).catch(() => undefined);
+  for (const selector of selectors) {
+    const count = Math.min(
+      await page
+        .locator(selector)
+        .count()
+        .catch(() => 0),
+      8,
+    );
+    for (let index = 0; index < count; index += 1) {
+      const outcome = await clickAndFollow(page.locator(selector).nth(index));
+      if (outcome) return outcome;
+    }
+  }
+  return null;
+}
+
+async function hasApplicationFormSignal(page: Page): Promise<boolean> {
+  return await page
+    .evaluate<boolean>(
+      `(() => {
+      var fields = document.querySelectorAll(
+        'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select'
+      ).length;
+      var upload = document.querySelectorAll('input[type=file]').length;
+      var text = (document.body && document.body.innerText || '').toLowerCase();
+      return upload > 0 || fields >= 3 ||
+        (fields > 0 && /resume|cv|cover letter|phone|email/.test(text));
+    })()`,
+    )
+    .catch(() => false);
+}
+
+const initialApplySelectors = [
+  'a[target="_blank"]:has-text("Apply")',
+  'a:has-text("Easy Apply")',
+  'button:has-text("Easy Apply")',
+  '[role="button"]:has-text("Easy Apply")',
+  '[role="link"]:has-text("Easy Apply")',
+  'a:has-text("Apply now")',
+  'button:has-text("Apply now")',
+  '[role="button"]:has-text("Apply now")',
+  '[role="link"]:has-text("Apply now")',
+  'a:has-text("Apply to this job")',
+  'button:has-text("Apply to this job")',
+  'a:has-text("Apply on website")',
+  'button:has-text("Apply on website")',
+  'a:has-text("Apply on company site")',
+  'button:has-text("Apply on company site")',
+  'a:has-text("Apply for this job")',
+  'button:has-text("Apply for this job")',
+  'a:has-text("Start application")',
+  'button:has-text("Start application")',
+  'a:has-text("Continue application")',
+  'button:has-text("Continue application")',
+  'a:has-text("Apply")',
+  'button:has-text("Apply")',
+  '[role="button"]:has-text("Apply")',
+  '[role="link"]:has-text("Apply")',
+  '[data-control-name*="jobdetails_topcard" i]',
+  '[data-testid*="apply" i]',
+  '[data-qa*="apply" i]',
+  '[aria-label*="Apply" i]',
+  'a[href*="/apply" i]',
+];
+
+async function findExternalApplyUrl(page: Page): Promise<string | null> {
+  return await page
+    .evaluate<string | null>(
+      `(() => {
+      var currentHost = window.location.hostname.replace(/^www\./, '');
+      var ats = /greenhouse|lever\.co|workday|ashbyhq|bamboohr|jobvite|smartrecruiters|icims|recruitee|personio|teamtailor|pinpointhq|comeet|workable|applytojob|myworkdayjobs/i;
+      var applyText = /apply|apply now|apply to this job|apply on website|start application|continue application/i;
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href], [role="link"][href]'));
+      for (var i = 0; i < links.length; i += 1) {
+        var link = links[i];
+        var href = link.href || '';
+        if (!/^https?:/i.test(href)) continue;
+        var text = ((link.innerText || link.getAttribute('aria-label') || link.getAttribute('title') || '') + ' ' + href).trim();
+        var host = '';
+        try { host = new URL(href).hostname.replace(/^www\./, ''); } catch (error) {}
+        if (!ats.test(href) && !applyText.test(text)) continue;
+        if (host === currentHost && !ats.test(href)) continue;
+        if (/login|privacy|terms|mailto:|share|linkedin\.com\/company/i.test(href)) continue;
+        return href;
+      }
+      var forms = Array.prototype.slice.call(document.querySelectorAll('form[action]'));
+      for (var j = 0; j < forms.length; j += 1) {
+        var action = forms[j].action || '';
+        if (/^https?:/i.test(action) && ats.test(action)) return action;
+      }
+      return null;
+    })()`,
+    )
+    .catch(() => null);
+}
+
+async function openInitialApplyFlow(page: Page): Promise<Page> {
+  let currentPage = page;
+  for (let step = 0; step < 3; step += 1) {
+    await dismissCookieOverlays(currentPage).catch(() => undefined);
+    if (await hasApplicationFormSignal(currentPage)) return currentPage;
+    const externalUrl = await findExternalApplyUrl(currentPage);
+    if (externalUrl) {
+      await currentPage.goto(externalUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: getBrowserTimeoutMs(),
+      });
+      await currentPage
+        .waitForLoadState("networkidle", { timeout: 10_000 })
+        .catch(() => undefined);
+      continue;
+    }
+    const outcome = await clickFirstMatching(
+      currentPage,
+      initialApplySelectors,
+    );
+    if (!outcome) return currentPage;
+    currentPage = outcome.page;
+  }
+  return currentPage;
+}
+
+async function clickSubmit(page: Page): Promise<ClickOutcome> {
+  let currentPage = page;
+  let clickedAny = false;
+  const finalSelectors = [
+    'button[type="submit"]:has-text("Submit")',
+    'button[type="submit"]:has-text("Send")',
+    'button[type="submit"]:has-text("Apply")',
+    'input[type="submit"]',
+    'input[value*="Submit" i]',
+    'input[value*="Send" i]',
+    'input[value*="Apply" i]',
+    'button:has-text("Submit application")',
+    'button:has-text("Submit Application")',
+    'button:has-text("Submit your application")',
+    'button:has-text("Send application")',
+    'button:has-text("Send Application")',
+    'button:has-text("Apply for this job")',
+    'button:has-text("Apply now")',
+    'button:has-text("Review and submit")',
+    '[role="button"]:has-text("Submit application")',
+    '[role="button"]:has-text("Submit")',
+    '[role="button"]:has-text("Send application")',
+    '[role="button"]:has-text("Send")',
+    '[data-qa*="submit" i]',
+    '[data-testid*="submit" i]',
+    '[aria-label*="submit" i]',
+    'button[type="submit"]',
+  ];
+  const progressSelectors = [
+    'button:has-text("Review")',
+    '[role="button"]:has-text("Review")',
+    'button:has-text("Continue")',
+    '[role="button"]:has-text("Continue")',
+    'a:has-text("Continue")',
+    'button:has-text("Next")',
+    '[role="button"]:has-text("Next")',
+    'a:has-text("Next")',
+    'button:has-text("Save and continue")',
+    'button:has-text("Start application")',
+  ];
+
+  for (let step = 0; step < 6; step += 1) {
+    await dismissCookieOverlays(currentPage).catch(() => undefined);
+    const finalOutcome = await clickFirstMatching(currentPage, finalSelectors);
+    if (finalOutcome) return finalOutcome;
+
+    const progressOutcome = await clickFirstMatching(
+      currentPage,
+      progressSelectors,
+    );
+    if (!progressOutcome) break;
+    clickedAny = true;
+    currentPage = progressOutcome.page;
+    await currentPage.waitForTimeout(800 + Math.floor(Math.random() * 700));
+  }
+
+  return { clicked: clickedAny, page: currentPage };
 }
 
 async function hasSuccessSignal(page: Page): Promise<boolean> {
   return await page
-    .evaluate<boolean>(`(() => {
+    .evaluate<boolean>(
+      `(() => {
       var text = document.body.innerText.toLowerCase();
       var signals = [
         "application submitted",
@@ -685,15 +935,23 @@ async function hasSuccessSignal(page: Page): Promise<boolean> {
         "your application has been submitted",
         "we received your application",
         "successfully submitted",
+        "submitted successfully",
+        "application sent",
+        "application complete",
+        "applied successfully",
+        "we have received your application",
+        "we'll be in touch",
       ];
       return signals.some(function (signal) { return text.includes(signal); });
-    })()`)
+    })()`,
+    )
     .catch(() => false);
 }
 
 async function hasBlockingErrorSignal(page: Page): Promise<boolean> {
   return await page
-    .evaluate<boolean>(`(() => {
+    .evaluate<boolean>(
+      `(() => {
       var text = document.body.innerText.toLowerCase();
       var signals = [
         "required",
@@ -703,7 +961,8 @@ async function hasBlockingErrorSignal(page: Page): Promise<boolean> {
         "please complete",
       ];
       return signals.some(function (signal) { return text.includes(signal); });
-    })()`)
+    })()`,
+    )
     .catch(() => false);
 }
 
@@ -755,6 +1014,78 @@ export function isFullAutoCaptchaEnabled(
   return parseBoolean(explicit);
 }
 
+function getBundledFirefoxExecutablePath(): string | undefined {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH || "/ms-playwright";
+  try {
+    const candidates = readdirSync(root)
+      .filter((name) => name.startsWith("firefox-"))
+      .sort()
+      .reverse()
+      .map((name) => join(root, name, "firefox", "firefox"));
+    return candidates.find((candidate) => existsSync(candidate));
+  } catch {
+    return undefined;
+  }
+}
+
+async function launchBrowser(): Promise<{
+  browser: Browser;
+  browserName: "chromium" | "firefox";
+}> {
+  const { chromium, firefox } = await import("playwright");
+  const requested = (process.env.JOBOPS_FULL_AUTO_BROWSER ?? "chromium")
+    .trim()
+    .toLowerCase();
+  const order: ("chromium" | "firefox")[] =
+    requested === "firefox" ? ["firefox", "chromium"] : ["chromium", "firefox"];
+  const headless = process.env.JOBOPS_FULL_AUTO_BROWSER_HEADLESS !== "0";
+  const args = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+  ];
+  let lastError: unknown;
+
+  for (const browserName of order) {
+    try {
+      const browserType = browserName === "chromium" ? chromium : firefox;
+      const launchOptions = {
+        headless,
+        args,
+        env:
+          browserName === "firefox"
+            ? {
+                ...process.env,
+                MOZ_DISABLE_CONTENT_SANDBOX: "1",
+                MOZ_DISABLE_RDD_SANDBOX: "1",
+                MOZ_DISABLE_GMP_SANDBOX: "1",
+              }
+            : process.env,
+      };
+      const browser = await browserType.launch(
+        browserName === "firefox"
+          ? {
+              ...launchOptions,
+              executablePath: getBundledFirefoxExecutablePath(),
+            }
+          : launchOptions,
+      );
+      logger.info("Full-auto browser launched", { browserName });
+      return { browser, browserName };
+    } catch (error) {
+      lastError = error;
+      logger.warn("Full-auto browser launch failed", {
+        browserName,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export async function submitPortalApplication(
   job: Job,
   options: BrowserAutoApplyOptions = {},
@@ -791,25 +1122,20 @@ export async function submitPortalApplication(
     return null;
   });
   const timeoutMs = getBrowserTimeoutMs();
-  let browser:
-    | Awaited<ReturnType<typeof import("playwright")["firefox"]["launch"]>>
-    | undefined;
+  let browser: Browser | undefined;
+  let browserName: "chromium" | "firefox" | undefined;
   let page: Page | undefined;
 
   try {
-    const { firefox } = await import("playwright");
-    browser = await firefox.launch({
-      headless: process.env.JOBOPS_FULL_AUTO_BROWSER_HEADLESS !== "0",
-      args: [
-        "--disable-blink-features=AutomationControlled",
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-      ],
-    });
+    const launched = await launchBrowser();
+    browser = launched.browser;
+    browserName = launched.browserName;
     const context = await browser.newContext({
       userAgent:
         process.env.JOBOPS_FULL_AUTO_BROWSER_USER_AGENT ||
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0",
+        (browserName === "firefox"
+          ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/144.0"
+          : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"),
       viewport: { width: 1440, height: 1000 },
       locale: "en-US",
       timezoneId:
@@ -821,8 +1147,11 @@ export async function submitPortalApplication(
     await page
       .waitForLoadState("networkidle", { timeout: 15_000 })
       .catch(() => undefined);
+    page = await openInitialApplyFlow(page);
+    await installStealth(page).catch(() => undefined);
 
     const fieldsFilled = await fillApplicationForm(page, job, profile);
+    await dismissCookieOverlays(page).catch(() => undefined);
     const resumeUploaded = await uploadResume(page, job);
     await page.waitForTimeout(500 + Math.floor(Math.random() * 750));
     const captcha = await solveCaptchaIfPresent(
@@ -846,7 +1175,9 @@ export async function submitPortalApplication(
       };
     }
 
-    const submitClicked = await clickSubmit(page);
+    const submitOutcome = await clickSubmit(page);
+    page = submitOutcome.page;
+    const submitClicked = submitOutcome.clicked;
     await page
       .waitForLoadState("domcontentloaded", { timeout: 20_000 })
       .catch(() => undefined);
@@ -854,7 +1185,7 @@ export async function submitPortalApplication(
 
     const success = await hasSuccessSignal(page);
     const blockingError = await hasBlockingErrorSignal(page);
-    if (submitClicked && (success || !blockingError)) {
+    if (submitClicked && success) {
       return {
         mode: "browser",
         status: "submitted",

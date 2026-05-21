@@ -9,7 +9,7 @@ services:
       dockerfile: Dockerfile
       secrets:
         - github_token
-    image: ghcr.io/dakheera47/job-ops:latest
+    image: ghcr.io/nmime/job-ops:latest
     container_name: job-ops
     ports:
       - "3005:3001"

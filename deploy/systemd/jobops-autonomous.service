@@ -1,0 +1,23 @@
+[Unit]
+Description=Job Ops autonomous service cycle
+Documentation=https://github.com/nmime/job-ops
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/job-ops
+Environment=JOBOPS_ROOT=/opt/job-ops
+Environment=JOBOPS_CONTAINER=job-ops
+Environment=JOBOPS_AUTONOMOUS_STATUS_FILE=/tmp/jobops_autonomous_service_latest_status.json
+Environment=JOBOPS_AUTONOMOUS_STALE_RUN_HOURS=6
+Environment=JOBOPS_AUTONOMOUS_DRAIN_DELAY_MS=1200
+ExecStart=/usr/bin/timeout --preserve-status 50m /opt/job-ops/scripts/autonomous/jobops-autonomous-run.sh
+TimeoutStartSec=55m
+KillMode=mixed
+StandardOutput=append:/opt/job-ops/logs/autonomous-service.log
+StandardError=append:/opt/job-ops/logs/autonomous-service.log
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

@@ -47,6 +47,7 @@ describe("background discovery service", () => {
       topN: 3,
       minSuitabilityScore: 70,
       sources: ["remotive", "jobicy"],
+      pauseOnChallenges: false,
     });
 
     service.stop();

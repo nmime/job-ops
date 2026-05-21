@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Job Ops autonomous service cycle periodically
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=37m
+RandomizedDelaySec=90s
+Persistent=true
+Unit=jobops-autonomous.service
+
+[Install]
+WantedBy=timers.target

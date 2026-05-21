@@ -195,7 +195,10 @@ export async function discoverJobsStep(args: {
       searchScope: settings.locationSearchScope,
       matchStrictness: settings.locationMatchStrictness,
     });
-  const sourcePlans = args.mergedConfig.sources.map((source) => ({
+  const configuredSources = Array.isArray(args.mergedConfig.sources)
+    ? args.mergedConfig.sources
+    : [];
+  const sourcePlans = configuredSources.map((source) => ({
     source,
     plan: getSourceLocationPlan(source, locationIntent),
   }));
@@ -216,13 +219,13 @@ export async function discoverJobsStep(args: {
       step: "discover-jobs",
       locationIntent,
       primaryLocation: getPrimaryLocationLabel(locationIntent),
-      requestedSources: args.mergedConfig.sources,
+      requestedSources: configuredSources,
       skippedSources: skippedSources.map(({ source }) => source),
       warnings: skippedSources.flatMap(({ plan }) => plan.warnings),
     });
   }
 
-  if (args.mergedConfig.sources.length > 0 && compatibleSources.length === 0) {
+  if (configuredSources.length > 0 && compatibleSources.length === 0) {
     throw new Error(
       locationIntent.selectedCountry
         ? `No compatible sources for selected country: ${formatCountryLabel(locationIntent.selectedCountry)}`
