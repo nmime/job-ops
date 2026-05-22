@@ -14,11 +14,11 @@ import {
   completePostApplicationSyncRun,
   startPostApplicationSyncRun,
 } from "@server/repositories/post-application-sync-runs";
-import { transitionStage } from "@server/services/applicationTracking";
 import {
   analyzeInboundApplicationEmail,
   redactEmailAddress,
 } from "@server/services/application-email-analysis";
+import { transitionStage } from "@server/services/applicationTracking";
 import { resolveStageTransitionForTarget } from "@server/services/post-application/stage-target";
 import type { PostApplicationRouterStageTarget } from "@shared/types";
 import { classifyWithSmartRouter, minifyActiveJobs } from "./email-router";

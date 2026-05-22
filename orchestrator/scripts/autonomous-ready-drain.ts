@@ -1,12 +1,12 @@
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getDataDir } from "@server/config/dataDir";
 import { getAllJobs, getJobById, updateJob } from "@server/repositories/jobs";
-import { transitionStage } from "@server/services/applicationTracking";
 import {
   isFullAutoCaptchaEnabled,
   submitPortalApplication,
 } from "@server/services/application-browser";
+import { transitionStage } from "@server/services/applicationTracking";
 import {
   resolveAutoApplyRecipient,
   sendAutoApplication,
@@ -47,11 +47,7 @@ type JobResult = {
 const startedAt = new Date().toISOString();
 const outDir =
   process.env.DO_ALL_DIR ??
-  join(
-    getDataDir(),
-    "autonomous-ready-drain",
-    startedAt.replace(/[:.]/g, "-"),
-  );
+  join(getDataDir(), "autonomous-ready-drain", startedAt.replace(/[:.]/g, "-"));
 const resultPath = join(outDir, "autonomous-ready-drain-result.json");
 const progressPath = join(outDir, "autonomous-ready-drain-progress.json");
 const logPath = join(outDir, "autonomous-ready-drain.ndjson");
@@ -151,7 +147,10 @@ function isAtsHost(host: string): boolean {
   );
 }
 
-function addCandidateUrl(urls: Set<string>, value: string | null | undefined): void {
+function addCandidateUrl(
+  urls: Set<string>,
+  value: string | null | undefined,
+): void {
   if (!isHttpUrl(value)) return;
   try {
     const parsed = new URL(value);
@@ -162,7 +161,10 @@ function addCandidateUrl(urls: Set<string>, value: string | null | undefined): v
   }
 }
 
-function addDerivedCompanyUrls(urls: Set<string>, value: string | null | undefined): void {
+function addDerivedCompanyUrls(
+  urls: Set<string>,
+  value: string | null | undefined,
+): void {
   if (!isHttpUrl(value)) return;
   try {
     const origin = new URL(value).origin;
@@ -203,7 +205,8 @@ async function fetchText(url: string): Promise<string | null> {
         "user-agent":
           process.env.JOBOPS_FULL_AUTO_BROWSER_USER_AGENT ??
           "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36 JobOpsAutonomous/1.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
     const contentType = response.headers.get("content-type") ?? "";
@@ -215,9 +218,12 @@ async function fetchText(url: string): Promise<string | null> {
 }
 
 function extractEmails(text: string): string[] {
-  const blockedLocal = /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|privacy|security|support)$/i;
+  const blockedLocal =
+    /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|privacy|security|support)$/i;
   const emails = new Set<string>();
-  for (const match of text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
+  for (const match of text.matchAll(
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+  )) {
     const address = match[0].toLowerCase().replace(/[),.;:'"\]]+$/, "");
     const local = address.split("@")[0] ?? "";
     if (blockedLocal.test(local)) continue;
@@ -229,7 +235,9 @@ function extractEmails(text: string): string[] {
 function scoreEmail(address: string, job: Job, pageHosts: string[]): number {
   const [local = "", domain = ""] = address.split("@");
   let score = 0;
-  if (/(career|job|recruit|talent|people|hr|human|apply|application)/i.test(local)) {
+  if (
+    /(career|job|recruit|talent|people|hr|human|apply|application)/i.test(local)
+  ) {
     score += 14;
   }
   if (/(info|contact|hello|office|admin)/i.test(local)) score += 5;
@@ -259,7 +267,11 @@ function extractHrefCandidates(html: string, baseUrl: string): string[] {
       const url = new URL(href, baseUrl);
       url.hash = "";
       const value = url.toString();
-      if (/(apply|career|job|position|vacanc|opening|greenhouse|lever|ashby|workday|smartrecruiters|workable|recruitee|personio|teamtailor|join\.com)/i.test(value)) {
+      if (
+        /(apply|career|job|position|vacanc|opening|greenhouse|lever|ashby|workday|smartrecruiters|workable|recruitee|personio|teamtailor|join\.com)/i.test(
+          value,
+        )
+      ) {
         candidates.add(value);
       }
     } catch {
@@ -280,10 +292,11 @@ function scorePortal(url: string, job: Job): number {
   if (/apply|application/.test(lower)) score += 8;
   if (/career|job|position|vacanc|opening/.test(lower)) score += 5;
   if (!isAggregatorHost(host)) score += 3;
-  const tokens = `${job.employer} ${job.title}`
-    .toLowerCase()
-    .match(/[a-z0-9]{4,}/g)
-    ?.slice(0, 10) ?? [];
+  const tokens =
+    `${job.employer} ${job.title}`
+      .toLowerCase()
+      .match(/[a-z0-9]{4,}/g)
+      ?.slice(0, 10) ?? [];
   for (const token of tokens) {
     if (lower.includes(token)) score += 1;
   }
@@ -316,7 +329,8 @@ async function resolveDestination(job: Job): Promise<DestinationResolution> {
     const html = await fetchText(url);
     if (!html) continue;
     const text = htmlToText(html);
-    for (const email of extractEmails(`${html}\n${text}`)) foundEmails.add(email);
+    for (const email of extractEmails(`${html}\n${text}`))
+      foundEmails.add(email);
 
     for (const candidate of extractHrefCandidates(html, url)) {
       const candidateHost = hostname(candidate);
@@ -362,7 +376,9 @@ async function hydratePdfFreshness(job: Job): Promise<Job> {
 }
 
 function hasUsablePdf(job: Job): boolean {
-  return Boolean(job.pdfPath) && !job.pdfRegenerating && job.pdfFreshness !== "stale";
+  return (
+    Boolean(job.pdfPath) && !job.pdfRegenerating && job.pdfFreshness !== "stale"
+  );
 }
 
 async function markApplied(job: Job, note: string): Promise<void> {
@@ -430,7 +446,9 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
     }
     stats.portalNeedsReview += 1;
     result.portalError = redact(
-      portal.reason ?? portal.captcha.message ?? "portal application needs review",
+      portal.reason ??
+        portal.captcha.message ??
+        "portal application needs review",
     );
     return false;
   } catch (error) {
@@ -474,15 +492,23 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
     const updated = await updateJob(job.id, {
       applicationLink: `mailto:${resolved.email}`,
     });
-    if (updated && (await tryEmail(await hydratePdfFreshness(updated), result))) {
+    if (
+      updated &&
+      (await tryEmail(await hydratePdfFreshness(updated), result))
+    ) {
       return result;
     }
   }
 
   if (resolved.portal) {
     stats.resolvedPortal += 1;
-    const updated = await updateJob(job.id, { applicationLink: resolved.portal });
-    if (updated && (await tryPortal(await hydratePdfFreshness(updated), result))) {
+    const updated = await updateJob(job.id, {
+      applicationLink: resolved.portal,
+    });
+    if (
+      updated &&
+      (await tryPortal(await hydratePdfFreshness(updated), result))
+    ) {
       return result;
     }
   }
@@ -521,7 +547,11 @@ async function main(): Promise<void> {
       const result = await handleReadyJob(job);
       results.push(result);
       stats.processed += 1;
-      await appendLog({ ts: new Date().toISOString(), event: "job_done", ...result });
+      await appendLog({
+        ts: new Date().toISOString(),
+        event: "job_done",
+        ...result,
+      });
     } catch (error) {
       stats.errors += 1;
       const result: JobResult = {
@@ -532,7 +562,11 @@ async function main(): Promise<void> {
         blocker: redact(error instanceof Error ? error.message : error),
       };
       results.push(result);
-      await appendLog({ ts: new Date().toISOString(), event: "job_error", ...result });
+      await appendLog({
+        ts: new Date().toISOString(),
+        event: "job_error",
+        ...result,
+      });
     }
     await writeProgress(false);
     if (delayMs > 0) await sleep(delayMs);
@@ -556,7 +590,9 @@ main().catch(async (error) => {
     startedAt,
     finishedAt: new Date().toISOString(),
     stats,
-    error: redact(error instanceof Error ? error.stack ?? error.message : error),
+    error: redact(
+      error instanceof Error ? (error.stack ?? error.message) : error,
+    ),
     paths: { outDir, resultPath, progressPath, logPath },
   };
   await mkdir(outDir, { recursive: true });

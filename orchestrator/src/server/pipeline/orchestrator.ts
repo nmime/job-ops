@@ -231,7 +231,11 @@ export async function runPipeline(
   const configOverrides = Object.fromEntries(
     Object.entries(config).filter(([, value]) => value !== undefined),
   ) as Partial<PipelineConfig>;
-  const mergedConfig = { ...DEFAULT_CONFIG, ...configOverrides, locationIntent };
+  const mergedConfig = {
+    ...DEFAULT_CONFIG,
+    ...configOverrides,
+    locationIntent,
+  };
   const configSnapshot = {
     topN: mergedConfig.topN,
     minSuitabilityScore: mergedConfig.minSuitabilityScore,

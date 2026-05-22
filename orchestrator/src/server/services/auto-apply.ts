@@ -6,15 +6,15 @@ import tls from "node:tls";
 import { badRequest, serviceUnavailable, upstreamError } from "@infra/errors";
 import { logger } from "@infra/logger";
 import {
-  chooseApplicationRecipient,
-  normalizeRecipientAddress,
-  redactEmailAddress,
-} from "@server/services/application-email-analysis";
-import {
   createApplicationEmailAttempt,
   findSuccessfulApplicationEmailAttempt,
   updateApplicationEmailAttemptStatus,
 } from "@server/repositories/application-email-attempts";
+import {
+  chooseApplicationRecipient,
+  normalizeRecipientAddress,
+  redactEmailAddress,
+} from "@server/services/application-email-analysis";
 import { getPdfPath } from "@server/services/pdf";
 import { getProfile } from "@server/services/profile";
 import type { Job, ResumeProfile } from "@shared/types";

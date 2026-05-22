@@ -335,7 +335,11 @@ describe("runRemoteApiJobs", () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.includes("search_by_date")) {
         return Promise.resolve(
-          createJsonResponse({ hits: [{ objectID: "123", title: "Ask HN: Who is hiring? (May 2026)" }] }),
+          createJsonResponse({
+            hits: [
+              { objectID: "123", title: "Ask HN: Who is hiring? (May 2026)" },
+            ],
+          }),
         );
       }
 

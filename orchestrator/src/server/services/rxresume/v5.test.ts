@@ -4,10 +4,10 @@ import {
   deleteResume,
   exportResumePdf,
   fetchRxResume,
-  setRxResumeRetrySleepForTests,
   getResume,
   importResume,
   listResumes,
+  setRxResumeRetrySleepForTests,
 } from "./v5";
 
 const sampleResume = buildDefaultReactiveResumeDocument();

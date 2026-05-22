@@ -885,7 +885,8 @@ const HN_CANDIDATE_REPLY_RE =
   /\b(i\s+am\s+interested|i'?m\s+interested|interested\s+in\s+this|my\s+(?:resume|cv|experience|background)|i\s+(?:have|am|can|build|built)|available\s+for|looking\s+for\s+(?:work|a\s+job)|sent\s+you|dm\s+me|reach\s+out\s+to\s+me)\b/i;
 const HN_HIRING_SIGNAL_RE =
   /\b(we\s+are\s+hiring|we'?re\s+hiring|hiring\s+(?:for|a|multiple)|looking\s+for|we\s+are\s+seeking|seeking\s+(?:a|an)|join\s+(?:us|our\s+team)|apply\s+(?:at|to|by)|send\s+(?:your\s+)?(?:resume|cv)|roles?\s*:)\b/i;
-const HN_ROLE_RE = /\b(engineer|developer|designer|founder|manager|scientist|analyst|product|backend|frontend|full[- ]stack|devops|security|data)\b/i;
+const HN_ROLE_RE =
+  /\b(engineer|developer|designer|founder|manager|scientist|analyst|product|backend|frontend|full[- ]stack|devops|security|data)\b/i;
 
 function extractFirstEmail(value: string | undefined): string | undefined {
   const plain = stripHtml(value);
@@ -897,7 +898,10 @@ function isHnHiringComment(job: RawJob): boolean {
   const plainText = stripHtml(asString(job.text)) ?? "";
   if (!plainText) return false;
   if (HN_STALE_APPLICATION_RE.test(plainText)) return false;
-  if (HN_CANDIDATE_REPLY_RE.test(plainText) && !HN_HIRING_SIGNAL_RE.test(plainText)) {
+  if (
+    HN_CANDIDATE_REPLY_RE.test(plainText) &&
+    !HN_HIRING_SIGNAL_RE.test(plainText)
+  ) {
     return false;
   }
 

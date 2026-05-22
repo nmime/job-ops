@@ -809,7 +809,7 @@ const initialApplySelectors = [
 async function findExternalApplyUrl(page: Page): Promise<string | null> {
   return await page
     .evaluate<string | null>(
-      `(() => {
+      String.raw`(() => {
       var currentHost = window.location.hostname.replace(/^www\./, '');
       var ats = /greenhouse|lever\.co|workday|ashbyhq|bamboohr|jobvite|smartrecruiters|icims|recruitee|personio|teamtailor|pinpointhq|comeet|workable|applytojob|myworkdayjobs/i;
       var applyText = /apply|apply now|apply to this job|apply on website|start application|continue application/i;
@@ -1212,7 +1212,9 @@ export async function submitPortalApplication(
       captcha,
       screenshotPath,
       reason: submitClicked
-        ? "Portal still showed required/invalid/CAPTCHA signals after submit."
+        ? blockingError
+          ? "Portal still showed required/invalid/CAPTCHA signals after submit."
+          : "Portal did not show a success signal after submit."
         : "No usable submit/apply button was found.",
     };
   } catch (error) {
