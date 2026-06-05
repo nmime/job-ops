@@ -30,6 +30,7 @@ import {
 import * as pipelineRepo from "@server/repositories/pipeline";
 import * as pipelineSearchPresetsRepo from "@server/repositories/pipeline-search-presets";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
+import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import {
   buildChallengeViewerUrl,
   createChallengeViewerSession,
@@ -682,17 +683,24 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
     // DATA_DIR rather than under extractor source directories.
     const storageDir = join(getDataDir(), "cloudflare-cookies");
 
-    // Dynamic import: browser-utils pulls in playwright which is heavy.
-    // A top-level import would slow down every server startup even though
-    // most pipeline runs never hit a challenge.
-    await ensureChallengeViewer();
-
-    const { solveChallenge } = await import("browser-utils");
-    const result = await solveChallenge(
-      challengeUrl,
-      body.extractorId,
+    const automaticSolve = await solveExtractorChallenge({
+      extractorId: body.extractorId,
+      url: challengeUrl,
       storageDir,
-    );
+      logContext: { route: "/api/pipeline/solve-challenge" },
+    });
+
+    const result = automaticSolve.attempted
+      ? automaticSolve.result
+      : await (async () => {
+          // Dynamic import: browser-utils pulls in playwright which is heavy.
+          // A top-level import would slow down every server startup even though
+          // most pipeline runs never hit a challenge.
+          await ensureChallengeViewer();
+
+          const { solveChallenge } = await import("browser-utils");
+          return solveChallenge(challengeUrl, body.extractorId, storageDir);
+        })();
 
     if (result.status === "solved") {
       const { remaining } = resolvePipelineChallenge(body.extractorId);
