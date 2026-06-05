@@ -29,10 +29,7 @@ type CachedHealthCheckEntry = {
   result: ExtractorHealthCheckResult;
 };
 
-const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
-  ExtractorSourceId,
-  HealthProbeConfig
-> = {
+const HEALTH_PROBE_CONFIG_BY_SOURCE = {
   gradcracker: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
@@ -63,6 +60,76 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
       jobspyCountryIndeed: "UK",
       jobspyResultsWanted: "1",
     },
+  },
+  remotive: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  jobicy: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  weworkremotely: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  themuse: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  arbeitnow: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  remoteok: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  greenhouse: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  lever: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  ashby: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  smartrecruiters: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  telegram: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  himalayas: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  hnhiring: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: { jobspyResultsWanted: "1" },
+  },
+  usajobs: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "united states",
+    settings: { jobspyResultsWanted: "1" },
   },
   ukvisajobs: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
@@ -141,12 +208,19 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
       wazzufMaxJobsPerTerm: "1",
     },
   },
+  everjobs: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
+    settings: {
+      jobspyResultsWanted: "1",
+    },
+  },
   manual: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
     settings: {},
   },
-};
+} satisfies Record<ExtractorSourceId, HealthProbeConfig>;
 
 const extractorHealthCache = new Map<
   ExtractorSourceId,

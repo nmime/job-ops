@@ -950,6 +950,59 @@ async function extractInitialDocumentText(input: {
   return null;
 }
 
+function inferLinkedInUsername(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!/(^|\.)linkedin\.com$/i.test(parsed.hostname)) return "";
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const profileIndex = parts.findIndex((part) => part.toLowerCase() === "in");
+    return profileIndex >= 0 ? (parts[profileIndex + 1] ?? "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function extractDeterministicResumeFromText(
+  documentText: string,
+): DesignResumeJson {
+  const lines = documentText
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const email =
+    documentText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? "";
+  const phone =
+    documentText.match(/(?:\+?\d[\d ().-]{7,}\d)/)?.[0]?.trim() ?? "";
+  const website =
+    documentText
+      .match(/https?:\/\/[^\s<>()]+/i)?.[0]
+      ?.replace(/[),.;]+$/, "") ?? "";
+  const profileUsername = inferLinkedInUsername(website);
+
+  return sanitizeNormalizedResume({
+    basics: {
+      name: lines[0] ?? "",
+      headline: lines[1] ?? "",
+      email,
+      phone,
+      website: { url: website, label: "" },
+    },
+    sections: {
+      profiles: {
+        items: profileUsername
+          ? [
+              {
+                network: "LinkedIn",
+                username: profileUsername,
+                website: { url: website, label: "" },
+              },
+            ]
+          : [],
+      },
+    },
+  });
+}
+
 function shouldFallbackToExtractedPdfText(input: {
   provider: SupportedRuntimeProvider;
   mediaType: SupportedImportMediaType;
@@ -1502,18 +1555,49 @@ export async function importDesignResumeFromFile(
     );
   }
 
+  let documentText = await extractInitialDocumentText({
+    provider,
+    mediaType,
+    decoded,
+  });
+
   if (providerRequiresApiKey(provider) && !runtime.apiKey) {
+    if (mediaType === DOCX_MIME && documentText) {
+      const saved = await replaceCurrentDesignResumeDocument({
+        importedAt: new Date().toISOString(),
+        resumeJson: extractDeterministicResumeFromText(documentText),
+        sourceMode: null,
+        sourceResumeId: null,
+      });
+
+      logger.info(
+        "Design resume DOCX import completed without AI credentials",
+        {
+          requestId: requestId ?? null,
+          provider,
+          model: runtime.model,
+          fileName,
+          mediaType,
+          documentId: saved.id,
+        },
+      );
+
+      return saved;
+    }
+
     throw serviceUnavailable(
       "Configure an LLM API key in Settings or set LLM_API_KEY in your environment before importing a resume file.",
     );
   }
 
   try {
-    let documentText = await extractInitialDocumentText({
-      provider,
-      mediaType,
-      decoded,
-    });
+    documentText =
+      documentText ??
+      (await extractInitialDocumentText({
+        provider,
+        mediaType,
+        decoded,
+      }));
     let rawText: string;
     try {
       rawText = await extractResumeFromProvider({

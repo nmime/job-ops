@@ -392,22 +392,22 @@ pipelineRouter.get(
 /**
  * POST /api/pipeline/run - Trigger the pipeline manually
  */
-const runPipelineSchema = z.object({
-  topN: z.number().min(1).max(50).optional(),
-  minSuitabilityScore: z.number().min(0).max(100).optional(),
-  sources: z.array(pipelineSourceSchema).min(1).optional(),
-  runBudget: z.number().min(50).max(1000).optional(),
-  searchTerms: z.array(z.string().trim().min(1)).optional(),
-  country: z.string().trim().optional(),
-  cityLocations: z.array(z.string().trim().min(1)).optional(),
-  workplaceTypes: z
-    .array(z.enum(WORKPLACE_TYPE_VALUES))
-    .min(1)
-    .max(3)
-    .optional(),
-  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
-  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
-});
+const runPipelineSchema = z
+  .object({
+    topN: z.number().min(1).max(50).optional(),
+    minSuitabilityScore: z.number().min(0).max(100).optional(),
+    sources: z.array(pipelineSourceSchema).min(1).optional(),
+    country: z.string().trim().optional(),
+    cityLocations: z.array(z.string().trim().min(1)).optional(),
+    workplaceTypes: z
+      .array(z.enum(WORKPLACE_TYPE_VALUES))
+      .min(1)
+      .max(3)
+      .optional(),
+    searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
+    matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
+  })
+  .strict();
 
 pipelineRouter.post("/run", async (req: Request, res: Response) => {
   try {
@@ -484,9 +484,7 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       return okWithMeta(res, simulated, { simulated: true });
     }
 
-    const searchTermsState = await ensurePipelineSearchTerms({
-      requestedSearchTerms: config.searchTerms,
-    });
+    const searchTermsState = await ensurePipelineSearchTerms({});
 
     // Start pipeline in background
     runWithRequestContext({}, () => {
