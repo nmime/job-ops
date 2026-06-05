@@ -53,6 +53,33 @@ describe("extractor deployment config", () => {
     );
   });
 
+
+  it("ships the Ever Jobs extractor in Docker runtime images", async () => {
+    const dockerfile = await readFile(resolve(process.cwd(), "../Dockerfile"), {
+      encoding: "utf8",
+    });
+
+    expect(dockerfile).toContain(
+      "COPY extractors/everjobs/package*.json ./extractors/everjobs/",
+    );
+    expect(dockerfile).toContain(
+      "COPY extractors/everjobs ./extractors/everjobs",
+    );
+  });
+
+  it("ships the Remote APIs extractor in Docker runtime images", async () => {
+    const dockerfile = await readFile(resolve(process.cwd(), "../Dockerfile"), {
+      encoding: "utf8",
+    });
+
+    expect(dockerfile).toContain(
+      "COPY extractors/remoteapis/package*.json ./extractors/remoteapis/",
+    );
+    expect(dockerfile).toContain(
+      "COPY extractors/remoteapis ./extractors/remoteapis",
+    );
+  });
+
   it("does not install a vanilla Node Playwright Firefox binary", async () => {
     // Camoufox is the only supported browser in production. The vanilla Firefox
     // fallback was removed so that a missing Camoufox binary surfaces as a hard
@@ -101,6 +128,27 @@ describe("extractor deployment config", () => {
 
     expect(composeFile).toContain("path: ./extractors/jobindex/src");
     expect(composeFile).toContain("target: /app/extractors/jobindex/src");
+  });
+
+
+  it("syncs the Ever Jobs extractor in compose development mode", async () => {
+    const composeFile = await readFile(
+      resolve(process.cwd(), "../docker-compose.yml"),
+      { encoding: "utf8" },
+    );
+
+    expect(composeFile).toContain("path: ./extractors/everjobs");
+    expect(composeFile).toContain("target: /app/extractors/everjobs");
+  });
+
+  it("syncs the Remote APIs extractor in compose development mode", async () => {
+    const composeFile = await readFile(
+      resolve(process.cwd(), "../docker-compose.yml"),
+      { encoding: "utf8" },
+    );
+
+    expect(composeFile).toContain("path: ./extractors/remoteapis/src");
+    expect(composeFile).toContain("target: /app/extractors/remoteapis/src");
   });
 
   it("syncs the Workday career board package in compose development mode", async () => {

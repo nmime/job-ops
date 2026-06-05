@@ -55,6 +55,12 @@ services:
         - path: ./extractors/gradcracker/src
           target: /app/extractors/gradcracker/src
           action: sync+restart
+        - path: ./extractors/everjobs
+          target: /app/extractors/everjobs
+          action: sync+restart
+        - path: ./extractors/remoteapis/src
+          target: /app/extractors/remoteapis/src
+          action: sync+restart
         - path: ./extractors/hiringcafe/src
           target: /app/extractors/hiringcafe/src
           action: sync+restart

@@ -80,6 +80,8 @@ COPY career-boards/workday/package*.json ./career-boards/workday/
 COPY extractors/adzuna/package*.json ./extractors/adzuna/
 COPY extractors/hiringcafe/package*.json ./extractors/hiringcafe/
 COPY extractors/gradcracker/package*.json ./extractors/gradcracker/
+COPY extractors/everjobs/package*.json ./extractors/everjobs/
+COPY extractors/remoteapis/package*.json ./extractors/remoteapis/
 COPY extractors/jobindex/package*.json ./extractors/jobindex/
 COPY extractors/naukri/package*.json ./extractors/naukri/
 COPY extractors/startupjobs/package*.json ./extractors/startupjobs/
@@ -108,6 +110,8 @@ COPY visa-sponsor-providers ./visa-sponsor-providers
 COPY extractors/adzuna ./extractors/adzuna
 COPY extractors/hiringcafe ./extractors/hiringcafe
 COPY extractors/gradcracker ./extractors/gradcracker
+COPY extractors/everjobs ./extractors/everjobs
+COPY extractors/remoteapis ./extractors/remoteapis
 COPY extractors/jobindex ./extractors/jobindex
 COPY extractors/jobspy ./extractors/jobspy
 COPY extractors/naukri ./extractors/naukri
@@ -155,6 +159,8 @@ COPY career-boards/workday/package*.json ./career-boards/workday/
 COPY extractors/adzuna/package*.json ./extractors/adzuna/
 COPY extractors/hiringcafe/package*.json ./extractors/hiringcafe/
 COPY extractors/gradcracker/package*.json ./extractors/gradcracker/
+COPY extractors/everjobs/package*.json ./extractors/everjobs/
+COPY extractors/remoteapis/package*.json ./extractors/remoteapis/
 COPY extractors/jobindex/package*.json ./extractors/jobindex/
 COPY extractors/naukri/package*.json ./extractors/naukri/
 COPY extractors/startupjobs/package*.json ./extractors/startupjobs/
@@ -248,6 +254,8 @@ COPY visa-sponsor-providers ./visa-sponsor-providers
 COPY extractors/adzuna ./extractors/adzuna
 COPY extractors/hiringcafe ./extractors/hiringcafe
 COPY extractors/gradcracker ./extractors/gradcracker
+COPY extractors/everjobs ./extractors/everjobs
+COPY extractors/remoteapis ./extractors/remoteapis
 COPY extractors/jobindex ./extractors/jobindex
 COPY extractors/jobspy ./extractors/jobspy
 COPY extractors/naukri ./extractors/naukri

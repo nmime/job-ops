@@ -1,0 +1,7 @@
+{
+  "name": "everjobs-extractor",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Ever Jobs API extractor for Job Ops",
+  "private": true
+}
