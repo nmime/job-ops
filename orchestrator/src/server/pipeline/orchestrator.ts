@@ -34,6 +34,7 @@ import {
   extractProjectsFromProfile,
   resolveResumeProjectsSettings,
 } from "../services/resumeProjects";
+import { LlmNotConfiguredError } from "../services/scorer";
 import { generateTailoring } from "../services/summary";
 import {
   type PendingChallenge,
@@ -59,19 +60,7 @@ const DEFAULT_CONFIG: PipelineConfig = {
   topN: 10,
   minSuitabilityScore: 50,
   // Keep Glassdoor opt-in via source picker/settings; do not enable by default.
-  sources: [
-    "remotive",
-    "jobicy",
-    "weworkremotely",
-    "themuse",
-    "arbeitnow",
-    "remoteok",
-    "workingnomads",
-    "hiringcafe",
-    "startupjobs",
-    "indeed",
-    "linkedin",
-  ],
+  sources: ["gradcracker", "indeed", "linkedin", "ukvisajobs"],
   outputDir: join(getDataDir(), "pdfs"),
   enableCrawling: true,
   enableScoring: true,
@@ -84,11 +73,15 @@ type TenantPipelineState = {
   activePipelineRunId: string | null;
   cancelRequestedAt: string | null;
   activeChallengeState: ChallengeState | null;
+  activeLlmConfigState: LlmConfigState | null;
 };
 
 type ChallengeState = {
   challenges: Map<string, PendingChallenge>;
-  /** Resolves the Promise that blocks the pipeline in `runPipeline`. */
+  resolve: () => void;
+};
+
+type LlmConfigState = {
   resolve: () => void;
 };
 
@@ -102,6 +95,7 @@ function getPipelineState(tenantId = getActiveTenantId()): TenantPipelineState {
       activePipelineRunId: null,
       cancelRequestedAt: null,
       activeChallengeState: null,
+      activeLlmConfigState: null,
     };
     pipelineStateByTenant.set(tenantId, state);
   }
@@ -186,6 +180,19 @@ export function resolvePipelineChallenge(extractorId: string): {
   return { resolved: deleted, remaining };
 }
 
+/**
+ * Resume a pipeline that paused because the LLM was not configured.
+ * Called by the POST /api/pipeline/resume-scoring endpoint after the user
+ * configures an API key in Settings.
+ */
+export function resumePipelineScoring(): { resolved: boolean } {
+  const state = getPipelineState();
+  if (!state.activeLlmConfigState) return { resolved: false };
+  state.activeLlmConfigState.resolve();
+  state.activeLlmConfigState = null;
+  return { resolved: true };
+}
+
 // ---------- Cancellation ----------
 
 class PipelineCancelledError extends Error {
@@ -199,6 +206,23 @@ function ensureNotCancelled(tenantId = getActiveTenantId()): void {
   if (getPipelineState(tenantId).cancelRequestedAt) {
     throw new PipelineCancelledError();
   }
+}
+
+function buildRepeatedChallengeMessage(args: {
+  challenges: PendingChallenge[];
+  sourceErrors: string[];
+}): string {
+  const extractorNames =
+    args.challenges
+      .map((challenge) => challenge.extractorName || challenge.extractorId)
+      .filter(Boolean)
+      .join(", ") || "One or more extractors";
+  const sourceDetails =
+    args.sourceErrors.length > 0
+      ? ` Details: ${args.sourceErrors.join("; ")}`
+      : "";
+
+  return `${extractorNames} still returned a Cloudflare challenge after the solve step, so the pipeline stopped instead of completing with zero jobs.${sourceDetails}`;
 }
 
 /**
@@ -228,14 +252,7 @@ export async function runPipeline(
   tenantState.cancelRequestedAt = null;
   resetProgress();
   const locationIntent = await resolveLocationIntent(config);
-  const configOverrides = Object.fromEntries(
-    Object.entries(config).filter(([, value]) => value !== undefined),
-  ) as Partial<PipelineConfig>;
-  const mergedConfig = {
-    ...DEFAULT_CONFIG,
-    ...configOverrides,
-    locationIntent,
-  };
+  const mergedConfig = { ...DEFAULT_CONFIG, ...config, locationIntent };
   const configSnapshot = {
     topN: mergedConfig.topN,
     minSuitabilityScore: mergedConfig.minSuitabilityScore,
@@ -298,94 +315,121 @@ export async function runPipeline(
 
       // ---------- Challenge pause/resume ----------
       if (pendingChallenges.length > 0) {
-        const challengeSummary = pendingChallenges.map((c) => ({
-          extractorId: c.extractorId,
-          url: c.url,
-        }));
+        pipelineLogger.info("Challenges detected, pausing pipeline", {
+          challenges: pendingChallenges.map((c) => ({
+            extractorId: c.extractorId,
+            url: c.url,
+          })),
+        });
 
-        if (mergedConfig.pauseOnChallenges === false) {
-          pipelineLogger.warn(
-            "Challenges detected; continuing autonomous pipeline with non-challenged sources",
-            { challenges: challengeSummary },
-          );
-          progressHelpers.crawlingComplete(discoveredJobs.length);
-        } else {
-          pipelineLogger.info("Challenges detected, pausing pipeline", {
-            challenges: challengeSummary,
+        progressHelpers.challengeRequired(pendingChallenges);
+
+        // Block until all challenges are resolved by the solve-challenge API.
+        // The Promise is resolved by `resolvePipelineChallenge()`, which is
+        // called from the POST /api/pipeline/solve-challenge endpoint (4d).
+        // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
+        // and ensureNotCancelled() fires after the Promise resolves.
+        const challengedSources = pendingChallenges.flatMap((c) => c.sources);
+
+        await new Promise<void>((resolve) => {
+          tenantState.activeChallengeState = {
+            challenges: new Map(
+              pendingChallenges.map((c) => [c.extractorId, c]),
+            ),
+            resolve,
+          };
+        });
+        tenantState.activeChallengeState = null;
+
+        ensureNotCancelled(tenantId);
+
+        // Re-run only the extractors that had challenges
+        pipelineLogger.info("Challenges resolved, re-running extractors", {
+          sources: challengedSources,
+        });
+
+        const retryConfig = { ...mergedConfig, sources: challengedSources };
+        const retryResult = await discoverJobsStep({
+          mergedConfig: retryConfig,
+          shouldCancel: () =>
+            getPipelineState(tenantId).cancelRequestedAt !== null,
+        });
+
+        discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
+        sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
+        pendingChallenges = retryResult.pendingChallenges;
+
+        // If the retry itself hits challenges again (e.g. no reusable cookie was
+        // persisted, or the cookie was rejected), keep partial results only when
+        // something useful was discovered. Otherwise stop loudly instead of
+        // presenting a successful zero-job run.
+        if (retryResult.pendingChallenges.length > 0) {
+          const message = buildRepeatedChallengeMessage({
+            challenges: retryResult.pendingChallenges,
+            sourceErrors: retryResult.sourceErrors,
           });
 
-          progressHelpers.challengeRequired(pendingChallenges);
-
-          // Block until all challenges are resolved by the solve-challenge API.
-          // The Promise is resolved by `resolvePipelineChallenge()`, which is
-          // called from the POST /api/pipeline/solve-challenge endpoint (4d).
-          // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
-          // and ensureNotCancelled() fires after the Promise resolves.
-          const challengedSources = pendingChallenges.flatMap((c) => c.sources);
-
-          await new Promise<void>((resolve) => {
-            tenantState.activeChallengeState = {
-              challenges: new Map(
-                pendingChallenges.map((c) => [c.extractorId, c]),
-              ),
-              resolve,
-            };
-          });
-          tenantState.activeChallengeState = null;
-
-          ensureNotCancelled(tenantId);
-
-          // Re-run only the extractors that had challenges
-          pipelineLogger.info("Challenges resolved, re-running extractors", {
-            sources: challengedSources,
-          });
-
-          const retryConfig = { ...mergedConfig, sources: challengedSources };
-          const retryResult = await discoverJobsStep({
-            mergedConfig: retryConfig,
-            shouldCancel: () =>
-              getPipelineState(tenantId).cancelRequestedAt !== null,
-          });
-
-          discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
-          sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
-          pendingChallenges = retryResult.pendingChallenges;
-
-          // If the retry itself hits challenges again (e.g. cookie expired
-          // between solve and retry), we don't loop — just continue with whatever
-          // the first run discovered.  The user will see partial results and can
-          // re-run the pipeline.
-          if (retryResult.pendingChallenges.length > 0) {
-            pipelineLogger.warn(
-              "Retry after challenge still has challenges — continuing with partial results",
-              {
-                retryPendingChallenges: retryResult.pendingChallenges.map(
-                  (c) => c.extractorId,
-                ),
-              },
-            );
+          if (discoveredJobs.length === 0) {
+            throw new Error(message);
           }
 
-          progressHelpers.crawlingComplete(discoveredJobs.length);
+          pipelineLogger.warn(message, {
+            retryPendingChallenges: retryResult.pendingChallenges.map(
+              (c) => c.extractorId,
+            ),
+            retrySourceErrors: retryResult.sourceErrors,
+          });
         }
+
+        progressHelpers.crawlingComplete(discoveredJobs.length);
       }
 
       ensureNotCancelled(tenantId);
-      const { created } = await importJobsStep({ discoveredJobs });
-      jobsDiscovered = created;
+      jobsDiscovered = discoveredJobs.length;
+      const { created, skipped, fuzzyMerged } = await importJobsStep({
+        discoveredJobs,
+      });
 
       await persistResultSummary({ stage: "import" });
       await pipelineRepo.updatePipelineRun(pipelineRun.id, {
-        jobsDiscovered: created,
+        jobsDiscovered,
       });
+
+      let unprocessedJobs: import("@shared/types").Job[] = [];
+      let scoredJobs: import("./steps/types").ScoredJob[] = [];
 
       ensureNotCancelled(tenantId);
       await persistResultSummary({ stage: "scoring" });
-      const { unprocessedJobs, scoredJobs } = await scoreJobsStep({
-        profile,
-        shouldCancel: () =>
-          getPipelineState(tenantId).cancelRequestedAt !== null,
-      });
+      try {
+        ({ unprocessedJobs, scoredJobs } = await scoreJobsStep({
+          profile,
+          shouldCancel: () =>
+            getPipelineState(tenantId).cancelRequestedAt !== null,
+        }));
+      } catch (error) {
+        if (error instanceof LlmNotConfiguredError) {
+          const message = error.message;
+          progressHelpers.configurationRequired(message);
+          pipelineLogger.warn("Pipeline paused — LLM not configured", error);
+
+          await new Promise<void>((resolve) => {
+            tenantState.activeLlmConfigState = { resolve };
+          });
+          tenantState.activeLlmConfigState = null;
+
+          ensureNotCancelled(tenantId);
+
+          pipelineLogger.info("LLM configured, resuming scoring");
+
+          ({ unprocessedJobs, scoredJobs } = await scoreJobsStep({
+            profile,
+            shouldCancel: () =>
+              getPipelineState(tenantId).cancelRequestedAt !== null,
+          }));
+        } else {
+          throw error;
+        }
+      }
       await persistResultSummary({
         stage: "scoring",
         jobsScored: scoredJobs.length,
@@ -412,23 +456,18 @@ export async function runPipeline(
         jobsScored: scoredJobs.length,
         jobsSelected: jobsToProcess.length,
       });
-      const { processedCount, failedCount, processErrors } =
-        await processJobsStep({
-          jobsToProcess,
-          processJob,
-          shouldCancel: () =>
-            getPipelineState(tenantId).cancelRequestedAt !== null,
-        });
+      const { processedCount } = await processJobsStep({
+        jobsToProcess,
+        processJob,
+        shouldCancel: () =>
+          getPipelineState(tenantId).cancelRequestedAt !== null,
+      });
       jobsProcessed = processedCount;
 
       resultSummary = updatePipelineRunResultSummary(resultSummary, {
         stage: "completed",
         jobsScored: scoredJobs.length,
         jobsSelected: jobsToProcess.length,
-        jobsProcessingFailed: failedCount,
-        processingErrors: processErrors.map(
-          (error) => `${error.title}: ${error.error}`,
-        ),
       });
       await pipelineRepo.updatePipelineRun(pipelineRun.id, {
         status: "completed",
@@ -437,22 +476,25 @@ export async function runPipeline(
         resultSummary,
       });
 
-      progressHelpers.complete(created, processedCount);
+      progressHelpers.complete(jobsDiscovered, processedCount);
       pipelineLogger.info("Pipeline run completed", {
-        jobsDiscovered: created,
+        jobsDiscovered,
+        jobsFuzzyMerged: fuzzyMerged,
+        jobsImported: created,
+        jobsSkipped: skipped,
         jobsProcessed: processedCount,
       });
 
       await notifyPipelineWebhookStep("pipeline.completed", {
         pipelineRunId: pipelineRun.id,
-        jobsDiscovered: created,
+        jobsDiscovered,
         jobsScored: unprocessedJobs.length,
         jobsProcessed: processedCount,
       });
 
       return {
         success: true,
-        jobsDiscovered: created,
+        jobsDiscovered,
         jobsProcessed: processedCount,
       };
     } catch (error) {
@@ -507,6 +549,7 @@ export async function runPipeline(
       tenantState.activePipelineRunId = null;
       tenantState.cancelRequestedAt = null;
       tenantState.activeChallengeState = null;
+      tenantState.activeLlmConfigState = null;
     }
   });
 }
@@ -765,6 +808,11 @@ export async function generateFinalPdf(
         {
           origin: analyticsOrigin,
           generation_kind: generationKind,
+          renderer: fingerprintContext.pdfRenderer,
+          theme:
+            fingerprintContext.pdfRenderer === "typst"
+              ? fingerprintContext.typstTheme
+              : null,
           tracer_links_enabled: job.tracerLinksEnabled,
           has_tailored_summary: Boolean(job.tailoredSummary),
           has_tailored_skills: Boolean(job.tailoredSkills),
@@ -867,13 +915,16 @@ export function requestPipelineCancel(): {
 
   state.cancelRequestedAt = new Date().toISOString();
 
-  // Unblock the challenge pause if the pipeline is waiting for human solving.
-  // Without this, cancellation during challenge_required would leave the
-  // pipeline stuck until challenges are solved or the server restarts.
+  // Unblock any pause so cancellation can proceed. Without this the pipeline
+  // would stay stuck in memory until the pause resolves or the server restarts.
   // ensureNotCancelled() runs immediately after the paused Promise resolves.
   if (state.activeChallengeState) {
     state.activeChallengeState.resolve();
     state.activeChallengeState = null;
+  }
+  if (state.activeLlmConfigState) {
+    state.activeLlmConfigState.resolve();
+    state.activeLlmConfigState = null;
   }
 
   return {

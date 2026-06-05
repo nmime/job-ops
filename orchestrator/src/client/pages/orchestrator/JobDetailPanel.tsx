@@ -597,16 +597,18 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
 
   if (!selectedJob) {
     return (
-      <div className="flex h-full min-h-[260px] flex-col items-center justify-center gap-2 text-center">
-        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border/50 bg-muted/20">
-          <FileText className="h-5 w-5 text-muted-foreground" />
+      <div className="min-w-0 rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex h-full min-h-[260px] flex-col items-center justify-center gap-2 text-center">
+          <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border/50 bg-muted/20">
+            <FileText className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="text-sm font-medium text-muted-foreground">
+            No job selected
+          </div>
+          <p className="max-w-[220px] text-xs text-muted-foreground/70">
+            Select a job to see the brief, tailoring, and application kit.
+          </p>
         </div>
-        <div className="text-sm font-medium text-muted-foreground">
-          No job selected
-        </div>
-        <p className="max-w-[220px] text-xs text-muted-foreground/70">
-          Select a job to see the brief, tailoring, and application kit.
-        </p>
       </div>
     );
   }
@@ -816,7 +818,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
         }
       />
 
-      <div className="flex flex-col min-w-0 rounded-lg rounded-t-none border border-t-0 border-border/50 bg-card p-4">
+      <div className="flex min-w-0 flex-col rounded-lg rounded-t-none border border-t-0 border-border/50 bg-card p-4">
         <TabsContent value="brief" className="space-y-4">
           {!brief && (
             <div className="grid gap-2 sm:grid-cols-2">

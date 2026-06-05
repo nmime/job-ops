@@ -191,6 +191,46 @@ describe("design resume service", () => {
     );
   });
 
+  it("preserves custom field titles through stored document validation", async () => {
+    const resumeJson = makeValidResumeJson({
+      basics: {
+        ...(buildDefaultReactiveResumeDocument().basics as Record<
+          string,
+          unknown
+        >),
+        customFieldsTitle: "Highlights",
+        customFields: [
+          {
+            id: "custom-1",
+            title: "Availability",
+            icon: "",
+            text: "Open to relocation",
+            link: "",
+          },
+        ],
+      },
+    });
+    repo.getLatestDesignResumeDocument.mockResolvedValueOnce(
+      makeDocumentRow({ resumeJson }),
+    );
+
+    const result = await getCurrentDesignResume();
+
+    if (!result) {
+      throw new Error("Expected stored design resume document");
+    }
+    expect(result.resumeJson.basics.customFieldsTitle).toBe("Highlights");
+    expect(result.resumeJson.basics.customFields).toEqual([
+      {
+        id: "custom-1",
+        title: "Availability",
+        icon: "",
+        text: "Open to relocation",
+        link: "",
+      },
+    ]);
+  });
+
   it("localizes Reactive Resume relative picture URLs into design resume assets", async () => {
     vi.stubGlobal(
       "fetch",
@@ -520,7 +560,7 @@ describe("design resume service", () => {
     );
 
     await expect(getCurrentDesignResume()).rejects.toThrow(
-      "Stored Design Resume is no longer compatible. Re-import from Reactive Resume v5 to continue.",
+      "Stored Resume Studio document is no longer compatible. Re-import from Reactive Resume v5 to continue.",
     );
   });
 
@@ -751,7 +791,7 @@ describe("design resume service", () => {
         baseRevision: 1,
         document: resumeJson,
       }),
-    ).rejects.toThrow("Design Resume has changed. Refresh and try again.");
+    ).rejects.toThrow("Resume Studio has changed. Refresh and try again.");
 
     expect(repo.deleteDesignResumeAsset).not.toHaveBeenCalled();
     expect(fsMocks.unlink).not.toHaveBeenCalledWith(

@@ -4,6 +4,12 @@ vi.mock("@server/repositories/settings", () => ({
   getAllSettings: vi.fn(),
 }));
 
+vi.mock("@infra/logger", () => ({
+  logger: {
+    warn: vi.fn(),
+  },
+}));
+
 vi.mock("./design-resume", () => ({
   getCurrentDesignResumeOrNullOnLegacy: vi.fn(),
   designResumeToProfile: vi.fn(),
@@ -29,6 +35,7 @@ vi.mock("./rxresume", () => ({
   RxResumeAuthConfigError: class RxResumeAuthConfigError extends Error {},
 }));
 
+import { logger } from "@infra/logger";
 import { getAllSettings } from "@server/repositories/settings";
 import {
   designResumeToProfile,
@@ -83,7 +90,7 @@ describe("getEffectiveSettings", () => {
     );
   });
 
-  it("uses extractProjectsFromProfile for a local Design Resume projection", async () => {
+  it("uses extractProjectsFromProfile for a local Resume Studio projection", async () => {
     const settings = await getEffectiveSettings();
 
     expect(extractProjectsFromProfile).toHaveBeenCalledTimes(1);
@@ -93,10 +100,41 @@ describe("getEffectiveSettings", () => {
     ]);
   });
 
-  it("falls back when no compatible local Design Resume is available", async () => {
+  it("falls back when no compatible local Resume Studio document is available", async () => {
     vi.mocked(getCurrentDesignResumeOrNullOnLegacy).mockResolvedValue(null);
 
     await expect(getEffectiveSettings()).resolves.toBeTruthy();
     expect(designResumeToProfile).not.toHaveBeenCalled();
+  });
+
+  it("does not warn when settings have no local or Reactive Resume base profile yet", async () => {
+    vi.mocked(getCurrentDesignResumeOrNullOnLegacy).mockResolvedValue(null);
+    vi.mocked(getProfile).mockRejectedValue(
+      new Error(
+        "Base resume not configured. Please select a base resume from your RxResume account in Settings.",
+      ),
+    );
+
+    await expect(getEffectiveSettings()).resolves.toBeTruthy();
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "Failed to load base resume profile for settings",
+      expect.any(Object),
+    );
+  });
+
+  it("exposes purpose overrides and redacted purpose API key hints", async () => {
+    vi.mocked(getAllSettings).mockResolvedValue({
+      llmPurposeOverrides: JSON.stringify({
+        tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+      }),
+      llmPurposeApiKeys: JSON.stringify({ tailoring: "sk-purpose" }),
+    } as never);
+
+    const settings = await getEffectiveSettings();
+
+    expect(settings.llmPurposeOverrides.override).toEqual({
+      tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+    });
+    expect(settings.llmPurposeApiKeyHints).toEqual({ tailoring: "sk-p" });
   });
 });

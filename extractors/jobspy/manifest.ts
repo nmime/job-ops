@@ -1,3 +1,7 @@
+import {
+  GLASSDOOR_SUPPORTED_COUNTRY_KEYS,
+  JOBSPY_SUPPORTED_COUNTRY_KEYS,
+} from "@shared/location-support.js";
 import type {
   ExtractorManifest,
   ExtractorRuntimeContext,
@@ -17,6 +21,14 @@ export const manifest: ExtractorManifest = {
   displayName: "JobSpy",
   providesSources: ["indeed", "linkedin", "glassdoor"],
   capabilities: { locationEvidence: true },
+  locationCapabilities: {
+    indeed: { supportedCountryKeys: JOBSPY_SUPPORTED_COUNTRY_KEYS },
+    linkedin: { supportedCountryKeys: JOBSPY_SUPPORTED_COUNTRY_KEYS },
+    glassdoor: {
+      supportedCountryKeys: GLASSDOOR_SUPPORTED_COUNTRY_KEYS,
+      requiresCityLocations: true,
+    },
+  },
   async run(context: ExtractorRuntimeContext) {
     if (context.shouldCancel?.()) {
       return { success: true, jobs: [] };
@@ -50,6 +62,15 @@ export const manifest: ExtractorManifest = {
           return;
         }
 
+        if (event.type === "source_error") {
+          context.onProgress?.({
+            phase: "list",
+            currentUrl: event.searchTerm,
+            detail: `JobSpy: ${event.source} failed for ${event.searchTerm}`,
+          });
+          return;
+        }
+
         context.onProgress?.({
           phase: "list",
           termsProcessed: event.termIndex,
@@ -71,6 +92,7 @@ export const manifest: ExtractorManifest = {
     return {
       success: true,
       jobs: result.jobs,
+      sourceErrors: result.sourceErrors,
     };
   },
 };

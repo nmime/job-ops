@@ -36,15 +36,16 @@ orchestrator/
     # The app is self-configuring. You can add keys via the UI Onboarding.
     ```
 
-   After the server starts, use the onboarding page to connect your LLM provider, configure Reactive Resume if you want import support, select or import your resume, review the generated job-title search terms, and decide whether to enable basic auth.
+   After the server starts, use the onboarding launch console to connect your LLM provider and select or import your resume. Search terms are prepared automatically from that resume before the first pipeline run; advanced search controls remain available in the run modal and settings.
 
-   Then open **Design Resume** in the app and import your base resume once. JobOps will use that local Design Resume document as the primary resume context for tailoring, scoring, and PDF generation.
+   Then open **Resume Studio** in the app and import your base resume once. JobOps will use that local Resume Studio document as the primary resume context for tailoring, scoring, and PDF generation.
 
 
-   OpenRouter is the default LLM provider, but OpenAI, LM Studio, Ollama, `openai-compatible` endpoints, and Gemini are also supported.
+   OpenRouter is the default LLM provider, but OpenAI, GLM, LM Studio, Ollama, `openai-compatible` endpoints, and Gemini are also supported.
 
    Use `LLM_API_KEY` / `llmApiKey` to configure providers that require an API key.
    To use the native OpenAI integration, set `LLM_PROVIDER=openai`.
+   To use GLM through Z.AI, set `LLM_PROVIDER=glm`; the default base URL is `https://api.z.ai/api/paas/v4`.
    For third-party services that expose an OpenAI-style API but are not OpenAI itself, use `LLM_PROVIDER=openai-compatible`.
 
 3. **Initialize database:**
@@ -151,6 +152,6 @@ npm start
 
 - **Backend:** Express, TypeScript, Drizzle ORM, SQLite
 - **Frontend:** React, Vite, CSS (custom design system)
-- **AI:** Configurable LLM provider (OpenRouter default; also supports OpenAI via the dedicated `openai` provider, `openai-compatible` endpoints, Gemini, LM Studio, and Ollama)
+- **AI:** Configurable LLM provider (OpenRouter default; also supports OpenAI via the dedicated `openai` provider, GLM, `openai-compatible` endpoints, Gemini, LM Studio, and Ollama)
 - **PDF Generation:** Reactive Resume v5 API export (configured via Settings)
 - **Job Crawling:** Wraps existing TypeScript Crawlee crawler

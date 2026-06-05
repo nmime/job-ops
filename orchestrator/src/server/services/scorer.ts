@@ -11,8 +11,15 @@ import { createConfiguredLlmService, resolveLlmModel } from "./modelSelection";
 import { renderPromptTemplate } from "./prompt-templates";
 import { getEffectiveSettings } from "./settings";
 
+export class LlmNotConfiguredError extends Error {
+  constructor(message?: string) {
+    super(message ?? "LLM API key not configured");
+    this.name = "LlmNotConfiguredError";
+  }
+}
+
 interface SuitabilityResult {
-  score: number; // 0-100
+  score: number | null; // 0-100, or null when scoring failed
   reason: string; // Explanation
 }
 
@@ -104,7 +111,7 @@ export async function scoreJobSuitability(
       getDefaultPromptTemplate("scoringPromptTemplate"),
   });
 
-  const llm = await createConfiguredLlmService();
+  const llm = await createConfiguredLlmService("scoring");
   const result = await llm.callJson<{ score: number; reason: string }>({
     model,
     messages: [{ role: "user", content: prompt }],
@@ -114,30 +121,25 @@ export async function scoreJobSuitability(
   });
 
   if (!result.success) {
-    if (result.error.toLowerCase().includes("api key")) {
-      logger.warn("LLM API key not set, using mock scoring", { jobId: job.id });
-    }
-    logger.error("Scoring failed, using mock scoring", {
+    logger.warn("Scoring failed — pausing pipeline", {
       jobId: job.id,
       error: result.error,
     });
-    return mockScore(job, {
-      penalizeMissingSalary: settings.penalizeMissingSalary.value,
-      missingSalaryPenalty: settings.missingSalaryPenalty.value,
-    });
+    throw new LlmNotConfiguredError(
+      `AI scoring failed: ${result.error}. Check your LLM configuration in Settings → Integrations, then resume scoring.`,
+    );
   }
 
   const { score, reason } = result.data;
 
   // Validate we got a reasonable response
   if (typeof score !== "number" || Number.isNaN(score)) {
-    logger.error("Invalid score in AI response, using mock scoring", {
+    logger.warn("Invalid score in AI response — pausing pipeline", {
       jobId: job.id,
     });
-    return mockScore(job, {
-      penalizeMissingSalary: settings.penalizeMissingSalary.value,
-      missingSalaryPenalty: settings.missingSalaryPenalty.value,
-    });
+    throw new LlmNotConfiguredError(
+      "AI returned invalid scoring data. Check your LLM configuration in Settings → Integrations, then resume scoring.",
+    );
   }
 
   const clampedScore = Math.min(100, Math.max(0, Math.round(score)));
@@ -441,59 +443,6 @@ function isRecord(value: unknown): value is ProfileRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-async function mockScore(
-  job: Job,
-  settings: { penalizeMissingSalary: boolean; missingSalaryPenalty: number },
-): Promise<SuitabilityResult> {
-  // Simple keyword-based scoring as fallback
-  const jd = (job.jobDescription || "").toLowerCase();
-  const title = job.title.toLowerCase();
-
-  const goodKeywords = [
-    "typescript",
-    "react",
-    "node",
-    "python",
-    "web",
-    "frontend",
-    "backend",
-    "fullstack",
-    "software",
-    "engineer",
-    "developer",
-  ];
-  const badKeywords = [
-    "senior",
-    "5+ years",
-    "10+ years",
-    "principal",
-    "staff",
-    "manager",
-  ];
-
-  let score = 50;
-
-  for (const kw of goodKeywords) {
-    if (jd.includes(kw) || title.includes(kw)) score += 5;
-  }
-
-  for (const kw of badKeywords) {
-    if (jd.includes(kw) || title.includes(kw)) score -= 10;
-  }
-
-  score = Math.min(100, Math.max(0, score));
-
-  const baseReason = "Scored using keyword matching (API key not configured)";
-
-  // Apply salary penalty if enabled
-  const penaltyResult = applySalaryPenalty(job, score, baseReason, settings);
-
-  return {
-    score: penaltyResult.score,
-    reason: penaltyResult.reason,
-  };
-}
-
 /**
  * Score multiple jobs and return sorted by score (descending).
  */
@@ -501,7 +450,7 @@ export async function scoreAndRankJobs(
   jobs: Job[],
   profile: Record<string, unknown>,
 ): Promise<
-  Array<Job & { suitabilityScore: number; suitabilityReason: string }>
+  Array<Job & { suitabilityScore: number | null; suitabilityReason: string }>
 > {
   const scoredJobs = await Promise.all(
     jobs.map(async (job) => {
@@ -514,5 +463,10 @@ export async function scoreAndRankJobs(
     }),
   );
 
-  return scoredJobs.sort((a, b) => b.suitabilityScore - a.suitabilityScore);
+  return scoredJobs.sort((a, b) => {
+    if (a.suitabilityScore == null && b.suitabilityScore == null) return 0;
+    if (a.suitabilityScore == null) return 1;
+    if (b.suitabilityScore == null) return -1;
+    return b.suitabilityScore - a.suitabilityScore;
+  });
 }

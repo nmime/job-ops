@@ -1,5 +1,11 @@
 import * as api from "@client/api";
 import { PageHeader } from "@client/components/layout";
+import {
+  type SectionWorkspaceBadge,
+  SectionWorkspaceNav,
+  SectionWorkspacePanel,
+  sectionWorkspaceItemMatchesSearch,
+} from "@client/components/section-workspace/SectionWorkspace";
 import { useUpdateSettingsMutation } from "@client/hooks/queries/useSettingsMutation";
 import { useRxResumeConfigState } from "@client/hooks/useRxResumeConfigState";
 import { useTracerReadiness } from "@client/hooks/useTracerReadiness";
@@ -42,7 +48,7 @@ import type {
   ValidationResult,
 } from "@shared/types.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Settings } from "lucide-react";
+import { Settings } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -57,16 +63,7 @@ import { useQueryErrorToast } from "@/client/hooks/useQueryErrorToast";
 import { formatUserFacingError } from "@/client/lib/error-format";
 import { showErrorToast } from "@/client/lib/error-toast";
 import { queryKeys } from "@/client/lib/queryKeys";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 const DEFAULT_FORM_VALUES: UpdateSettingsInput = {
   model: "",
@@ -76,19 +73,17 @@ const DEFAULT_FORM_VALUES: UpdateSettingsInput = {
   llmProvider: null,
   llmBaseUrl: "",
   llmApiKey: "",
+  llmPurposeOverrides: {},
+  llmPurposeApiKeys: {},
   pipelineWebhookUrl: "",
   jobCompleteWebhookUrl: "",
   resumeProjects: null,
   pdfRenderer: "rxresume",
-  jobopsFullAutoEnabled: null,
-  jobopsFullAutoBrowserSubmitEnabled: null,
-  jobopsFullAutoCaptchaEnabled: null,
-  captchaSolverProvider: null,
-  captchaSolverAutoSolveEnabled: null,
-  captchaSolverApiKey: "",
+  typstTheme: "classic",
   rxresumeBaseResumeId: null,
   showSponsorInfo: null,
   renderMarkdownInJobDescriptions: null,
+  autoTailorOnManualImport: null,
   chatStyleTone: "",
   chatStyleFormality: "",
   chatStyleConstraints: "",
@@ -100,14 +95,11 @@ const DEFAULT_FORM_VALUES: UpdateSettingsInput = {
   chatStyleManualLanguage: null,
   rxresumeUrl: "",
   rxresumeApiKey: "",
-  basicAuthUser: "",
-  basicAuthPassword: "",
   ukvisajobsEmail: "",
   ukvisajobsPassword: "",
   adzunaAppId: "",
   adzunaAppKey: "",
   webhookSecret: "",
-  enableBasicAuth: false,
   backupEnabled: null,
   backupHour: null,
   backupMaxCount: null,
@@ -183,6 +175,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
           "llm",
           "provider",
           "openai",
+          "glm",
           "gemini",
           "gemini_cli",
           "ollama",
@@ -299,6 +292,8 @@ const SECTION_FIELD_MAP: Record<
     "llmProvider",
     "llmBaseUrl",
     "llmApiKey",
+    "llmPurposeOverrides",
+    "llmPurposeApiKeys",
     "model",
     "modelScorer",
     "modelTailoring",
@@ -339,11 +334,12 @@ const SECTION_FIELD_MAP: Record<
     "ukvisajobsPassword",
     "adzunaAppId",
     "adzunaAppKey",
-    "enableBasicAuth",
-    "basicAuthUser",
-    "basicAuthPassword",
   ],
-  display: ["showSponsorInfo", "renderMarkdownInJobDescriptions"],
+  display: [
+    "showSponsorInfo",
+    "renderMarkdownInJobDescriptions",
+    "autoTailorOnManualImport",
+  ],
   backup: ["backupEnabled", "backupHour", "backupMaxCount"],
   "danger-zone": [],
 };
@@ -352,12 +348,7 @@ function matchesSettingsSearch(
   searchTerm: string,
   item: SettingsSectionDescriptor,
 ): boolean {
-  if (!searchTerm) return true;
-  const normalized = searchTerm.toLowerCase();
-  const haystack = [item.label, item.description, ...item.searchTerms].join(
-    " ",
-  );
-  return haystack.toLowerCase().includes(normalized);
+  return sectionWorkspaceItemMatchesSearch(searchTerm, item);
 }
 
 const getRxResumeValidationFields = (): Array<keyof UpdateSettingsInput> => [
@@ -383,6 +374,27 @@ const normalizeLlmProviderValue = (
   value: string | null | undefined,
 ): LlmProviderValue => (value ? normalizeLlmProvider(value) : null);
 
+const LEGACY_MODEL_KEYS = {
+  scoring: "modelScorer",
+  tailoring: "modelTailoring",
+  projectSelection: "modelProjectSelection",
+} as const;
+
+const mapPurposeOverridesToForm = (data: AppSettings) => {
+  const overrides = { ...(data.llmPurposeOverrides.override ?? {}) };
+  for (const [purpose, modelKey] of Object.entries(LEGACY_MODEL_KEYS)) {
+    const typedPurpose = purpose as keyof typeof LEGACY_MODEL_KEYS;
+    const legacyModel = data[modelKey].override;
+    if (legacyModel && !overrides[typedPurpose]?.model) {
+      overrides[typedPurpose] = {
+        ...overrides[typedPurpose],
+        model: legacyModel,
+      };
+    }
+  }
+  return overrides;
+};
+
 const NULL_SETTINGS_PAYLOAD: UpdateSettingsInput = {
   model: null,
   modelScorer: null,
@@ -391,13 +403,17 @@ const NULL_SETTINGS_PAYLOAD: UpdateSettingsInput = {
   llmProvider: null,
   llmBaseUrl: null,
   llmApiKey: null,
+  llmPurposeOverrides: null,
+  llmPurposeApiKeys: null,
   pipelineWebhookUrl: null,
   jobCompleteWebhookUrl: null,
   resumeProjects: null,
   pdfRenderer: null,
+  typstTheme: null,
   rxresumeBaseResumeId: null,
   showSponsorInfo: null,
   renderMarkdownInJobDescriptions: null,
+  autoTailorOnManualImport: null,
   chatStyleTone: null,
   chatStyleFormality: null,
   chatStyleConstraints: null,
@@ -409,15 +425,12 @@ const NULL_SETTINGS_PAYLOAD: UpdateSettingsInput = {
   chatStyleManualLanguage: null,
   rxresumeUrl: null,
   rxresumeApiKey: null,
-  basicAuthUser: null,
-  basicAuthPassword: null,
   ukvisajobsEmail: null,
   ukvisajobsPassword: null,
   adzunaAppId: null,
   adzunaAppKey: null,
   adzunaMaxJobsPerTerm: null,
   webhookSecret: null,
-  enableBasicAuth: undefined,
   backupEnabled: null,
   backupHour: null,
   backupMaxCount: null,
@@ -441,21 +454,18 @@ const mapSettingsToForm = (data: AppSettings): UpdateSettingsInput => ({
   ),
   llmBaseUrl: data.llmBaseUrl.override ?? "",
   llmApiKey: "",
+  llmPurposeOverrides: mapPurposeOverridesToForm(data),
+  llmPurposeApiKeys: {},
   pipelineWebhookUrl: data.pipelineWebhookUrl.override ?? "",
   jobCompleteWebhookUrl: data.jobCompleteWebhookUrl.override ?? "",
   resumeProjects: data.resumeProjects.override,
   pdfRenderer: data.pdfRenderer.override ?? data.pdfRenderer.value,
-  jobopsFullAutoEnabled: data.jobopsFullAutoEnabled.override,
-  jobopsFullAutoBrowserSubmitEnabled:
-    data.jobopsFullAutoBrowserSubmitEnabled.override,
-  jobopsFullAutoCaptchaEnabled: data.jobopsFullAutoCaptchaEnabled.override,
-  captchaSolverProvider: data.captchaSolverProvider.override,
-  captchaSolverAutoSolveEnabled: data.captchaSolverAutoSolveEnabled.override,
-  captchaSolverApiKey: "",
+  typstTheme: data.typstTheme.override ?? data.typstTheme.value,
   rxresumeBaseResumeId: data.rxresumeBaseResumeId,
   showSponsorInfo: data.showSponsorInfo.override,
   renderMarkdownInJobDescriptions:
     data.renderMarkdownInJobDescriptions.override,
+  autoTailorOnManualImport: data.autoTailorOnManualImport.override,
   chatStyleTone: data.chatStyleTone.override ?? "",
   chatStyleFormality: data.chatStyleFormality.override ?? "",
   chatStyleConstraints: data.chatStyleConstraints.override ?? "",
@@ -468,14 +478,11 @@ const mapSettingsToForm = (data: AppSettings): UpdateSettingsInput => ({
   chatStyleManualLanguage: data.chatStyleManualLanguage.override ?? null,
   rxresumeUrl: data.rxresumeUrl ?? "",
   rxresumeApiKey: "",
-  basicAuthUser: data.basicAuthUser ?? "",
-  basicAuthPassword: data.basicAuthPassword ?? "",
   ukvisajobsEmail: data.ukvisajobsEmail ?? "",
   ukvisajobsPassword: "",
   adzunaAppId: data.adzunaAppId ?? "",
   adzunaAppKey: "",
   webhookSecret: "",
-  enableBasicAuth: data.basicAuthActive,
   backupEnabled: data.backupEnabled.override,
   backupHour: data.backupHour.override,
   backupMaxCount: data.backupMaxCount.override,
@@ -499,6 +506,51 @@ const normalizePrivateInput = (value: string | null | undefined) => {
   const trimmed = value?.trim();
   if (trimmed === "") return null;
   return trimmed || undefined;
+};
+
+const normalizePurposeOverrides = (
+  value: UpdateSettingsInput["llmPurposeOverrides"],
+  options: { dropInheritedProviderOverrides?: boolean } = {},
+) => {
+  if (!value) return null;
+  const out: NonNullable<UpdateSettingsInput["llmPurposeOverrides"]> = {};
+  for (const purpose of Object.keys(LEGACY_MODEL_KEYS) as Array<
+    keyof typeof LEGACY_MODEL_KEYS
+  >) {
+    const override = value[purpose];
+    if (!override) continue;
+    const provider = normalizeLlmProviderValue(override.provider ?? null);
+    const baseUrl = normalizeString(override.baseUrl ?? null);
+    const model = normalizeString(override.model ?? null);
+    if (options.dropInheritedProviderOverrides && !provider) {
+      continue;
+    }
+    if (provider || baseUrl || model) {
+      out[purpose] = {
+        ...(provider ? { provider } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(model ? { model } : {}),
+      };
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+};
+
+const normalizePurposeApiKeys = (
+  value: UpdateSettingsInput["llmPurposeApiKeys"],
+) => {
+  if (!value) return null;
+  const out: NonNullable<UpdateSettingsInput["llmPurposeApiKeys"]> = {};
+  for (const purpose of Object.keys(LEGACY_MODEL_KEYS) as Array<
+    keyof typeof LEGACY_MODEL_KEYS
+  >) {
+    if (!Object.hasOwn(value, purpose)) continue;
+    const normalized = normalizePrivateInput(value[purpose] ?? null);
+    if (typeof normalized === "string") {
+      out[purpose] = normalized;
+    }
+  }
+  return out;
 };
 
 const stringArraysEqual = (left: string[], right: string[]): boolean => {
@@ -556,6 +608,8 @@ const getDerivedSettings = (settings: AppSettings | null) => {
       llmProvider: settings?.llmProvider?.value ?? "",
       llmBaseUrl: settings?.llmBaseUrl?.value ?? "",
       llmApiKeyHint: settings?.llmApiKeyHint ?? null,
+      llmPurposeOverrides: settings?.llmPurposeOverrides?.value ?? {},
+      llmPurposeApiKeyHints: settings?.llmPurposeApiKeyHints ?? {},
     },
     pipelineWebhook: {
       effective: settings?.pipelineWebhookUrl?.value ?? "",
@@ -570,6 +624,10 @@ const getDerivedSettings = (settings: AppSettings | null) => {
         effective: settings?.pdfRenderer?.value ?? "rxresume",
         default: settings?.pdfRenderer?.default ?? "rxresume",
       },
+      typstTheme: {
+        effective: settings?.typstTheme?.value ?? "classic",
+        default: settings?.typstTheme?.default ?? "classic",
+      },
     },
     display: {
       showSponsorInfo: {
@@ -579,6 +637,10 @@ const getDerivedSettings = (settings: AppSettings | null) => {
       renderMarkdownInJobDescriptions: {
         effective: settings?.renderMarkdownInJobDescriptions?.value ?? true,
         default: settings?.renderMarkdownInJobDescriptions?.default ?? true,
+      },
+      autoTailorOnManualImport: {
+        effective: settings?.autoTailorOnManualImport?.value ?? true,
+        default: settings?.autoTailorOnManualImport?.default ?? true,
       },
     },
     chat: {
@@ -623,40 +685,11 @@ const getDerivedSettings = (settings: AppSettings | null) => {
       readable: {
         ukvisajobsEmail: settings?.ukvisajobsEmail ?? "",
         adzunaAppId: settings?.adzunaAppId ?? "",
-        basicAuthUser: settings?.basicAuthUser ?? "",
-        basicAuthPassword: settings?.basicAuthPassword ?? "",
       },
       private: {
         ukvisajobsPasswordHint: settings?.ukvisajobsPasswordHint ?? null,
         adzunaAppKeyHint: settings?.adzunaAppKeyHint ?? null,
-        basicAuthPasswordHint: settings?.basicAuthPasswordHint ?? null,
         webhookSecretHint: settings?.webhookSecretHint ?? null,
-        captchaSolverApiKeyHint: settings?.captchaSolverApiKeyHint ?? null,
-      },
-      basicAuthActive: settings?.basicAuthActive ?? false,
-      fullAuto: {
-        enabled: {
-          effective: settings?.jobopsFullAutoEnabled?.value ?? false,
-          default: settings?.jobopsFullAutoEnabled?.default ?? false,
-        },
-        browserSubmitEnabled: {
-          effective:
-            settings?.jobopsFullAutoBrowserSubmitEnabled?.value ?? false,
-          default:
-            settings?.jobopsFullAutoBrowserSubmitEnabled?.default ?? false,
-        },
-        captchaEnabled: {
-          effective: settings?.jobopsFullAutoCaptchaEnabled?.value ?? false,
-          default: settings?.jobopsFullAutoCaptchaEnabled?.default ?? false,
-        },
-        captchaSolverAutoSolveEnabled: {
-          effective: settings?.captchaSolverAutoSolveEnabled?.value ?? false,
-          default: settings?.captchaSolverAutoSolveEnabled?.default ?? false,
-        },
-        captchaSolverProvider: {
-          effective: settings?.captchaSolverProvider?.value ?? "manual",
-          default: settings?.captchaSolverProvider?.default ?? "manual",
-        },
       },
     },
     defaultResumeProjects: settings?.resumeProjects?.default ?? null,
@@ -774,7 +807,7 @@ export const SettingsPage: React.FC = () => {
 
   const methods = useForm<UpdateSettingsInput>({
     resolver: zodResolver(
-      updateSettingsSchema as never,
+      updateSettingsSchema,
     ) as Resolver<UpdateSettingsInput>,
     mode: "onChange",
     defaultValues: DEFAULT_FORM_VALUES,
@@ -1041,16 +1074,6 @@ export const SettingsPage: React.FC = () => {
 
   const onSave = async (data: UpdateSettingsInput) => {
     if (!settings) return;
-    if (data.enableBasicAuth && !settings.basicAuthActive) {
-      const password = data.basicAuthPassword?.trim() ?? "";
-      if (!password) {
-        setError("basicAuthPassword", {
-          type: "manual",
-          message: "Password is required when authentication is enabled",
-        });
-        return;
-      }
-    }
     try {
       setIsSaving(true);
 
@@ -1075,24 +1098,6 @@ export const SettingsPage: React.FC = () => {
 
       if (dirtyFields.adzunaAppId || dirtyFields.adzunaAppKey) {
         envPayload.adzunaAppId = normalizeString(data.adzunaAppId);
-      }
-
-      if (data.enableBasicAuth === false) {
-        envPayload.basicAuthUser = null;
-        envPayload.basicAuthPassword = null;
-      } else if (
-        dirtyFields.enableBasicAuth ||
-        dirtyFields.basicAuthUser ||
-        dirtyFields.basicAuthPassword
-      ) {
-        // If enabling authentication or changing either field, ensure we send at least the username
-        // to keep the pair consistent in the backend.
-        envPayload.basicAuthUser = normalizeString(data.basicAuthUser);
-
-        if (dirtyFields.basicAuthPassword) {
-          const value = normalizePrivateInput(data.basicAuthPassword);
-          if (value !== undefined) envPayload.basicAuthPassword = value;
-        }
       }
 
       if (dirtyFields.llmProvider) {
@@ -1128,32 +1133,40 @@ export const SettingsPage: React.FC = () => {
         if (value !== undefined) envPayload.webhookSecret = value;
       }
 
-      if (dirtyFields.captchaSolverApiKey) {
-        const value = normalizePrivateInput(data.captchaSolverApiKey);
-        if (value !== undefined) envPayload.captchaSolverApiKey = value;
-      }
-
       const payload: Partial<UpdateSettingsInput> = {
         model: dirtyFields.llmProvider
           ? dirtyFields.model
             ? normalizeString(data.model)
             : null
           : normalizeString(data.model),
-        modelScorer: dirtyFields.llmProvider
-          ? dirtyFields.modelScorer
-            ? normalizeString(data.modelScorer)
-            : null
-          : normalizeString(data.modelScorer),
-        modelTailoring: dirtyFields.llmProvider
-          ? dirtyFields.modelTailoring
-            ? normalizeString(data.modelTailoring)
-            : null
-          : normalizeString(data.modelTailoring),
-        modelProjectSelection: dirtyFields.llmProvider
-          ? dirtyFields.modelProjectSelection
-            ? normalizeString(data.modelProjectSelection)
-            : null
-          : normalizeString(data.modelProjectSelection),
+        ...(dirtyFields.llmProvider
+          ? {
+              modelScorer: null,
+              modelTailoring: null,
+              modelProjectSelection: null,
+              llmPurposeOverrides: normalizePurposeOverrides(
+                data.llmPurposeOverrides,
+                { dropInheritedProviderOverrides: true },
+              ),
+            }
+          : {}),
+        ...(dirtyFields.llmPurposeOverrides
+          ? {
+              llmPurposeOverrides: normalizePurposeOverrides(
+                data.llmPurposeOverrides,
+              ),
+              modelScorer: null,
+              modelTailoring: null,
+              modelProjectSelection: null,
+            }
+          : {}),
+        ...(dirtyFields.llmPurposeApiKeys
+          ? {
+              llmPurposeApiKeys: normalizePurposeApiKeys(
+                data.llmPurposeApiKeys,
+              ),
+            }
+          : {}),
         pipelineWebhookUrl: normalizeString(data.pipelineWebhookUrl),
         jobCompleteWebhookUrl: normalizeString(data.jobCompleteWebhookUrl),
         resumeProjects: resumeProjectsOverride,
@@ -1161,25 +1174,9 @@ export const SettingsPage: React.FC = () => {
           data.pdfRenderer,
           reactiveResume.pdfRenderer.default,
         ),
-        jobopsFullAutoEnabled: nullIfSame(
-          data.jobopsFullAutoEnabled,
-          envSettings.fullAuto.enabled.default,
-        ),
-        jobopsFullAutoBrowserSubmitEnabled: nullIfSame(
-          data.jobopsFullAutoBrowserSubmitEnabled,
-          envSettings.fullAuto.browserSubmitEnabled.default,
-        ),
-        jobopsFullAutoCaptchaEnabled: nullIfSame(
-          data.jobopsFullAutoCaptchaEnabled,
-          envSettings.fullAuto.captchaEnabled.default,
-        ),
-        captchaSolverProvider: nullIfSame(
-          data.captchaSolverProvider,
-          envSettings.fullAuto.captchaSolverProvider.default,
-        ),
-        captchaSolverAutoSolveEnabled: nullIfSame(
-          data.captchaSolverAutoSolveEnabled,
-          envSettings.fullAuto.captchaSolverAutoSolveEnabled.default,
+        typstTheme: nullIfSame(
+          data.typstTheme,
+          reactiveResume.typstTheme.default,
         ),
         ...(dirtyFields.rxresumeBaseResumeId
           ? { rxresumeBaseResumeId: normalizeString(data.rxresumeBaseResumeId) }
@@ -1191,6 +1188,10 @@ export const SettingsPage: React.FC = () => {
         renderMarkdownInJobDescriptions: nullIfSame(
           data.renderMarkdownInJobDescriptions,
           display.renderMarkdownInJobDescriptions.default,
+        ),
+        autoTailorOnManualImport: nullIfSame(
+          data.autoTailorOnManualImport,
+          display.autoTailorOnManualImport.default,
         ),
         chatStyleTone: normalizeString(data.chatStyleTone),
         chatStyleFormality: normalizeString(data.chatStyleFormality),
@@ -1454,7 +1455,9 @@ export const SettingsPage: React.FC = () => {
   const sectionHasErrors = (sectionId: SettingsSectionId) =>
     SECTION_FIELD_MAP[sectionId].some((field) => Boolean(errors[field]));
 
-  const getSectionBadge = (sectionId: SettingsSectionId) => {
+  const getSectionBadge = (
+    sectionId: SettingsSectionId,
+  ): SectionWorkspaceBadge | null => {
     if (sectionId === "danger-zone") {
       return { label: "Sensitive", variant: "destructive" as const };
     }
@@ -1505,15 +1508,8 @@ export const SettingsPage: React.FC = () => {
             : { label: "Not configured", variant: "secondary" as const };
       case "environment":
         return envSettings.readable.ukvisajobsEmail ||
-          envSettings.readable.adzunaAppId ||
-          envSettings.basicAuthActive ||
-          envSettings.fullAuto.enabled.effective
-          ? {
-              label: envSettings.fullAuto.enabled.effective
-                ? "Full-auto on"
-                : "Configured",
-              variant: "outline" as const,
-            }
+          envSettings.readable.adzunaAppId
+          ? { label: "Configured", variant: "outline" as const }
           : null;
       case "display":
         return { label: "Active", variant: "secondary" as const };
@@ -1683,150 +1679,73 @@ export const SettingsPage: React.FC = () => {
 
       <main className="container mx-auto px-4 py-6 pb-12">
         <div className="grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <aside className="lg:sticky lg:top-6 lg:self-start">
-            <div className="overflow-hidden rounded-2xl border border-border/70 bg-card">
-              <div className="border-b px-4 py-4">
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={settingsSearch}
-                    onChange={(event) => setSettingsSearch(event.target.value)}
-                    placeholder="Search settings"
-                    className="pl-9"
-                    aria-label="Search settings"
-                  />
-                </div>
-              </div>
-              <div className="p-2">
-                {filteredNavGroups.length > 0 ? (
-                  <Accordion
-                    type="multiple"
-                    value={
-                      settingsSearch.trim()
-                        ? filteredNavGroups.map((group) => group.id)
-                        : openGroups
-                    }
-                    onValueChange={(value) =>
-                      setOpenGroups(value as SettingsGroupId[])
-                    }
-                    className="space-y-1"
-                  >
-                    {filteredNavGroups.map((group) => (
-                      <AccordionItem
-                        key={group.id}
-                        value={group.id}
-                        className="border-b border-border/60 px-2 last:border-b-0"
-                      >
-                        <AccordionTrigger className="py-3 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground hover:no-underline">
-                          {group.label}
-                        </AccordionTrigger>
-                        <AccordionContent className="pb-3">
-                          <div className="space-y-1">
-                            {group.items.map((item) => {
-                              const isActive = item.id === activeSection;
-                              return (
-                                <Button
-                                  key={item.id}
-                                  type="button"
-                                  variant="ghost"
-                                  className={cn(
-                                    "h-9 w-full justify-start rounded-md px-3 text-left text-sm font-medium",
-                                    isActive
-                                      ? "border border-primary/40 bg-primary/12 text-white hover:bg-primary/18"
-                                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                                  )}
-                                  onClick={() => setActiveSection(item.id)}
-                                >
-                                  {item.label}
-                                </Button>
-                              );
-                            })}
-                          </div>
-                        </AccordionContent>
-                      </AccordionItem>
-                    ))}
-                  </Accordion>
-                ) : (
-                  <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-                    No settings matched “{settingsSearch.trim()}”.
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
+          <SectionWorkspaceNav
+            groups={filteredNavGroups}
+            activeSectionId={activeSection}
+            openGroupIds={openGroups}
+            onOpenGroupIdsChange={setOpenGroups}
+            onSectionSelect={setActiveSection}
+            searchValue={settingsSearch}
+            onSearchValueChange={setSettingsSearch}
+            searchPlaceholder="Search settings"
+            searchEmptyLabel="No settings matched"
+          />
 
-          <section className="space-y-4 border border-border/70 rounded-2xl bg-card p-6 h-fit">
-            <header className="space-y-4 border-b border-border/70 pb-5">
-              <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                <span>{activeGroup.label}</span>
-                <span>/</span>
-                <span>{activeSectionMeta.label}</span>
-              </div>
-
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-2xl font-semibold tracking-tight">
-                      {activeSectionMeta.label}
-                    </h2>
-                    {selectedSectionBadge ? (
-                      <Badge variant={selectedSectionBadge.variant}>
-                        {selectedSectionBadge.label}
-                      </Badge>
-                    ) : null}
-                    {dirtySectionCount > 0 ? (
-                      <Badge variant="secondary">
-                        {dirtySectionCount} unsaved section
-                        {dirtySectionCount !== 1 ? "s" : ""}
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                    {activeSectionMeta.description}
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 flex-nowrap gap-2 self-start">
-                  {activeSectionIsDirty ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="whitespace-nowrap"
-                      onClick={handleDiscardChanges}
-                      disabled={isLoading || isSaving || !isDirty}
-                    >
-                      Discard changes
-                    </Button>
-                  ) : null}
+          <SectionWorkspacePanel
+            groupLabel={activeGroup.label}
+            sectionLabel={activeSectionMeta.label}
+            sectionDescription={activeSectionMeta.description}
+            badge={selectedSectionBadge}
+            secondaryBadge={
+              dirtySectionCount > 0
+                ? {
+                    label: `${dirtySectionCount} unsaved section${dirtySectionCount !== 1 ? "s" : ""}`,
+                    variant: "secondary",
+                  }
+                : null
+            }
+            actions={
+              <>
+                {activeSectionIsDirty ? (
                   <Button
                     type="button"
                     variant="outline"
                     className="whitespace-nowrap"
-                    onClick={handleReset}
-                    disabled={isLoading || isSaving || !settings}
+                    onClick={handleDiscardChanges}
+                    disabled={isLoading || isSaving || !isDirty}
                   >
-                    Reset to defaults
+                    Discard changes
                   </Button>
-                  <Button
-                    type="button"
-                    className="whitespace-nowrap"
-                    onClick={handleSubmit(onSave)}
-                    disabled={isLoading || isSaving || !canSave}
-                  >
-                    {isSaving ? "Saving..." : "Save changes"}
-                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="whitespace-nowrap"
+                  onClick={handleReset}
+                  disabled={isLoading || isSaving || !settings}
+                >
+                  Reset to defaults
+                </Button>
+                <Button
+                  type="button"
+                  className="whitespace-nowrap"
+                  onClick={handleSubmit(onSave)}
+                  disabled={isLoading || isSaving || !canSave}
+                >
+                  {isSaving ? "Saving..." : "Save changes"}
+                </Button>
+              </>
+            }
+            footer={
+              Object.keys(errors).length > 0 ? (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/[0.03] px-4 py-3 text-sm text-destructive">
+                  Please fix the highlighted errors before saving.
                 </div>
-              </div>
-            </header>
-
+              ) : null
+            }
+          >
             {activeSectionContent}
-
-            {Object.keys(errors).length > 0 && (
-              <div className="rounded-xl border border-destructive/30 bg-destructive/[0.03] px-4 py-3 text-sm text-destructive">
-                Please fix the highlighted errors before saving.
-              </div>
-            )}
-          </section>
+          </SectionWorkspacePanel>
         </div>
       </main>
     </FormProvider>

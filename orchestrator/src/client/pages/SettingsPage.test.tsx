@@ -257,6 +257,45 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("hides stale codex device code after login completes", async () => {
+    vi.mocked(api.getSettings).mockResolvedValue(
+      createAppSettings({
+        llmProvider: {
+          value: "codex",
+          default: "codex",
+          override: "codex",
+        },
+      }),
+    );
+    vi.mocked(api.getCodexAuthStatus).mockResolvedValueOnce({
+      authenticated: false,
+      username: null,
+      validationMessage:
+        "Codex is not authenticated in this container. Run `codex login` and try again.",
+      flowStatus: "completed",
+      loginInProgress: false,
+      verificationUrl: "https://auth.openai.com/codex/device",
+      userCode: "ABCD-EFGH",
+      startedAt: "2026-04-14T16:00:00.000Z",
+      expiresAt: "2026-04-14T16:15:00.000Z",
+      flowMessage: "Codex login completed.",
+    });
+
+    renderPage();
+    await openModelSection();
+
+    expect(
+      await screen.findByText("Codex login completed."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ABCD-EFGH/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /check status/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /start sign-in/i }),
+    ).toBeInTheDocument();
+  });
+
   it("shows validation error for too long model override", async () => {
     vi.mocked(api.getSettings).mockResolvedValue(baseSettings);
 
@@ -328,6 +367,133 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(saveButton).toBeEnabled());
   });
 
+  it("saves a paid tailoring provider while the default provider stays local", async () => {
+    const localSettings = createAppSettings({
+      model: {
+        value: "llama3.2",
+        default: "llama3.2",
+        override: "llama3.2",
+      },
+      llmProvider: {
+        value: "ollama",
+        default: "ollama",
+        override: "ollama",
+      },
+      llmBaseUrl: {
+        value: "http://localhost:11434",
+        default: "http://localhost:11434",
+        override: null,
+      },
+    });
+    vi.mocked(api.getSettings).mockResolvedValue(localSettings);
+    vi.mocked(api.updateSettings).mockResolvedValue(localSettings);
+
+    renderPage();
+    await openModelSection();
+    await clickLastButtonByName(/tailoring/i);
+
+    const providerSelectors = await screen.findAllByRole("combobox", {
+      name: /provider/i,
+    });
+    fireEvent.click(providerSelectors.at(-1) as HTMLElement);
+    fireEvent.click(await screen.findByText("OpenAI"));
+
+    const purposeModels = screen.getAllByLabelText(/^model$/i);
+    fireEvent.change(purposeModels.at(-1) as HTMLElement, {
+      target: { value: "gpt-5.4-mini" },
+    });
+    fireEvent.change(screen.getByLabelText(/^api key$/i), {
+      target: { value: "sk-tailoring" },
+    });
+
+    fireEvent.click(getSaveButton());
+
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(api.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmPurposeOverrides: {
+          tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+        },
+        llmPurposeApiKeys: { tailoring: "sk-tailoring" },
+      }),
+    );
+  });
+
+  it("treats blank purpose API key input as a no-op", async () => {
+    const localSettings = createAppSettings({
+      model: {
+        value: "llama3.2",
+        default: "llama3.2",
+        override: "llama3.2",
+      },
+      llmProvider: {
+        value: "ollama",
+        default: "ollama",
+        override: "ollama",
+      },
+      llmBaseUrl: {
+        value: "http://localhost:11434",
+        default: "http://localhost:11434",
+        override: null,
+      },
+    });
+    vi.mocked(api.getSettings).mockResolvedValue(localSettings);
+    vi.mocked(api.updateSettings).mockResolvedValue(localSettings);
+
+    renderPage();
+    await openModelSection();
+    await clickLastButtonByName(/tailoring/i);
+
+    const providerSelectors = await screen.findAllByRole("combobox", {
+      name: /provider/i,
+    });
+    fireEvent.click(providerSelectors.at(-1) as HTMLElement);
+    fireEvent.click(await screen.findByText("OpenAI"));
+    fireEvent.change(screen.getByLabelText(/^api key$/i), {
+      target: { value: "   " },
+    });
+
+    fireEvent.click(getSaveButton());
+
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
+    expect(api.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmPurposeOverrides: {
+          tailoring: { provider: "openai" },
+        },
+        llmPurposeApiKeys: {},
+      }),
+    );
+  });
+
+  it("shows the selected purpose provider base URL as current", async () => {
+    const localSettings = createAppSettings({
+      llmProvider: {
+        value: "ollama",
+        default: "ollama",
+        override: "ollama",
+      },
+      llmBaseUrl: {
+        value: "http://localhost:11434",
+        default: "http://localhost:11434",
+        override: null,
+      },
+    });
+    vi.mocked(api.getSettings).mockResolvedValue(localSettings);
+
+    renderPage();
+    await openModelSection();
+    await clickLastButtonByName(/tailoring/i);
+
+    const providerSelectors = await screen.findAllByRole("combobox", {
+      name: /provider/i,
+    });
+    fireEvent.click(providerSelectors.at(-1) as HTMLElement);
+    fireEvent.click(await screen.findByText("LM Studio"));
+
+    expect(await screen.findByText("http://localhost:1234")).toBeVisible();
+  });
+
   it("clears stale model overrides when the provider changes", async () => {
     vi.mocked(api.getSettings).mockResolvedValue(
       createAppSettings({
@@ -346,6 +512,25 @@ describe("SettingsPage", () => {
           override: null,
         },
         llmProvider: { value: "gemini", default: "gemini", override: "gemini" },
+        llmPurposeOverrides: {
+          value: {
+            scoring: { model: "google/gemini-3-flash-preview" },
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+            projectSelection: {
+              baseUrl: "https://generativelanguage.googleapis.com",
+              model: "google/gemini-3-flash-preview",
+            },
+          },
+          default: {},
+          override: {
+            scoring: { model: "google/gemini-3-flash-preview" },
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+            projectSelection: {
+              baseUrl: "https://generativelanguage.googleapis.com",
+              model: "google/gemini-3-flash-preview",
+            },
+          },
+        },
       }),
     );
     vi.mocked(api.updateSettings).mockResolvedValue(baseSettings);
@@ -368,6 +553,9 @@ describe("SettingsPage", () => {
         modelScorer: null,
         modelTailoring: null,
         modelProjectSelection: null,
+        llmPurposeOverrides: {
+          tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+        },
       }),
     );
   });
@@ -773,50 +961,13 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("enables save button when the authentication toggle is changed", async () => {
+  it("does not render legacy Basic Auth controls in environment settings", async () => {
     vi.mocked(api.getSettings).mockResolvedValue(baseSettings);
     renderPage();
-    const saveButton = getSaveButton();
 
     await openEnvironmentSection();
-    const authCheckbox = screen.getByLabelText(/enable authentication/i);
-    fireEvent.click(authCheckbox);
-    expect(saveButton).toBeEnabled();
-  });
-
-  it("wipes auth credentials when the toggle is disabled and saved", async () => {
-    // Initial state: authentication is active
-    const activeSettings = {
-      ...baseSettings,
-      basicAuthActive: true,
-      basicAuthUser: "admin",
-      basicAuthPasswordHint: "pass",
-    };
-    vi.mocked(api.getSettings).mockResolvedValue(activeSettings);
-    vi.mocked(api.updateSettings).mockResolvedValue(baseSettings);
-
-    renderPage();
-
-    await openEnvironmentSection();
-
-    const authCheckbox = screen.getByLabelText(/enable authentication/i);
-    expect(authCheckbox).toBeChecked();
-
-    // Disable it
-    fireEvent.click(authCheckbox);
-    expect(authCheckbox).not.toBeChecked();
-
-    const saveButton = getSaveButton();
-    expect(saveButton).toBeEnabled();
-    fireEvent.click(saveButton);
-
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalled());
-    expect(api.updateSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        basicAuthUser: null,
-        basicAuthPassword: null,
-      }),
-    );
+    expect(screen.queryByLabelText(/enable authentication/i)).toBeNull();
+    expect(screen.queryByPlaceholderText("username")).toBeNull();
   });
 
   it("saves blocked company keywords from scoring settings", async () => {

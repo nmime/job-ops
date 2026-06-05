@@ -1,5 +1,8 @@
 import { useSettings } from "@client/hooks/useSettings";
-import { getRenderableJobDescription } from "@client/lib/jobDescription";
+import {
+  getRenderableJobDescription,
+  looksLikeHtmlJobDescription,
+} from "@client/lib/jobDescription";
 import {
   Copy,
   Edit2,
@@ -21,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, copyTextToClipboard } from "@/lib/utils";
 import { showErrorToast } from "../lib/error-toast";
+import { JobDescriptionHtml } from "./JobDescriptionHtml";
 import { JobDescriptionMarkdown } from "./JobDescriptionMarkdown";
 
 type JobDescriptionPanelProps = {
@@ -28,8 +32,13 @@ type JobDescriptionPanelProps = {
   description: string | null | undefined;
   helperText?: string;
   jobUrl?: string | null;
+  defaultOpen?: boolean;
+  collapsible?: boolean;
+  isLoading?: boolean;
+  error?: string | null;
   maxHeightClassName?: string;
   onSave?: (description: string) => Promise<void> | void;
+  onOpen?: () => void;
 };
 
 const defaultHelperText =
@@ -40,8 +49,13 @@ export const JobDescriptionPanel: React.FC<JobDescriptionPanelProps> = ({
   description: rawDescription,
   helperText = defaultHelperText,
   jobUrl,
+  defaultOpen = true,
+  collapsible = true,
+  isLoading = false,
+  error = null,
   maxHeightClassName = "max-h-[420px]",
   onSave,
+  onOpen,
 }) => {
   const { renderMarkdownInJobDescriptions } = useSettings();
   const [isEditing, setIsEditing] = useState(false);
@@ -49,6 +63,10 @@ export const JobDescriptionPanel: React.FC<JobDescriptionPanelProps> = ({
     rawDescription ?? "",
   );
   const [isSaving, setIsSaving] = useState(false);
+  const hasHtmlDescription = useMemo(
+    () => looksLikeHtmlJobDescription(rawDescription),
+    [rawDescription],
+  );
   const description = useMemo(
     () => getRenderableJobDescription(rawDescription),
     [rawDescription],
@@ -89,11 +107,121 @@ export const JobDescriptionPanel: React.FC<JobDescriptionPanelProps> = ({
     }
   };
 
+  const actions = !isEditing ? (
+    <>
+      {jobUrl ? (
+        <Button size="sm" variant="ghost" asChild>
+          <a href={jobUrl} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+            View job
+          </a>
+        </Button>
+      ) : null}
+      {!isLoading && !error && description ? (
+        <Button size="sm" variant="ghost" onClick={() => void handleCopy()}>
+          <Copy className="mr-1.5 h-3.5 w-3.5" />
+          Copy
+        </Button>
+      ) : null}
+      {canEdit ? (
+        <Button size="sm" variant="ghost" onClick={() => setIsEditing(true)}>
+          <Edit2 className="mr-1.5 h-3.5 w-3.5" />
+          Edit
+        </Button>
+      ) : null}
+    </>
+  ) : (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={handleCancel}
+        disabled={isSaving}
+      >
+        Cancel
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => void handleSave()}
+        disabled={isSaving}
+      >
+        {isSaving ? (
+          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Save className="mr-1.5 h-3.5 w-3.5" />
+        )}
+        Save
+      </Button>
+    </>
+  );
+
+  const body = (
+    <div
+      className={cn(
+        "overflow-y-auto bg-background/20 p-4 w-full",
+        maxHeightClassName,
+      )}
+    >
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading job description...
+        </div>
+      ) : error ? (
+        <div className="text-sm text-destructive">{error}</div>
+      ) : isEditing ? (
+        <Textarea
+          value={editedDescription}
+          onChange={(event) => setEditedDescription(event.target.value)}
+          className="min-h-[360px] bg-background/70 font-mono text-sm leading-relaxed focus-visible:ring-1"
+          placeholder="Enter job description..."
+        />
+      ) : hasHtmlDescription && rawDescription ? (
+        <JobDescriptionHtml description={rawDescription} />
+      ) : renderMarkdownInJobDescriptions ? (
+        <JobDescriptionMarkdown description={description} />
+      ) : (
+        <div className="whitespace-pre-wrap leading-7">{description}</div>
+      )}
+    </div>
+  );
+
+  if (!collapsible) {
+    return (
+      <div
+        className={cn(
+          "overflow-hidden rounded-lg border border-border/45 bg-muted/25",
+          className,
+        )}
+      >
+        <div className="border-b border-border/35 bg-muted/5 px-3 py-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between w-[calc(100%_-_24px)]">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground/90">
+                <FileText className="h-3.5 w-3.5 text-sky-400/80" />
+                Job description
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground/65">
+                {helperText}
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-1">{actions}</div>
+          </div>
+        </div>
+        {body}
+      </div>
+    );
+  }
+
   return (
     <Accordion
       type="single"
       collapsible
-      defaultValue="job-description"
+      defaultValue={defaultOpen ? "job-description" : undefined}
+      onValueChange={(value) => {
+        if (value === "job-description") onOpen?.();
+      }}
       className={cn(
         "overflow-hidden rounded-lg border border-border/45 bg-muted/25",
         className,
@@ -113,84 +241,11 @@ export const JobDescriptionPanel: React.FC<JobDescriptionPanelProps> = ({
             </div>
           </AccordionTrigger>
           <div className="flex flex-wrap justify-end gap-1 border-b border-border/35 bg-muted/5 px-3 pb-2 sm:absolute sm:right-8 sm:top-1/2 sm:border-b-0 sm:bg-transparent sm:p-0 sm:-translate-y-1/2">
-            {!isEditing ? (
-              <>
-                {jobUrl ? (
-                  <Button size="sm" variant="ghost" asChild>
-                    <a href={jobUrl} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                      View job
-                    </a>
-                  </Button>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void handleCopy()}
-                >
-                  <Copy className="mr-1.5 h-3.5 w-3.5" />
-                  Copy
-                </Button>
-                {canEdit ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setIsEditing(true)}
-                  >
-                    <Edit2 className="mr-1.5 h-3.5 w-3.5" />
-                    Edit
-                  </Button>
-                ) : null}
-              </>
-            ) : (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={handleCancel}
-                  disabled={isSaving}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => void handleSave()}
-                  disabled={isSaving}
-                >
-                  {isSaving ? (
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Save className="mr-1.5 h-3.5 w-3.5" />
-                  )}
-                  Save
-                </Button>
-              </>
-            )}
+            {actions}
           </div>
         </div>
 
-        <AccordionContent className="p-0">
-          <div
-            className={cn(
-              "overflow-y-auto bg-background/20 p-4 text-sm text-foreground/75",
-              maxHeightClassName,
-            )}
-          >
-            {isEditing ? (
-              <Textarea
-                value={editedDescription}
-                onChange={(event) => setEditedDescription(event.target.value)}
-                className="min-h-[360px] bg-background/70 font-mono text-sm leading-relaxed focus-visible:ring-1"
-                placeholder="Enter job description..."
-              />
-            ) : renderMarkdownInJobDescriptions ? (
-              <JobDescriptionMarkdown description={description} />
-            ) : (
-              <div className="whitespace-pre-wrap leading-7">{description}</div>
-            )}
-          </div>
-        </AccordionContent>
+        <AccordionContent className="p-0">{body}</AccordionContent>
       </AccordionItem>
     </Accordion>
   );

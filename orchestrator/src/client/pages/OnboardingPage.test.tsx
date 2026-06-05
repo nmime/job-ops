@@ -1,24 +1,23 @@
 import * as api from "@client/api";
 import { useDemoInfo } from "@client/hooks/useDemoInfo";
-import { useOnboardingRequirement } from "@client/hooks/useOnboardingRequirement";
+import { useOnboardingStatus } from "@client/hooks/useOnboardingStatus";
 import { useRxResumeConfigState } from "@client/hooks/useRxResumeConfigState";
 import { useSettings } from "@client/hooks/useSettings";
-import { validateAndMaybePersistRxResumeMode } from "@client/lib/rxresume-config";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { OnboardingStatusResponse } from "@shared/types";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithQueryClient } from "../test/renderWithQueryClient";
 import { OnboardingPage } from "./OnboardingPage";
 
 vi.mock("@client/api", () => ({
+  getAuthBootstrapStatus: vi.fn(async () => ({ setupRequired: false })),
+  hasAuthenticatedSession: vi.fn(() => true),
   importDesignResumeFromFile: vi.fn(),
+  saveOnboardingModel: vi.fn(),
+  saveOnboardingRxResume: vi.fn(),
+  setupFirstAdmin: vi.fn(),
   suggestOnboardingSearchTerms: vi.fn(),
-  getCodexAuthStatus: vi.fn(),
-  startCodexAuth: vi.fn(),
-  disconnectCodexAuth: vi.fn(),
-  validateLlm: vi.fn(),
-  validateRxresume: vi.fn(),
-  validateResumeConfig: vi.fn(),
   updateSettings: vi.fn(),
 }));
 
@@ -34,25 +33,44 @@ vi.mock("@client/hooks/useRxResumeConfigState", () => ({
   useRxResumeConfigState: vi.fn(),
 }));
 
-vi.mock("@client/hooks/useOnboardingRequirement", () => ({
-  useOnboardingRequirement: vi.fn(),
+vi.mock("@client/hooks/useOnboardingStatus", () => ({
+  useOnboardingStatus: vi.fn(),
 }));
 
-vi.mock("@client/lib/rxresume-config", () => ({
-  getRxResumeCredentialDrafts: vi.fn((values) => ({
-    baseUrl: values.rxresumeUrl?.trim() ?? "",
-    apiKey: values.rxresumeApiKey?.trim() ?? "",
-  })),
-  getRxResumeMissingCredentialLabels: vi.fn(() => []),
-  validateAndMaybePersistRxResumeMode: vi.fn(),
+vi.mock("./onboarding/components/OnboardingCoach", () => ({
+  OnboardingCoach: (props: { replayNonce: number }) => (
+    <div data-testid="coach">coach:{props.replayNonce}</div>
+  ),
 }));
 
-vi.mock("@client/components/ReactiveResumeConfigPanel", () => ({
-  ReactiveResumeConfigPanel: () => <div>Reactive resume panel</div>,
-}));
-
-vi.mock("@client/pages/settings/components/BaseResumeSelection", () => ({
-  BaseResumeSelection: () => <div>Base resume selection</div>,
+vi.mock("./onboarding/components/OnboardingStepContent", () => ({
+  OnboardingStepContent: (props: {
+    currentStep: string;
+    onImportResumeFile: (file: File) => Promise<void>;
+    onTemplateResumeChange: (value: string | null) => void;
+  }) => (
+    <div>
+      <div>content:{props.currentStep}</div>
+      <button
+        type="button"
+        onClick={() =>
+          void props.onImportResumeFile(
+            new File(["resume"], "resume.json", {
+              type: "application/json",
+            }),
+          )
+        }
+      >
+        Mock upload
+      </button>
+      <button
+        type="button"
+        onClick={() => props.onTemplateResumeChange("resume-2")}
+      >
+        Choose alternate resume
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("sonner", () => ({
@@ -67,35 +85,83 @@ const baseSettings = {
   llmProvider: { value: "openrouter", default: "openrouter", override: null },
   llmBaseUrl: { value: "", default: "", override: null },
   llmApiKeyHint: "sk-t",
+  model: { value: "gpt-4o", default: "gpt-4o", override: null },
   pdfRenderer: { value: "rxresume", default: "rxresume", override: null },
-  onboardingBasicAuthDecision: null,
   rxresumeUrl: "https://resume.example.com",
   rxresumeApiKeyHint: "rx-k",
   rxresumeBaseResumeId: "resume-1",
   searchTerms: {
-    value: ["Platform Engineer"],
+    value: ["web developer"],
     default: ["web developer"],
-    override: ["Platform Engineer"],
+    override: null,
   },
-  basicAuthUser: null,
-  basicAuthPassword: null,
-  basicAuthPasswordHint: null,
-  basicAuthActive: false,
 };
 
-let currentSettings: any;
+const authUser = {
+  id: "user-1",
+  username: "admin",
+  displayName: "Admin User",
+  isSystemAdmin: true,
+  isDisabled: false,
+  workspaceId: "tenant_default",
+  workspaceName: "JobOps",
+  createdAt: "2026-06-01T00:00:00.000Z",
+  updatedAt: "2026-06-01T00:00:00.000Z",
+};
 
-function getStepButton(label: RegExp) {
-  const element = screen.getByText(label);
-  const button = element.closest("button");
-  if (!button) {
-    throw new Error(`Expected ${label.toString()} to be inside a step button`);
-  }
-  return button;
+const analyticsTrack = vi.fn();
+
+function getTrackedEvent(name: string) {
+  return analyticsTrack.mock.calls.find((call) => call[0] === name);
 }
 
-function renderPage() {
-  return renderWithQueryClient(
+const incompleteModelStatus: OnboardingStatusResponse = {
+  complete: false,
+  nextRequirementId: "model",
+  requirements: [
+    {
+      id: "model",
+      status: "needs_action",
+      title: "Connect your LLM",
+      message: "LLM API key is missing.",
+      primaryAction: "connect_model",
+    },
+    {
+      id: "resume",
+      status: "needs_action",
+      title: "Load your resume",
+      message:
+        "Upload a resume file, or connect Reactive Resume and choose a template. This gives Job Ops the baseline it needs for matching, fit assessment, and better application workflows.",
+      primaryAction: "upload_resume",
+    },
+  ],
+};
+
+const resumeBlockedStatus: OnboardingStatusResponse = {
+  complete: false,
+  nextRequirementId: "resume",
+  requirements: [
+    {
+      id: "model",
+      status: "ready",
+      title: "Model connected",
+      message:
+        "The LLM is ready to power scoring, tailoring, ghostwriting, and email classification.",
+      primaryAction: "none",
+    },
+    {
+      id: "resume",
+      status: "needs_action",
+      title: "Load your resume",
+      message:
+        "Upload a resume file, or connect Reactive Resume and choose a template. This gives Job Ops the baseline it needs for matching, fit assessment, and better application workflows.",
+      primaryAction: "upload_resume",
+    },
+  ],
+};
+
+async function renderPage() {
+  const rendered = renderWithQueryClient(
     <MemoryRouter initialEntries={["/onboarding"]}>
       <Routes>
         <Route path="/onboarding" element={<OnboardingPage />} />
@@ -103,13 +169,21 @@ function renderPage() {
       </Routes>
     </MemoryRouter>,
   );
+  await waitFor(() => {
+    expect(api.getAuthBootstrapStatus).toHaveBeenCalled();
+  });
+  return rendered;
 }
 
 describe("OnboardingPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    currentSettings = { ...baseSettings };
+    sessionStorage.clear();
+    Object.defineProperty(window, "umami", {
+      configurable: true,
+      value: { track: analyticsTrack },
+    });
 
     vi.mocked(useDemoInfo).mockReturnValue({
       demoMode: false,
@@ -119,1230 +193,314 @@ describe("OnboardingPage", () => {
       baselineVersion: null,
       baselineName: null,
     });
-
-    vi.mocked(useSettings).mockImplementation(() => ({
-      settings: currentSettings,
+    vi.mocked(useSettings).mockReturnValue({
+      settings: baseSettings as any,
       isLoading: false,
       refreshSettings: vi.fn(),
       error: null,
       showSponsorInfo: true,
       renderMarkdownInJobDescriptions: true,
-    }));
-
+      autoTailorOnManualImport: true,
+    });
     vi.mocked(useRxResumeConfigState).mockReturnValue({
-      storedRxResume: {
-        hasV5ApiKey: true,
-        hasBaseUrl: true,
-      },
+      storedRxResume: { hasV5ApiKey: true, hasBaseUrl: true },
       baseResumeId: "resume-1",
       syncBaseResumeId: () => "resume-1",
       getBaseResumeId: () => "resume-1",
       setBaseResumeId: vi.fn(),
     } as any);
-    vi.mocked(useOnboardingRequirement).mockImplementation(() => ({
-      checking: false,
-      complete: Boolean(
-        (currentSettings.basicAuthActive ||
-          currentSettings.onboardingBasicAuthDecision !== null) &&
-          Array.isArray(currentSettings.searchTerms?.override) &&
-          currentSettings.searchTerms.override.length > 0,
-      ),
-    }));
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockResolvedValue({
-      validation: {
-        valid: true,
-        message: null,
-      },
-    } as any);
-    vi.mocked(api.suggestOnboardingSearchTerms).mockResolvedValue({
-      terms: ["Platform Engineer", "Backend Engineer"],
-      source: "ai",
-    });
-    vi.mocked(api.getCodexAuthStatus).mockResolvedValue({
-      authenticated: false,
-      username: null,
-      validationMessage:
-        "Codex is not authenticated in this container. Run `codex login` and try again.",
-      flowStatus: "idle",
-      loginInProgress: false,
-      verificationUrl: null,
-      userCode: null,
-      startedAt: null,
-      expiresAt: null,
-      flowMessage: null,
-    });
-    vi.mocked(api.startCodexAuth).mockResolvedValue({
-      authenticated: false,
-      username: null,
-      validationMessage:
-        "Codex is not authenticated in this container. Run `codex login` and try again.",
-      flowStatus: "running",
-      loginInProgress: true,
-      verificationUrl: "https://auth.openai.com/codex/device",
-      userCode: "ABCD-EFGH",
-      startedAt: "2026-04-14T16:00:00.000Z",
-      expiresAt: "2026-04-14T16:15:00.000Z",
-      flowMessage:
-        "Open the verification URL and enter the one-time code to finish login.",
-    });
-  });
-
-  it("keeps the LLM step visible even when a key hint already exists", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: false,
-      message: "Connection failed",
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => expect(api.validateLlm).toHaveBeenCalled());
-    expect(
-      screen.getByText("Choose the LLM connection Job Ops should use."),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("API key")).toBeInTheDocument();
-    expect(
-      screen.getByText(/leave blank to keep the saved key/i),
-    ).toBeInTheDocument();
-  });
-
-  it("shows Codex sign-in controls in onboarding when provider is codex", async () => {
-    currentSettings = {
-      ...baseSettings,
-      llmProvider: { value: "codex", default: "codex", override: null },
-      llmApiKeyHint: null,
-    };
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: false,
-      message: "Codex is not authenticated in this container.",
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => expect(api.getCodexAuthStatus).toHaveBeenCalled());
-    expect(screen.getByText("Codex Sign-In")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /start sign-in/i }));
-
-    await waitFor(() => expect(api.startCodexAuth).toHaveBeenCalled());
-    expect(await screen.findByText(/ABCD-EFGH/)).toBeInTheDocument();
-    const openVerificationLink = await screen.findByRole("link", {
-      name: /open verification page/i,
-    });
-    expect(openVerificationLink).toHaveAttribute(
-      "href",
-      "https://auth.openai.com/codex/device",
-    );
-  });
-
-  it("does not treat local providers as validated before the connection check passes", async () => {
-    currentSettings = {
-      ...baseSettings,
-      llmProvider: { value: "lmstudio", default: "lmstudio", override: null },
-      llmBaseUrl: {
-        value: "http://localhost:1234",
-        default: "",
-        override: null,
-      },
-      llmApiKeyHint: null,
-    };
-
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: false,
-      message: "LM Studio is unreachable",
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(api.validateLlm).toHaveBeenCalledWith({
-        provider: "lmstudio",
-        baseUrl: "http://localhost:1234",
-        apiKey: undefined,
-      });
-    });
-
-    expect(
-      screen.getByRole("button", { name: /save connection/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /revalidate connection/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("shows the saved LLM connection success state in the detail panel", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("OpenRouter connection verified."),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("defaults the authentication step to lock it down", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /basic auth/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-    });
-
-    expect(screen.getByLabelText(/lock it down/i)).toBeChecked();
-    expect(
-      screen.getByRole("button", { name: /enable authentication/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("renders the new search terms step in the onboarding rail", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /search terms/i }),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("does not auto-generate search terms when explicit saved terms already exist", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /search terms/i }));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the job titles to search for."),
-      ).toBeInTheDocument();
-    });
-
-    expect(api.suggestOnboardingSearchTerms).not.toHaveBeenCalled();
-    expect(screen.getByText(/saved search terms/i)).toBeInTheDocument();
-  });
-
-  it("auto-populates search terms from the resume when no explicit override exists", async () => {
-    currentSettings = {
-      ...baseSettings,
-      searchTerms: {
-        value: ["web developer"],
-        default: ["web developer"],
-        override: null,
-      },
-    };
-
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.suggestOnboardingSearchTerms).mockResolvedValue({
-      terms: ["Platform Engineer", "Backend Engineer"],
-      source: "ai",
-    });
-
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /search terms/i }));
-
-    await waitFor(() => {
-      expect(api.suggestOnboardingSearchTerms).toHaveBeenCalledTimes(1);
-    });
-
-    expect(
-      screen.getByText(/^generated from your resume$/i),
-    ).toBeInTheDocument();
-
-    const collapsedTokens = screen.getByTestId(
-      "onboarding-search-terms-collapsed-tokens",
-    );
-    expect(
-      within(collapsedTokens).getByText("Platform Engineer"),
-    ).toBeInTheDocument();
-    expect(
-      within(collapsedTokens).getByText("Backend Engineer"),
-    ).toBeInTheDocument();
-  });
-
-  it("saves edited search terms through settings updates", async () => {
-    currentSettings = {
-      ...baseSettings,
-      searchTerms: {
-        value: ["web developer"],
-        default: ["web developer"],
-        override: null,
-      },
-    };
-
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.suggestOnboardingSearchTerms).mockResolvedValue({
-      terms: ["Platform Engineer", "Backend Engineer"],
-      source: "ai",
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("searchTerms" in update
-          ? {
-              searchTerms: {
-                value: update.searchTerms,
-                default: ["web developer"],
-                override: update.searchTerms,
-              },
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /search terms/i }));
-
-    await waitFor(() => {
-      expect(api.suggestOnboardingSearchTerms).toHaveBeenCalledTimes(1);
-    });
-
-    const input = screen.getByPlaceholderText("Type a role and press Enter");
-    fireEvent.change(input, {
-      target: { value: "Staff Software Engineer" },
-    });
-    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: /save search terms/i }));
-
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        searchTerms: [
-          "Platform Engineer",
-          "Backend Engineer",
-          "Staff Software Engineer",
-        ],
-      });
-    });
-  });
-
-  it("lets the user skip basic auth and finish onboarding", async () => {
-    vi.mocked(useOnboardingRequirement).mockReturnValue({
-      checking: false,
+    vi.mocked(useOnboardingStatus).mockReturnValue({
+      status: incompleteModelStatus,
       complete: false,
-    });
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async () => {
-      currentSettings = {
-        ...currentSettings,
-        onboardingBasicAuthDecision: "skipped",
-      };
-      return {
-        ...currentSettings,
-        searchTerms: {
-          ...currentSettings.searchTerms,
-          override: null,
-        },
-      };
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /basic auth/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByLabelText(/skip for now/i));
-    fireEvent.click(screen.getByRole("button", { name: /finish onboarding/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("ready page")).toBeInTheDocument();
-    });
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      onboardingBasicAuthDecision: "skipped",
-    });
-  });
-
-  it("lets the user enable basic auth and finish onboarding", async () => {
-    vi.mocked(useOnboardingRequirement).mockReturnValue({
+      nextRequirementId: "model",
+      requirements: incompleteModelStatus.requirements,
       checking: false,
-      complete: false,
-    });
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("enableBasicAuth" in update || "basicAuthUser" in update
-          ? {
-              basicAuthActive: true,
-              onboardingBasicAuthDecision: "enabled",
-              basicAuthUser:
-                update.basicAuthUser ?? currentSettings.basicAuthUser,
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /basic auth/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByLabelText(/lock it down/i));
-    fireEvent.change(screen.getByLabelText(/username/i), {
-      target: { value: "jobops-admin" },
-    });
-    fireEvent.change(screen.getByLabelText(/password/i), {
-      target: { value: "correct horse battery staple" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: /enable authentication/i }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("ready page")).toBeInTheDocument();
-    });
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      enableBasicAuth: true,
-      basicAuthUser: "jobops-admin",
-      basicAuthPassword: "correct horse battery staple",
-      onboardingBasicAuthDecision: "enabled",
-    });
-  });
-
-  it("redirects when search terms are the last missing step", async () => {
-    vi.mocked(useOnboardingRequirement).mockReturnValue({
-      checking: false,
-      complete: false,
-    });
-    currentSettings = {
-      ...baseSettings,
-      onboardingBasicAuthDecision: "skipped",
-      searchTerms: {
-        value: ["web developer"],
-        default: ["web developer"],
-        override: null,
-      },
-    };
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("searchTerms" in update
-          ? {
-              searchTerms: {
-                value: update.searchTerms,
-                default: ["web developer"],
-                override: update.searchTerms,
-              },
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /search terms/i }));
-
-    await waitFor(() => {
-      expect(api.suggestOnboardingSearchTerms).toHaveBeenCalledTimes(1);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /save search terms/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("ready page")).toBeInTheDocument();
-    });
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      searchTerms: ["Platform Engineer", "Backend Engineer"],
-    });
-  });
-
-  it("does not leave onboarding early when basic auth is saved before the other steps are complete", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: false,
-      message: "Connection failed",
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.updateSettings).mockResolvedValue({
-      ...baseSettings,
-      onboardingBasicAuthDecision: "skipped",
-    } as any);
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /basic auth/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByLabelText(/skip for now/i));
-    fireEvent.click(screen.getByRole("button", { name: /finish onboarding/i }));
-
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        onboardingBasicAuthDecision: "skipped",
-      });
-    });
-
-    expect(screen.queryByText("ready page")).not.toBeInTheDocument();
-    expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-  });
-
-  it("does not finish onboarding when only default search terms exist", async () => {
-    currentSettings = {
-      ...baseSettings,
-      onboardingBasicAuthDecision: "skipped",
-      searchTerms: {
-        value: ["web developer"],
-        default: ["web developer"],
-        override: null,
-      },
-    };
-
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("ready page")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("Choose the LLM connection Job Ops should use."),
-    ).toBeInTheDocument();
-  });
-
-  it("does not auto-advance after saving the LLM step", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.updateSettings).mockResolvedValue(baseSettings as any);
-
-    renderPage();
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Choose the LLM connection Job Ops should use."),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /revalidate connection/i }),
-    );
-
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalled();
-    });
-
-    expect(
-      screen.getByText("Choose the LLM connection Job Ops should use."),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Import your current resume."),
-    ).not.toBeInTheDocument();
-  });
-
-  it("keeps the RxResume URL hidden unless self-hosted mode is enabled", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    currentSettings = {
-      ...baseSettings,
-      rxresumeUrl: "",
-    };
-
-    vi.mocked(useSettings).mockImplementation(() => ({
-      settings: currentSettings,
-      isLoading: false,
-      refreshSettings: vi.fn(),
       error: null,
-      showSponsorInfo: true,
-      renderMarkdownInJobDescriptions: true,
-    }));
-
-    renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-    fireEvent.click(screen.getByText("Use Reactive Resume"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Import your current resume."),
-      ).toBeInTheDocument();
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(api.saveOnboardingModel).mockResolvedValue(resumeBlockedStatus);
+    vi.mocked(api.saveOnboardingRxResume).mockResolvedValue(
+      resumeBlockedStatus,
+    );
+    vi.mocked(api.importDesignResumeFromFile).mockResolvedValue({
+      id: "doc-1",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    } as any);
+    vi.mocked(api.setupFirstAdmin).mockResolvedValue(authUser);
+    vi.mocked(api.suggestOnboardingSearchTerms).mockResolvedValue({
+      terms: ["Backend Engineer", "Platform Engineer"],
+      source: "fallback",
     });
+    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
+      const searchTerms =
+        update.searchTerms ?? baseSettings.searchTerms.override;
+      return {
+        ...baseSettings,
+        searchTerms: {
+          value: searchTerms ?? baseSettings.searchTerms.value,
+          default: baseSettings.searchTerms.default,
+          override: searchTerms,
+        },
+        pdfRenderer: {
+          ...baseSettings.pdfRenderer,
+          value: update.pdfRenderer ?? baseSettings.pdfRenderer.value,
+          override: update.pdfRenderer ?? baseSettings.pdfRenderer.override,
+        },
+      } as any;
+    });
+  });
 
-    expect(screen.queryByLabelText(/custom url/i)).not.toBeInTheDocument();
+  it("shows one active server requirement and collapses completed checks", async () => {
+    vi.mocked(useOnboardingStatus).mockReturnValue({
+      status: resumeBlockedStatus,
+      complete: false,
+      nextRequirementId: "resume",
+      requirements: resumeBlockedStatus.requirements,
+      checking: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    await renderPage();
+
+    expect(await screen.findByText("content:resume")).toBeInTheDocument();
+    expect(screen.getByText("Launch Console")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /account workspace/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2/4")).toBeInTheDocument();
+    expect(screen.getByText("Model connected")).toBeInTheDocument();
+    expect(screen.getAllByText("Load your resume").length).toBeGreaterThan(0);
+  });
+
+  it("calls the focused model action from the active requirement", async () => {
+    await renderPage();
 
     fireEvent.click(
-      screen.getByRole("checkbox", { name: /self-hosted reactive resume/i }),
+      screen.getByRole("button", { name: /verify llm connection/i }),
     );
 
-    expect(screen.getByLabelText(/custom url/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.saveOnboardingModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "openrouter",
+        }),
+      );
+    });
+    expect(getTrackedEvent("onboarding_model_verify_submitted")).toEqual([
+      "onboarding_model_verify_submitted",
+      expect.objectContaining({
+        provider: "openrouter",
+        has_key_input: false,
+      }),
+    ]);
+    expect(getTrackedEvent("onboarding_model_verify_completed")).toEqual([
+      "onboarding_model_verify_completed",
+      expect.objectContaining({
+        result: "success",
+        provider: "openrouter",
+      }),
+    ]);
   });
 
-  it("does not show resume errors before the user tries to validate the step", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockResolvedValue({
-      validation: {
-        valid: false,
-        message: "Reactive Resume is not configured",
-      },
-    } as any);
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: false,
-      message: "Reactive Resume is not configured",
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: false,
-      message:
-        "No local resume is ready yet. Upload a PDF or DOCX resume, or connect Reactive Resume and select a template resume.",
-    });
-
-    renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-
-    await waitFor(() => {
-      expect(api.validateResumeConfig).toHaveBeenCalled();
-    });
-
-    expect(
-      screen.queryByText(
-        /no local resume is ready yet\. upload a pdf or docx resume, or connect reactive resume and select a template resume\./i,
-      ),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        /upload a resume here, or switch to the reactive resume option if you want to import from an existing template resume instead\./i,
-      ),
-    ).not.toBeInTheDocument();
-  });
-
-  it("shows the Reactive Resume success state in the detail panel after validation passes", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockResolvedValue({
-      validation: {
-        valid: true,
-        message: null,
-      },
-    } as any);
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: false,
-      message: "Choose a template resume to finish this step.",
-    });
-
-    renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-    fireEvent.click(screen.getByText("Use Reactive Resume"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Reactive Resume connection verified."),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("shows the loaded resume success state in the detail panel", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Your base resume is loaded and ready."),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("lets upload-only onboarding switch PDF rendering to LaTeX when RxResume is unavailable", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockResolvedValue({
-      validation: {
-        valid: false,
-        message: "Reactive Resume is not configured",
-      },
-    } as any);
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: false,
-      message: "Reactive Resume is not configured",
-    });
-    vi.mocked(api.validateResumeConfig)
-      .mockResolvedValueOnce({
-        valid: false,
-        message: "No resume yet",
-      })
-      .mockResolvedValueOnce({
-        valid: true,
-        message: null,
-      });
-    vi.mocked(api.importDesignResumeFromFile).mockResolvedValue({
-      id: "primary",
-      title: "Taylor Resume",
-      resumeJson: {} as any,
-      revision: 1,
-      sourceResumeId: null,
-      sourceMode: null,
-      importedAt: "2026-04-11T00:00:00.000Z",
-      createdAt: "2026-04-11T00:00:00.000Z",
-      updatedAt: "2026-04-11T00:00:00.000Z",
-      assets: [],
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("pdfRenderer" in update
-          ? {
-              pdfRenderer: {
-                value: update.pdfRenderer,
-                default: "rxresume",
-                override: null,
-              },
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    const { container } = renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Import your current resume."),
-      ).toBeInTheDocument();
-    });
-
-    const input = container.querySelector(
-      'input[type="file"][accept*=".pdf"]',
-    ) as HTMLInputElement | null;
-    if (!input) {
-      throw new Error("Expected resume upload input");
-    }
-
-    fireEvent.change(input, {
-      target: {
-        files: [
-          new File(["resume"], "resume.pdf", {
-            type: "application/pdf",
-          }),
-        ],
-      },
-    });
-
-    await waitFor(() => {
-      expect(api.importDesignResumeFromFile).toHaveBeenCalledWith({
-        fileName: "resume.pdf",
-        mediaType: "application/pdf",
-        dataBase64: expect.any(String),
-      });
-    });
-
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        pdfRenderer: "latex",
-      });
-    });
-  });
-
-  it("marks the search terms step stale after the resume changes", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig)
-      .mockResolvedValueOnce({
-        valid: true,
-        message: null,
-      })
-      .mockResolvedValueOnce({
-        valid: true,
-        message: null,
-      });
-    vi.mocked(api.importDesignResumeFromFile).mockResolvedValue({
-      id: "primary",
-      title: "Taylor Resume",
-      resumeJson: {} as any,
-      revision: 1,
-      sourceResumeId: null,
-      sourceMode: null,
-      importedAt: "2026-04-11T00:00:00.000Z",
-      createdAt: "2026-04-11T00:00:00.000Z",
-      updatedAt: "2026-04-11T00:00:00.000Z",
-      assets: [],
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("pdfRenderer" in update
-          ? {
-              pdfRenderer: {
-                value: update.pdfRenderer,
-                default: "rxresume",
-                override: null,
-              },
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    const { container } = renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-
-    const input = container.querySelector(
-      'input[type="file"][accept*=".pdf"]',
-    ) as HTMLInputElement | null;
-    if (!input) {
-      throw new Error("Expected resume upload input");
-    }
-
-    fireEvent.change(input, {
-      target: {
-        files: [
-          new File(["resume"], "resume.pdf", {
-            type: "application/pdf",
-          }),
-        ],
-      },
-    });
-
-    await waitFor(() => {
-      expect(api.importDesignResumeFromFile).toHaveBeenCalled();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /search terms/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/resume changed/i)).toBeInTheDocument();
-    });
-  });
-
-  it("uses LaTeX for uploaded resumes even when Reactive Resume is available", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockResolvedValue({
-      validation: {
-        valid: true,
-        message: null,
-      },
-    } as any);
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig)
-      .mockResolvedValueOnce({
-        valid: false,
-        message: "No resume yet",
-      })
-      .mockResolvedValueOnce({
-        valid: true,
-        message: null,
-      });
-    vi.mocked(api.importDesignResumeFromFile).mockResolvedValue({
-      id: "primary",
-      title: "Taylor Resume",
-      resumeJson: {} as any,
-      revision: 1,
-      sourceResumeId: null,
-      sourceMode: null,
-      importedAt: "2026-04-11T00:00:00.000Z",
-      createdAt: "2026-04-11T00:00:00.000Z",
-      updatedAt: "2026-04-11T00:00:00.000Z",
-      assets: [],
-    });
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...("pdfRenderer" in update
-          ? {
-              pdfRenderer: {
-                value: update.pdfRenderer,
-                default: "rxresume",
-                override: null,
-              },
-            }
-          : {}),
-      };
-      return currentSettings;
-    });
-
-    const { container } = renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-
-    const input = container.querySelector(
-      'input[type="file"][accept*=".pdf"]',
-    ) as HTMLInputElement | null;
-    if (!input) {
-      throw new Error("Expected resume upload input");
-    }
-
-    fireEvent.change(input, {
-      target: {
-        files: [
-          new File(["resume"], "resume.pdf", {
-            type: "application/pdf",
-          }),
-        ],
-      },
-    });
-
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        pdfRenderer: "latex",
-      });
-    });
-  });
-
-  it("only shows the template resume picker after Reactive Resume validates", async () => {
-    currentSettings = {
-      ...baseSettings,
-      rxresumeApiKeyHint: null,
-      rxresumeBaseResumeId: null,
-      pdfRenderer: { value: "latex", default: "rxresume", override: null },
+  it("keeps Reactive Resume blocked when the server requires template selection", async () => {
+    const templateBlockedStatus: OnboardingStatusResponse = {
+      ...resumeBlockedStatus,
+      requirements: [
+        resumeBlockedStatus.requirements[0],
+        {
+          id: "resume",
+          status: "needs_action",
+          title: "Choose a Reactive Resume template",
+          message:
+            "Reactive Resume is connected. Select the resume Job Ops should use for matching, fit assessment, and applications.",
+          primaryAction: "select_rxresume_template",
+        },
+      ],
     };
-
-    vi.mocked(useRxResumeConfigState).mockReturnValue({
-      storedRxResume: {
-        hasV5ApiKey: false,
-        hasBaseUrl: true,
-      },
-      baseResumeId: null,
-      syncBaseResumeId: () => null,
-      getBaseResumeId: () => null,
-      setBaseResumeId: vi.fn(),
+    vi.mocked(useOnboardingStatus).mockReturnValue({
+      status: templateBlockedStatus,
+      complete: false,
+      nextRequirementId: "resume",
+      requirements: templateBlockedStatus.requirements,
+      checking: false,
+      error: null,
+      refetch: vi.fn(),
     } as any);
 
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(validateAndMaybePersistRxResumeMode).mockImplementation(
-      async ({ draft }) =>
-        ({
-          validation: {
-            valid: Boolean(draft.apiKey),
-            message: draft.apiKey ? null : "v5 API key required",
-          },
-        }) as any,
-    );
-    vi.mocked(api.updateSettings).mockImplementation(async (update) => {
-      currentSettings = {
-        ...currentSettings,
-        ...update,
-      };
-      return currentSettings;
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: false,
-      message: "Choose a template resume to finish this step.",
-    });
-
-    renderPage();
-
-    fireEvent.click(getStepButton(/^Resume$/i));
-    fireEvent.click(screen.getByText("Use Reactive Resume"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Import your current resume."),
-      ).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("Template resume")).not.toBeInTheDocument();
-    expect(screen.queryByText("Base resume selection")).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByPlaceholderText("Enter v5 API key"), {
-      target: { value: "rx-api-key" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: /connect reactive resume/i }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Template resume")).toBeInTheDocument();
-      expect(
-        screen.getByPlaceholderText("Enter v5 API key"),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByText("Upload a PDF or DOCX resume"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: /confirm resume template/i }),
-      ).toBeInTheDocument();
-    });
-    expect(screen.getByText("Base resume selection")).toBeInTheDocument();
-  });
-
-  it("lets the full authentication option card change the selection", async () => {
-    vi.mocked(api.validateLlm).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateRxresume).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-    vi.mocked(api.validateResumeConfig).mockResolvedValue({
-      valid: true,
-      message: null,
-    });
-
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: /basic auth/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Secure your workspace")).toBeInTheDocument();
-    });
-
-    const skipCard = screen
-      .getByText(/you can add authentication later from settings\./i)
-      .closest("label");
-
-    if (!skipCard) {
-      throw new Error("Expected the skip card to render as a label");
-    }
-
-    fireEvent.click(skipCard);
+    await renderPage();
 
     expect(
-      screen.getByRole("button", { name: /finish onboarding/i }),
+      screen.getAllByText("Choose a Reactive Resume template").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("button", { name: /save template/i }),
     ).toBeEnabled();
+  });
+
+  it("keeps file upload on the design-resume import endpoint", async () => {
+    vi.mocked(useOnboardingStatus).mockReturnValue({
+      status: resumeBlockedStatus,
+      complete: false,
+      nextRequirementId: "resume",
+      requirements: resumeBlockedStatus.requirements,
+      checking: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    await renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /mock upload/i }));
+
+    await waitFor(() => {
+      expect(api.importDesignResumeFromFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fileName: "resume.json",
+          mediaType: "application/json",
+        }),
+      );
+    });
+    expect(getTrackedEvent("onboarding_resume_upload_submitted")).toEqual([
+      "onboarding_resume_upload_submitted",
+      expect.objectContaining({
+        file_type: "json",
+        file_size_bucket: "lt_100kb",
+      }),
+    ]);
+    expect(getTrackedEvent("onboarding_resume_upload_completed")).toEqual([
+      "onboarding_resume_upload_completed",
+      expect.objectContaining({
+        result: "success",
+        file_type: "json",
+      }),
+    ]);
+  });
+
+  it("prepares search terms before opening the ready queue", async () => {
+    const completeStatus: OnboardingStatusResponse = {
+      complete: true,
+      nextRequirementId: null,
+      requirements: resumeBlockedStatus.requirements.map((requirement) => ({
+        ...requirement,
+        status: "ready",
+        primaryAction: "none",
+      })),
+    };
+    vi.mocked(useOnboardingStatus).mockReturnValue({
+      status: completeStatus,
+      complete: true,
+      nextRequirementId: null,
+      requirements: completeStatus.requirements,
+      checking: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    await renderPage();
+
+    expect(
+      await screen.findByText("Ready for the first run"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.suggestOnboardingSearchTerms).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(api.updateSettings).toHaveBeenCalledWith({
+        searchTerms: ["Backend Engineer", "Platform Engineer"],
+      });
+    });
+    expect(screen.queryByText("ready page")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /open ready queue/i }));
+    expect(await screen.findByText("ready page")).toBeInTheDocument();
+    expect(getTrackedEvent("onboarding_search_terms_completed")).toEqual([
+      "onboarding_search_terms_completed",
+      expect.objectContaining({
+        result: "success",
+        source: "fallback",
+        terms_count: 2,
+      }),
+    ]);
+    expect(getTrackedEvent("onboarding_completed")).toEqual([
+      "onboarding_completed",
+      expect.objectContaining({
+        completed_steps: 4,
+        search_terms_source: "fallback",
+      }),
+    ]);
+  });
+
+  it("can replay the coach tour", async () => {
+    await renderPage();
+
+    expect(screen.getByTestId("coach")).toHaveTextContent("coach:0");
+    fireEvent.click(screen.getByRole("button", { name: /replay guide/i }));
+    expect(screen.getByTestId("coach")).toHaveTextContent("coach:1");
+  });
+
+  it("creates the first account inside onboarding before launch checks", async () => {
+    vi.mocked(api.getAuthBootstrapStatus).mockResolvedValueOnce({
+      setupRequired: true,
+    });
+
+    await renderPage();
+
+    expect(
+      screen.getByText("Create your workspace account"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    expect(screen.getByText("0/4")).toBeInTheDocument();
+    expect(screen.getByTestId("coach")).toHaveTextContent("coach:0");
+
+    fireEvent.click(screen.getByRole("button", { name: /model connection/i }));
+    expect(screen.getByText("Connect your model")).toBeInTheDocument();
+    expect(screen.getByText("Step 2 of 4")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create account first/i }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /create account first/i }),
+    );
+    expect(
+      screen.getByText("Create your workspace account"),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^name$/i), {
+      target: { value: "Admin User" },
+    });
+    fireEvent.change(screen.getByLabelText(/^username$/i), {
+      target: { value: "admin" },
+    });
+    fireEvent.change(screen.getByLabelText(/^password$/i), {
+      target: { value: "supersecret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(api.setupFirstAdmin).toHaveBeenCalledWith({
+        username: "admin",
+        password: "supersecret",
+        displayName: "Admin User",
+      });
+    });
+    expect(getTrackedEvent("onboarding_account_create_submitted")).toEqual([
+      "onboarding_account_create_submitted",
+      expect.objectContaining({
+        has_display_name: true,
+        username_length_bucket: "4_10",
+      }),
+    ]);
+    expect(getTrackedEvent("onboarding_account_create_completed")).toEqual([
+      "onboarding_account_create_completed",
+      expect.objectContaining({
+        result: "success",
+        credential_length_bucket: "11_30",
+      }),
+    ]);
+    expect(await screen.findByText("content:model")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /account workspace/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("1/4")).toBeInTheDocument();
   });
 });

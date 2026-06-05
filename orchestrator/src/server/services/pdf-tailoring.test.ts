@@ -212,7 +212,7 @@ const {
       mode: "manual" as "manual" | "match-resume",
       manual: "english" as "english" | "german" | "french" | "spanish",
     },
-    currentPdfRenderer: { value: "latex" as "latex" | "rxresume" },
+    currentPdfRenderer: { value: "latex" as "latex" | "rxresume" | "typst" },
     mockProfile: profile,
     mocks: {
       readFile: vi.fn(),
@@ -605,6 +605,20 @@ describe("PDF Service Tailoring Logic", () => {
     );
   });
 
+  it("uses the local Typst renderer with the default theme", async () => {
+    currentPdfRenderer.value = "typst";
+
+    await generatePdf("job-typst", {}, "desc");
+
+    expect(mockResumeRenderer.renderResumePdf).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: "job-typst",
+        renderer: "typst",
+        typstTheme: "classic",
+      }),
+    );
+  });
+
   it("uses the RxResume export flow when the renderer setting is rxresume", async () => {
     currentPdfRenderer.value = "rxresume";
     currentLanguageSettings.manual = "german";
@@ -638,7 +652,7 @@ describe("PDF Service Tailoring Logic", () => {
     }
   });
 
-  it("strips Design Resume pictures from RxResume export when JobOps is not hosted", async () => {
+  it("strips Resume Studio pictures from RxResume export when JobOps is not hosted", async () => {
     currentPdfRenderer.value = "rxresume";
     mockTracerLinks.resolveTracerPublicBaseUrl.mockReturnValue(
       "http://localhost:3005",
@@ -673,7 +687,7 @@ describe("PDF Service Tailoring Logic", () => {
     const designResume = await import("./design-resume");
     vi.mocked(designResume.getCurrentDesignResume).mockResolvedValueOnce({
       id: "design-resume-1",
-      title: "Design Resume",
+      title: "Resume Studio",
       sourceResumeId: null,
       sourceMode: "v5",
       importedAt: "2026-05-02T00:00:00.000Z",
@@ -697,7 +711,7 @@ describe("PDF Service Tailoring Logic", () => {
       });
 
       expect(rxresume.importResume).toHaveBeenCalledWith({
-        name: "Design Resume",
+        name: "Resume Studio",
         data: expect.objectContaining({
           picture: expect.objectContaining({
             hidden: true,
@@ -731,7 +745,7 @@ describe("PDF Service Tailoring Logic", () => {
     const designResume = await import("./design-resume");
     vi.mocked(designResume.getCurrentDesignResume).mockResolvedValueOnce({
       id: "design-resume-1",
-      title: "Design Resume",
+      title: "Resume Studio",
       sourceResumeId: null,
       sourceMode: "v5",
       importedAt: "2026-05-02T00:00:00.000Z",
@@ -755,7 +769,7 @@ describe("PDF Service Tailoring Logic", () => {
       });
 
       expect(rxresume.importResume).toHaveBeenCalledWith({
-        name: "Design Resume",
+        name: "Resume Studio",
         data: expect.objectContaining({
           picture: expect.objectContaining({
             hidden: false,

@@ -61,6 +61,7 @@ export function toJobListItem(
   return {
     id: job.id,
     source: job.source,
+    sourceJobId: job.sourceJobId,
     title: job.title,
     employer: job.employer,
     jobUrl: job.jobUrl,
@@ -231,6 +232,12 @@ export const jobsRevisionQuerySchema = z.object({
 export const uploadJobPdfSchema = z.object({
   fileName: z.string().trim().min(1).max(255),
   mediaType: z.string().trim().min(1).max(200).optional(),
+  dataBase64: z.string().trim().min(1),
+});
+
+export const uploadJobDocumentSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  mediaType: z.string().trim().max(200).nullable().optional(),
   dataBase64: z.string().trim().min(1),
 });
 

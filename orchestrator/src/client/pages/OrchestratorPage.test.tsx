@@ -25,6 +25,11 @@ vi.mock("../api", () => ({
   hasAuthenticatedSession: vi.fn(() => true),
   updateSettings: vi.fn().mockResolvedValue({}),
   runPipeline: vi.fn().mockResolvedValue({ message: "ok" }),
+  getPipelineSearchPresets: vi.fn().mockResolvedValue({ searches: [] }),
+  createPipelineSearchPreset: vi.fn().mockResolvedValue({}),
+  updatePipelineSearchPreset: vi.fn().mockResolvedValue({}),
+  markPipelineSearchPresetUsed: vi.fn().mockResolvedValue({}),
+  deletePipelineSearchPreset: vi.fn().mockResolvedValue({ deleted: true }),
   cancelPipeline: vi.fn().mockResolvedValue({
     message: "Pipeline cancellation requested",
     pipelineRunId: "run-1",

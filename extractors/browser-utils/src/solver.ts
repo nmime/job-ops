@@ -4,11 +4,11 @@ import {
   solvePaidCaptcha,
 } from "./captcha-provider.js";
 import { isChallengePage } from "./challenge.js";
-import { saveCookies } from "./cookies.js";
+import { readCookieJar, saveCookies } from "./cookies.js";
 import { createLaunchOptions } from "./launch.js";
 
 export type SolverResult =
-  | { status: "solved" }
+  | { status: "solved"; cookiesSaved: number }
   | { status: "timeout" }
   | { status: "error"; message: string };
 
@@ -16,6 +16,43 @@ export interface ChallengeSolveOptions {
   paidCaptcha?: PaidCaptchaSolverOptions;
   headless?: boolean;
   manualFallback?: boolean;
+}
+
+function noReusableCookiesError(): SolverResult {
+  return {
+    status: "error",
+    message:
+      "Challenge appeared solved, but no reusable Cloudflare clearance cookie was saved.",
+  };
+}
+
+async function saveReusableCookies(
+  context: BrowserContext,
+  extractorId: string,
+  storageDir: string,
+): Promise<number | null> {
+  const cookiesSaved = await saveCookies(context, extractorId, storageDir);
+  if (cookiesSaved === 0) return null;
+
+  const jar = await readCookieJar(extractorId, storageDir);
+  return jar.hasClearanceCookie ? cookiesSaved : null;
+}
+
+async function finishSolvedChallenge(
+  context: BrowserContext,
+  extractorId: string,
+  storageDir: string,
+  page: Parameters<typeof showSolvedPage>[0],
+  headless: boolean | undefined,
+): Promise<SolverResult> {
+  const cookiesSaved = await saveReusableCookies(
+    context,
+    extractorId,
+    storageDir,
+  );
+  if (cookiesSaved === null) return noReusableCookiesError();
+  if (!headless) await showSolvedPage(page);
+  return { status: "solved", cookiesSaved };
 }
 
 const SOLVED_PAGE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
@@ -76,9 +113,13 @@ export async function solveChallenge(
     // If there's no challenge, we're done — save cookies anyway since the
     // browser session established a valid cf_clearance
     if (!(await isChallengePage(page))) {
-      await saveCookies(context, extractorId, storageDir);
-      if (!options.headless) await showSolvedPage(page);
-      return { status: "solved" };
+      return await finishSolvedChallenge(
+        context,
+        extractorId,
+        storageDir,
+        page,
+        options.headless,
+      );
     }
 
     if (options.paidCaptcha) {
@@ -88,9 +129,13 @@ export async function solveChallenge(
         timeoutMs,
       });
       if (paidResult.status === "solved") {
-        await saveCookies(context, extractorId, storageDir);
-        if (!options.headless) await showSolvedPage(page);
-        return { status: "solved" };
+        return await finishSolvedChallenge(
+          context,
+          extractorId,
+          storageDir,
+          page,
+          options.headless,
+        );
       }
       if (!options.manualFallback) {
         return paidResult.status === "timeout"
@@ -107,9 +152,13 @@ export async function solveChallenge(
       await page.waitForTimeout(pollInterval);
 
       if (!(await isChallengePage(page))) {
-        await saveCookies(context, extractorId, storageDir);
-        if (!options.headless) await showSolvedPage(page);
-        return { status: "solved" };
+        return await finishSolvedChallenge(
+          context,
+          extractorId,
+          storageDir,
+          page,
+          options.headless,
+        );
       }
     }
 

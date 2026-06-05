@@ -1,4 +1,8 @@
-import type { PdfRenderer, ValidationResult } from "@shared/types.js";
+import type {
+  OnboardingRequirementId,
+  PdfRenderer,
+  ValidationResult,
+} from "@shared/types.js";
 
 export type ValidationState = ValidationResult & {
   checked: boolean;
@@ -9,18 +13,15 @@ export type OnboardingFormData = {
   llmProvider: string;
   llmBaseUrl: string;
   llmApiKey: string;
+  model: string;
   pdfRenderer: PdfRenderer;
   rxresumeUrl: string;
   rxresumeApiKey: string;
   rxresumeBaseResumeId: string | null;
-  searchTerms: string[];
-  searchTermDraft: string;
-  basicAuthUser: string;
-  basicAuthPassword: string;
 };
 
-export type StepId = "llm" | "baseresume" | "searchterms" | "basicauth";
-export type BasicAuthChoice = "enable" | "skip" | null;
+export type StepId = OnboardingRequirementId;
+export type OnboardingPanelId = "account" | StepId | "first-run";
 export type ResumeSetupMode = "upload" | "rxresume";
 
 export type OnboardingStep = {

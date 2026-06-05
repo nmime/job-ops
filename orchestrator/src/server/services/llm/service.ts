@@ -1,5 +1,7 @@
 import { logger } from "@infra/logger";
 import { getOriginalEnvValue } from "@server/services/envSettings";
+import { resolveLlmApiKey } from "@server/services/llm/credentials";
+import { mapGlmProviderAlias } from "@shared/settings-registry";
 import { toStringOrNull } from "@shared/utils/type-conversion";
 import { CodexClient } from "./codex/client";
 import { GeminiCliClient } from "./gemini-cli/client";
@@ -8,7 +10,11 @@ import {
   getOrderedModes,
   rememberSuccessfulMode,
 } from "./policies/mode-selection";
-import { getRetryDelayMs, shouldRetryAttempt } from "./policies/retry-policy";
+import {
+  getRetryDelayMs,
+  parseRetryAfterMs,
+  shouldRetryAttempt,
+} from "./policies/retry-policy";
 import { strategies } from "./providers";
 import type {
   JsonSchemaDefinition,
@@ -50,27 +56,21 @@ export class LlmService {
     const strategy = strategies[resolvedProvider];
     const baseUrl = normalizedBaseUrl || strategy.defaultBaseUrl;
 
-    let apiKey =
-      toStringOrNull(options.apiKey) ||
-      toStringOrNull(getOriginalEnvValue("LLM_API_KEY")) ||
-      null;
+    const apiKey = resolveLlmApiKey({
+      storedApiKey: options.apiKey,
+      provider: resolvedProvider,
+    });
 
-    // Backwards-compat migration: OPENROUTER_API_KEY -> LLM_API_KEY.
-    // This prevents users from losing access when upgrading (keys are often only shown once).
     if (
-      !apiKey &&
+      !toStringOrNull(options.apiKey) &&
+      !toStringOrNull(getOriginalEnvValue("LLM_API_KEY")) &&
       resolvedProvider === "openrouter" &&
+      apiKey &&
       toStringOrNull(getOriginalEnvValue("OPENROUTER_API_KEY"))
     ) {
       logger.warn(
-        "[DEPRECATED] OPENROUTER_API_KEY is deprecated. Copying to LLM_API_KEY; please update your environment.",
+        "[DEPRECATED] OPENROUTER_API_KEY is deprecated. Use LLM_API_KEY instead; keys are often only shown once.",
       );
-      const migrated = toStringOrNull(
-        getOriginalEnvValue("OPENROUTER_API_KEY"),
-      );
-      if (migrated) {
-        apiKey = migrated;
-      }
     }
 
     this.provider = resolvedProvider;
@@ -223,6 +223,7 @@ export class LlmService {
 
     if (
       this.provider !== "openai" &&
+      this.provider !== "glm" &&
       this.provider !== "gemini" &&
       this.provider !== "ollama"
     ) {
@@ -235,6 +236,9 @@ export class LlmService {
       }
       if (this.provider === "gemini") {
         return this.listGeminiModels();
+      }
+      if (this.provider === "glm") {
+        return this.listGlmModels();
       }
       return this.listOllamaModels();
     })();
@@ -347,16 +351,24 @@ export class LlmService {
     } = args;
     const jobId = args.jobId;
     const model = normalizeModelForProvider(this.provider, rawModel);
+    let lastRetryAfterMs: number | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (attempt > 0) {
+          const delayMs = getRetryDelayMs(
+            retryDelayMs,
+            attempt,
+            lastRetryAfterMs,
+          );
           logger.info("LLM retry attempt", {
             jobId: jobId ?? "unknown",
             attempt,
             maxRetries,
+            delayMs,
+            retryAfterMs: lastRetryAfterMs ?? "none",
           });
-          await sleep(getRetryDelayMs(retryDelayMs, attempt));
+          await sleep(delayMs);
         }
 
         const { url, headers, body } = this.strategy.buildRequest({
@@ -384,6 +396,9 @@ export class LlmService {
           ) as LlmApiError;
           err.status = response.status;
           err.body = truncate(errorBody, 600);
+          err.retryAfterMs = parseRetryAfterMs(
+            response.headers?.get?.("retry-after"),
+          );
           throw err;
         }
 
@@ -400,6 +415,7 @@ export class LlmService {
         const message = error instanceof Error ? error.message : String(error);
         const status = (error as LlmApiError).status;
         const body = (error as LlmApiError).body;
+        lastRetryAfterMs = (error as LlmApiError).retryAfterMs;
 
         if (
           this.strategy.isCapabilityError({
@@ -489,6 +505,34 @@ export class LlmService {
       .filter(Boolean);
   }
 
+  private async listGlmModels(): Promise<string[]> {
+    const base = this.baseUrl.replace(/\/+$/, "");
+    const suffix = "/chat/completions";
+    const modelsBase = base.endsWith(suffix)
+      ? base.slice(0, -suffix.length)
+      : base;
+    const response = await fetch(joinUrl(modelsBase, "/models"), {
+      method: "GET",
+      headers: buildHeaders({
+        apiKey: this.apiKey,
+        provider: this.provider,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await getResponseDetail(response);
+      throw new Error(detail || `GLM returned ${response.status}.`);
+    }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | null }>;
+    };
+    return (payload.data ?? [])
+      .map((entry) => entry.id?.trim() ?? "")
+      .filter(isGlmTextGenerationModel)
+      .filter(Boolean);
+  }
+
   private async listOllamaModels(): Promise<string[]> {
     const response = await fetch(joinUrl(this.baseUrl, "/api/tags"), {
       method: "GET",
@@ -516,7 +560,7 @@ function normalizeProvider(
   raw: string | null,
   baseUrl: string | null,
 ): LlmProvider {
-  const normalized = raw?.trim().toLowerCase().replace(/-/g, "_");
+  const normalized = normalizeProviderName(raw);
   if (normalized === "openai_compatible") {
     if (
       baseUrl?.includes("localhost:1234") ||
@@ -527,6 +571,7 @@ function normalizeProvider(
     return "openai_compatible";
   }
   if (normalized === "openai") return "openai";
+  if (normalized === "glm") return "glm";
   if (normalized === "gemini") return "gemini";
   if (normalized === "gemini_cli") return "gemini_cli";
   if (normalized === "lmstudio") return "lmstudio";
@@ -538,6 +583,12 @@ function normalizeProvider(
     });
   }
   return "openrouter";
+}
+
+function normalizeProviderName(raw: string | null): string | undefined {
+  const normalized = raw?.trim().toLowerCase().replace(/[-.]/g, "_");
+  if (!normalized) return normalized;
+  return mapGlmProviderAlias(normalized);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -561,6 +612,7 @@ function normalizeGeminiModelName(value: string): string {
 
 function getPreferredModel(provider: LlmProvider): string | null {
   if (provider === "openai") return "gpt-5.4-mini";
+  if (provider === "glm") return "glm-5.1";
   if (provider === "gemini" || provider === "gemini_cli") {
     return "google/gemini-3-flash-preview";
   }
@@ -604,6 +656,26 @@ function isGeminiTextGenerationModel(model: string): boolean {
 
   const blockedPatterns = ["embedding", "aqa", "vision", "image", "tts"];
   return !blockedPatterns.some((pattern) => normalized.includes(pattern));
+}
+
+function isGlmTextGenerationModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const blockedPatterns = [
+    "embedding",
+    "image",
+    "tts",
+    "asr",
+    "speech",
+    "audio",
+    "tokenizer",
+  ];
+  if (blockedPatterns.some((pattern) => normalized.includes(pattern))) {
+    return false;
+  }
+
+  return normalized.startsWith("glm") || normalized.startsWith("charglm");
 }
 
 function sortModels(models: string[], preferredModel: string | null): string[] {

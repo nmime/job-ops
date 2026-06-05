@@ -3,6 +3,7 @@
  */
 
 import { Router } from "express";
+import { appStatusRouter } from "./routes/app-status";
 import { authRouter } from "./routes/auth";
 import { backupRouter } from "./routes/backup";
 import { databaseRouter } from "./routes/database";
@@ -20,11 +21,14 @@ import { profileRouter } from "./routes/profile";
 import { settingsRouter } from "./routes/settings";
 import { tracerLinksRouter } from "./routes/tracer-links";
 import { visaSponsorsRouter } from "./routes/visa-sponsors";
+import { watchlistRouter } from "./routes/watchlist";
 import { webhookRouter } from "./routes/webhook";
+import { workdayRouter } from "./routes/workday";
 import { workspacesRouter } from "./routes/workspaces";
 
 export const apiRouter = Router();
 
+apiRouter.use("/app", appStatusRouter);
 apiRouter.use("/jobs", jobsRouter);
 apiRouter.use("/jobs/:id/chat", ghostwriterRouter);
 apiRouter.use("/demo", demoRouter);
@@ -43,4 +47,6 @@ apiRouter.use("/backups", backupRouter);
 apiRouter.use("/tracer-links", tracerLinksRouter);
 apiRouter.use("/workspaces", workspacesRouter);
 apiRouter.use("/auth", authRouter);
+apiRouter.use("/workday", workdayRouter);
+apiRouter.use("/watchlist", watchlistRouter);
 apiRouter.use("/", extractorHealthRouter);

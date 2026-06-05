@@ -141,11 +141,21 @@ describe("JobHeader", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows posting age when the source provides a posting date", () => {
+    renderWithRouter(
+      <JobHeader job={{ ...mockJob, datePosted: "1 hour ago" }} />,
+    );
+
+    expect(screen.getByText("Posted 1 hour ago")).toBeInTheDocument();
+    expect(screen.getByText("Source reported: 1 hour ago")).toBeInTheDocument();
+  });
+
   it("shows contextual tooltips for discovered, tracer off, and suitability score", () => {
     const jobWithTooltips = {
       ...mockJob,
       tracerLinksEnabled: false,
       suitabilityScore: 45,
+      suitabilityReason: null,
     };
 
     renderWithRouter(<JobHeader job={jobWithTooltips} />);
@@ -161,6 +171,34 @@ describe("JobHeader", () => {
     expect(
       screen.getByRole("img", { name: "Suitability score 45" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows interactive suitability button when suitabilityReason is present", () => {
+    renderWithRouter(<JobHeader job={mockJob} />);
+    expect(
+      screen.getByRole("button", { name: "View fit assessment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows discovered jobs without scores as awaiting AI scoring", () => {
+    renderWithRouter(
+      <JobHeader
+        job={{
+          ...mockJob,
+          suitabilityScore: null,
+          suitabilityReason: null,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "Waiting for AI scoring to finish." }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", {
+        name: "AI misconfiguration or service error. Please check your settings and AI service status.",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a tooltip for ready jobs", () => {

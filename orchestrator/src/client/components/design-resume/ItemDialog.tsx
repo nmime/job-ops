@@ -1,5 +1,9 @@
 import { TokenizedInput } from "@client/pages/orchestrator/TokenizedInput";
 import { createId } from "@paralleldrive/cuid2";
+import type {
+  DesignResumeAiFieldValueType,
+  DesignResumeJson,
+} from "@shared/types";
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +18,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import { DesignResumeFieldAssistant } from "./DesignResumeFieldAssistant";
 import { IconPickerField } from "./IconPickerField";
 import { RichTextEditor } from "./RichTextEditor";
 
@@ -36,6 +42,7 @@ export type ItemFieldConfig = {
   step?: number;
   /** When true on an icon field, render it inline to the left of the next field with no separate label */
   groupWithNext?: boolean;
+  aiAssist?: boolean;
 };
 
 type ItemDialogProps = {
@@ -44,9 +51,20 @@ type ItemDialogProps = {
   description: string;
   item: Record<string, unknown> | null;
   fields: ItemFieldConfig[];
+  resumeJson?: DesignResumeJson;
+  aiSection?: string;
+  aiItemLabel?: string | null;
+  aiPathPrefix?: string;
   onOpenChange: (open: boolean) => void;
   onSave: (item: Record<string, unknown>) => void;
   onDelete?: () => void;
+};
+
+type ItemDialogAiContext = {
+  resumeJson: DesignResumeJson;
+  section: string;
+  itemLabel?: string | null;
+  pathPrefix: string;
 };
 
 function getValue(source: Record<string, unknown>, path: string): unknown {
@@ -132,7 +150,12 @@ function renderTextField(
   setFieldErrors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   fieldId: string,
   iconPrefix?: React.ReactNode,
+  assistant?: React.ReactNode,
 ) {
+  const assistantSlot = assistant ? (
+    <div className="flex shrink-0 items-center pr-1">{assistant}</div>
+  ) : null;
+
   return (
     <div key={field.key} className="grid gap-2">
       <label className="text-sm font-medium" htmlFor={fieldId}>
@@ -175,45 +198,95 @@ function renderTextField(
             }}
             className="flex-1 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
           />
+          {assistantSlot}
         </div>
       ) : (
-        <Input
-          id={fieldId}
-          type={field.type === "number" ? "number" : "text"}
-          value={
-            field.type === "number"
-              ? String(value as number)
-              : (value as string)
-          }
-          min={field.min}
-          step={field.step}
-          placeholder={field.placeholder}
-          onChange={(event) => {
-            if (fieldErrors[field.key]) {
-              setFieldErrors((current) => {
-                const next = { ...current };
-                delete next[field.key];
-                return next;
-              });
-            }
-            updateField(
-              field.key,
+        <div className="relative">
+          <Input
+            id={fieldId}
+            type={field.type === "number" ? "number" : "text"}
+            value={
               field.type === "number"
-                ? Number(event.currentTarget.value || 0)
-                : event.currentTarget.value,
-            );
-          }}
-          className={
-            fieldErrors[field.key]
-              ? "border-rose-500 bg-background/60"
-              : "bg-background/60"
-          }
-        />
+                ? String(value as number)
+                : (value as string)
+            }
+            min={field.min}
+            step={field.step}
+            placeholder={field.placeholder}
+            onChange={(event) => {
+              if (fieldErrors[field.key]) {
+                setFieldErrors((current) => {
+                  const next = { ...current };
+                  delete next[field.key];
+                  return next;
+                });
+              }
+              updateField(
+                field.key,
+                field.type === "number"
+                  ? Number(event.currentTarget.value || 0)
+                  : event.currentTarget.value,
+              );
+            }}
+            className={cn(
+              fieldErrors[field.key]
+                ? "border-rose-500 bg-background/60"
+                : "bg-background/60",
+              assistant && "pr-11",
+            )}
+          />
+          {assistant ? (
+            <div className="-translate-y-1/2 absolute right-1.5 top-1/2">
+              {assistant}
+            </div>
+          ) : null}
+        </div>
       )}
       {fieldErrors[field.key] ? (
         <p className="text-xs text-rose-400">{fieldErrors[field.key]}</p>
       ) : null}
     </div>
+  );
+}
+
+function aiValueTypeForField(
+  field: ItemFieldConfig,
+): DesignResumeAiFieldValueType {
+  if (field.type === "richtext") return "html";
+  if (field.type === "tags") return "string_list";
+  return "plain_text";
+}
+
+function renderAiAssistant(
+  field: ItemFieldConfig,
+  value: unknown,
+  updateField: (path: string, value: unknown) => void,
+  aiContext?: ItemDialogAiContext,
+) {
+  if (!aiContext || !field.aiAssist) return null;
+
+  const valueType = aiValueTypeForField(field);
+  const normalizedValue =
+    valueType === "string_list"
+      ? Array.isArray(value)
+        ? value.map((entry) => String(entry))
+        : []
+      : typeof value === "string"
+        ? value
+        : "";
+
+  return (
+    <DesignResumeFieldAssistant
+      resumeJson={aiContext.resumeJson}
+      fieldPath={`${aiContext.pathPrefix}.${field.key}`}
+      label={field.label}
+      value={normalizedValue}
+      valueType={valueType}
+      section={aiContext.section}
+      itemLabel={aiContext.itemLabel}
+      onApply={(next) => updateField(field.key, next)}
+      triggerClassName="bg-background/80 hover:bg-accent"
+    />
   );
 }
 
@@ -225,6 +298,7 @@ function renderFields(
   updateField: (path: string, value: unknown) => void,
   setTagDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>,
   setFieldErrors: React.Dispatch<React.SetStateAction<Record<string, string>>>,
+  aiContext?: ItemDialogAiContext,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   let i = 0;
@@ -233,6 +307,7 @@ function renderFields(
     if (!field) break;
     const value = coerceDraftValue(field, getValue(draft, field.key));
     const fieldId = fieldIdForPath(field.key);
+    const assistant = renderAiAssistant(field, value, updateField, aiContext);
 
     if (field.type === "richtext") {
       nodes.push(
@@ -242,6 +317,7 @@ function renderFields(
             value={value as string}
             onChange={(next) => updateField(field.key, next)}
             placeholder={field.placeholder}
+            toolbarEnd={assistant}
           />
         </div>,
       );
@@ -255,15 +331,23 @@ function renderFields(
           <label className="text-sm font-medium" htmlFor={fieldId}>
             {field.label}
           </label>
-          <Textarea
-            id={fieldId}
-            value={value as string}
-            placeholder={field.placeholder}
-            onChange={(event) =>
-              updateField(field.key, event.currentTarget.value)
-            }
-            className="min-h-[110px] bg-background/60"
-          />
+          <div className="relative">
+            <Textarea
+              id={fieldId}
+              value={value as string}
+              placeholder={field.placeholder}
+              onChange={(event) =>
+                updateField(field.key, event.currentTarget.value)
+              }
+              className={cn(
+                "min-h-[110px] bg-background/60",
+                assistant && "pr-11",
+              )}
+            />
+            {assistant ? (
+              <div className="absolute right-2 top-2">{assistant}</div>
+            ) : null}
+          </div>
         </div>,
       );
       i++;
@@ -276,19 +360,25 @@ function renderFields(
           <label className="text-sm font-medium" htmlFor={fieldId}>
             {field.label}
           </label>
-          <TokenizedInput
-            id={fieldId}
-            values={value as string[]}
-            draft={tagDrafts[field.key] ?? ""}
-            parseInput={parseTagInput}
-            onDraftChange={(next) =>
-              setTagDrafts((current) => ({ ...current, [field.key]: next }))
-            }
-            onValuesChange={(next) => updateField(field.key, next)}
-            placeholder={field.placeholder ?? "Add a value"}
-            helperText="Press Enter, comma, or paste a list to add items."
-            removeLabelPrefix="Remove tag"
-          />
+          <div className="relative">
+            <TokenizedInput
+              id={fieldId}
+              values={value as string[]}
+              draft={tagDrafts[field.key] ?? ""}
+              parseInput={parseTagInput}
+              onDraftChange={(next) =>
+                setTagDrafts((current) => ({ ...current, [field.key]: next }))
+              }
+              onValuesChange={(next) => updateField(field.key, next)}
+              placeholder={field.placeholder ?? "Add a value"}
+              helperText="Press Enter, comma, or paste a list to add items."
+              removeLabelPrefix="Remove tag"
+              inputClassName={assistant ? "pr-11" : undefined}
+            />
+            {assistant ? (
+              <div className="absolute right-1.5 top-1.5">{assistant}</div>
+            ) : null}
+          </div>
         </div>,
       );
       i++;
@@ -343,6 +433,7 @@ function renderFields(
             setFieldErrors,
             nextFieldId,
             iconNode,
+            renderAiAssistant(nextField, nextValue, updateField, aiContext),
           ),
         );
         i += 2;
@@ -376,6 +467,8 @@ function renderFields(
         updateField,
         setFieldErrors,
         fieldId,
+        undefined,
+        assistant,
       ),
     );
     i++;
@@ -389,6 +482,10 @@ export function ItemDialog({
   description,
   item,
   fields,
+  resumeJson,
+  aiSection,
+  aiItemLabel,
+  aiPathPrefix,
   onOpenChange,
   onSave,
   onDelete,
@@ -417,6 +514,15 @@ export function ItemDialog({
   const updateField = (path: string, value: unknown) => {
     setDraft((current) => setValue(current, path, value));
   };
+  const aiContext =
+    resumeJson && aiSection && aiPathPrefix
+      ? {
+          resumeJson,
+          section: aiSection,
+          itemLabel: aiItemLabel,
+          pathPrefix: aiPathPrefix,
+        }
+      : undefined;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -435,6 +541,7 @@ export function ItemDialog({
             updateField,
             setTagDrafts,
             setFieldErrors,
+            aiContext,
           )}
         </div>
 

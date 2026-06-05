@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { geminiStrategy } from "./gemini";
+import { glmStrategy } from "./glm";
 import { lmStudioStrategy } from "./lmstudio";
 import { ollamaStrategy } from "./ollama";
 import { openAiStrategy } from "./openai";
@@ -81,6 +82,30 @@ describe("provider adapters", () => {
         expectedResponseFormat: "json_object",
       },
       {
+        name: "glm-json_object",
+        strategy: glmStrategy,
+        args: {
+          mode: "json_object" as const,
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          apiKey: "x",
+          model: "glm-5.1",
+        },
+        expectedUrl: "https://api.z.ai/api/paas/v4/chat/completions",
+        expectedResponseFormat: "json_object",
+      },
+      {
+        name: "glm-json_object-full-endpoint",
+        strategy: glmStrategy,
+        args: {
+          mode: "json_object" as const,
+          baseUrl: "https://api.z.ai/api/paas/v4/chat/completions",
+          apiKey: "x",
+          model: "glm-5.1",
+        },
+        expectedUrl: "https://api.z.ai/api/paas/v4/chat/completions",
+        expectedResponseFormat: "json_object",
+      },
+      {
         name: "gemini-json_schema",
         strategy: geminiStrategy,
         args: {
@@ -147,8 +172,24 @@ describe("provider adapters", () => {
       choices: [{ message: { content: "ok" } }],
     };
     expect(openRouterStrategy.extractText(response)).toBe("ok");
+    expect(glmStrategy.extractText(response)).toBe("ok");
     expect(lmStudioStrategy.extractText(response)).toBe("ok");
     expect(ollamaStrategy.extractText(response)).toBe("ok");
+  });
+
+  it("builds validation URLs for GLM base URLs and endpoints", () => {
+    expect(
+      glmStrategy.getValidationUrls({
+        baseUrl: "https://api.z.ai/api/paas/v4",
+        apiKey: "x",
+      }),
+    ).toEqual(["https://api.z.ai/api/paas/v4/models"]);
+    expect(
+      glmStrategy.getValidationUrls({
+        baseUrl: "https://api.z.ai/api/paas/v4/chat/completions",
+        apiKey: "x",
+      }),
+    ).toEqual(["https://api.z.ai/api/paas/v4/models"]);
   });
 
   it("builds validation URLs for OpenAI-compatible base URLs and endpoints", () => {
@@ -193,7 +234,7 @@ describe("provider adapters", () => {
     ).toBe("gemini");
   });
 
-  it("strips unsupported additionalProperties keys from Gemini responseSchema", () => {
+  it("sends Gemini structured outputs through the JSON Schema responseFormat", () => {
     const request = geminiStrategy.buildRequest({
       mode: "json_schema",
       baseUrl: "https://generativelanguage.googleapis.com",
@@ -205,6 +246,11 @@ describe("provider adapters", () => {
         schema: {
           type: "object",
           properties: {
+            bestMatchIndex: {
+              type: ["integer", "null"],
+              description:
+                "Best matching active-job index from provided list, or null.",
+            },
             skills: {
               type: "array",
               items: {
@@ -218,7 +264,7 @@ describe("provider adapters", () => {
               },
             },
           },
-          required: ["skills"],
+          required: ["bestMatchIndex", "skills"],
           additionalProperties: false,
         },
       },
@@ -226,15 +272,27 @@ describe("provider adapters", () => {
 
     const generationConfig = (request.body as Record<string, unknown>)
       .generationConfig as Record<string, unknown>;
-    const responseSchema = generationConfig.responseSchema as Record<
+    const responseFormat = generationConfig.responseFormat as Record<
       string,
       unknown
     >;
+    const textFormat = responseFormat.text as Record<string, unknown>;
+    const responseSchema = textFormat.schema as Record<string, unknown>;
     const skills = (responseSchema.properties as Record<string, unknown>)
       .skills as Record<string, unknown>;
+    const bestMatchIndex = (
+      responseSchema.properties as Record<string, unknown>
+    ).bestMatchIndex as Record<string, unknown>;
     const itemSchema = skills.items as Record<string, unknown>;
 
-    expect(responseSchema.additionalProperties).toBeUndefined();
-    expect(itemSchema.additionalProperties).toBeUndefined();
+    expect(textFormat.mimeType).toBe("application/json");
+    expect(bestMatchIndex.type).toEqual(["integer", "null"]);
+    expect(responseSchema.additionalProperties).toBe(false);
+    expect(responseSchema.propertyOrdering).toEqual([
+      "bestMatchIndex",
+      "skills",
+    ]);
+    expect(itemSchema.additionalProperties).toBe(false);
+    expect(itemSchema.propertyOrdering).toEqual(["name", "keywords"]);
   });
 });

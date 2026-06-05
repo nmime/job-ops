@@ -1,15 +1,41 @@
-import type { DesignResumeDocument, DesignResumeJson } from "@shared/types";
+import { useUpdateSettingsMutation } from "@client/hooks/queries/useSettingsMutation";
+import { useSettings } from "@client/hooks/useSettings";
+import {
+  toggleAiSelectable,
+  toggleMustInclude,
+} from "@client/pages/settings/resume-projects-state";
+import type {
+  DesignResumeDocument,
+  DesignResumeJson,
+  ResumeProjectsSettings,
+} from "@shared/types";
+import type React from "react";
+import { useMemo, useState } from "react";
 import { Accordion } from "@/components/ui/accordion";
+import { bucketCount, trackProductEvent } from "@/lib/analytics";
 import {
   BasicsCustomFieldsSection,
   BasicsSection,
   PictureSection,
   SummarySection,
 } from "./DesignResumeInlineSections";
-import { DesignResumeListSection } from "./DesignResumeListSection";
+import {
+  DesignResumeListSection,
+  DesignResumeListSectionContent,
+  type ProjectTailoringMode,
+} from "./DesignResumeListSection";
 import { DesignResumeSection } from "./DesignResumeSection";
 import { ITEM_DEFINITIONS, type ItemDefinition } from "./definitions";
-import { asArray, asRecord, setByPath } from "./utils";
+import {
+  asArray,
+  asRecord,
+  getOrderedDefinitions,
+  getSectionOrder,
+  REORDERABLE_SECTION_KEYS,
+  setByPath,
+  toBoolean,
+  toText,
+} from "./utils";
 
 type DesignResumeRailProps = {
   draft: DesignResumeDocument;
@@ -22,7 +48,103 @@ type DesignResumeRailProps = {
   pictureUploading: boolean;
   pictureEnabled: boolean;
   pictureDisabledReason?: string | null;
+  activeSectionId?: string | null;
 };
+
+function normalizeResumeProjectsForDesignItems(
+  items: Record<string, unknown>[],
+  current: ResumeProjectsSettings | null | undefined,
+): ResumeProjectsSettings {
+  const allowedIds = items.map((item) => toText(item.id)).filter(Boolean);
+  const allowed = new Set(allowedIds);
+  const hasCurrentProjectIds = Boolean(
+    current &&
+      [...current.lockedProjectIds, ...current.aiSelectableProjectIds].some(
+        (id) => allowed.has(id),
+      ),
+  );
+  const defaultSettings: ResumeProjectsSettings = {
+    maxProjects:
+      items.length === 0
+        ? 0
+        : Math.min(
+            items.length,
+            Math.max(
+              3,
+              items.filter((item) => !toBoolean(item.hidden, false)).length,
+            ),
+          ),
+    lockedProjectIds: items
+      .filter((item) => !toBoolean(item.hidden, false))
+      .map((item) => toText(item.id))
+      .filter(Boolean),
+    aiSelectableProjectIds: items
+      .filter((item) => toBoolean(item.hidden, false))
+      .map((item) => toText(item.id))
+      .filter(Boolean),
+  };
+  const base: ResumeProjectsSettings =
+    hasCurrentProjectIds && current ? current : defaultSettings;
+
+  const lockedProjectIds = base.lockedProjectIds.filter((id) =>
+    allowed.has(id),
+  );
+  const locked = new Set(lockedProjectIds);
+  const aiSelectableProjectIds = base.aiSelectableProjectIds
+    .filter((id) => allowed.has(id))
+    .filter((id) => !locked.has(id));
+  const maxProjectsRaw = Number.isFinite(base.maxProjects)
+    ? base.maxProjects
+    : 0;
+  const maxProjects = Math.min(
+    items.length,
+    Math.max(lockedProjectIds.length, Math.floor(maxProjectsRaw)),
+  );
+
+  return { maxProjects, lockedProjectIds, aiSelectableProjectIds };
+}
+
+function getProjectTailoringMode(
+  settings: ResumeProjectsSettings,
+  projectId: string,
+): ProjectTailoringMode {
+  if (settings.lockedProjectIds.includes(projectId)) return "must-include";
+  if (settings.aiSelectableProjectIds.includes(projectId))
+    return "ai-selectable";
+  return "manual";
+}
+
+function setProjectTailoringMode(args: {
+  settings: ResumeProjectsSettings;
+  projectId: string;
+  mode: ProjectTailoringMode;
+  maxProjectsTotal: number;
+}): ResumeProjectsSettings {
+  const { settings, projectId, mode, maxProjectsTotal } = args;
+  const unlockedSettings = settings.lockedProjectIds.includes(projectId)
+    ? toggleMustInclude({
+        settings,
+        projectId,
+        checked: false,
+        maxProjectsTotal,
+      })
+    : settings;
+
+  if (mode === "must-include") {
+    return toggleMustInclude({
+      settings: unlockedSettings,
+      projectId,
+      checked: true,
+      maxProjectsTotal,
+    });
+  }
+
+  return toggleAiSelectable({
+    settings: unlockedSettings,
+    projectId,
+    checked: mode === "ai-selectable",
+  });
+}
 
 export function DesignResumeRail({
   draft,
@@ -33,8 +155,118 @@ export function DesignResumeRail({
   pictureUploading,
   pictureEnabled,
   pictureDisabledReason,
+  activeSectionId = null,
 }: DesignResumeRailProps) {
+  const { settings } = useSettings();
+  const updateSettingsMutation = useUpdateSettingsMutation();
   const resumeJson = draft.resumeJson as Record<string, unknown>;
+
+  const [draggingKey, setDraggingKey] = useState<string | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+
+  const resetDragState = () => {
+    setDraggingKey(null);
+    setDragOverKey(null);
+  };
+
+  const handleDragStart = (
+    event: React.DragEvent<HTMLButtonElement>,
+    key: string,
+  ) => {
+    setDraggingKey(key);
+    setDragOverKey(key);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", key);
+  };
+
+  const handleDragEnd = () => {
+    resetDragState();
+  };
+
+  const handleDragOver = (
+    event: React.DragEvent<HTMLDivElement>,
+    key: string,
+  ) => {
+    if (draggingKey == null) return;
+    if (
+      !REORDERABLE_SECTION_KEYS.includes(draggingKey) ||
+      !REORDERABLE_SECTION_KEYS.includes(key)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverKey(key);
+  };
+
+  const handleDrop = (
+    event: React.DragEvent<HTMLDivElement>,
+    targetKey: string,
+  ) => {
+    event.preventDefault();
+    const sourceKey = event.dataTransfer.getData("text/plain") || draggingKey;
+    if (!sourceKey || sourceKey === targetKey) {
+      resetDragState();
+      return;
+    }
+
+    if (
+      !REORDERABLE_SECTION_KEYS.includes(sourceKey) ||
+      !REORDERABLE_SECTION_KEYS.includes(targetKey)
+    ) {
+      resetDragState();
+      return;
+    }
+
+    onUpdateResumeJson((current) => {
+      const next = structuredClone(current);
+      const currentOrder = getSectionOrder(next as Record<string, unknown>);
+      const fromIndex = currentOrder.indexOf(sourceKey);
+      const toIndex = currentOrder.indexOf(targetKey);
+      if (fromIndex !== -1 && toIndex !== -1) {
+        const nextOrder = [...currentOrder];
+        const [removed] = nextOrder.splice(fromIndex, 1);
+        nextOrder.splice(toIndex, 0, removed);
+
+        if (!next.metadata) {
+          next.metadata = {} as DesignResumeJson["metadata"];
+        }
+        if (!next.metadata.layout) {
+          next.metadata.layout = { sidebarWidth: 0, pages: [] };
+        }
+        if (!next.metadata.layout.pages) {
+          next.metadata.layout.pages = [];
+        }
+        if (next.metadata.layout.pages.length === 0) {
+          next.metadata.layout.pages.push({
+            fullWidth: false,
+            main: nextOrder,
+            sidebar: [],
+          });
+        } else {
+          next.metadata.layout.pages[0].main = nextOrder;
+        }
+      }
+      return next;
+    });
+
+    trackProductEvent("resume_studio_section_edited", {
+      section: sourceKey,
+      action: "reorder",
+      item_count_bucket: "0",
+      device_layout:
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(max-width: 639px)").matches
+          ? "mobile"
+          : "desktop",
+    });
+
+    resetDragState();
+  };
+
+  const orderedDefinitions = useMemo(() => {
+    return getOrderedDefinitions(resumeJson, ITEM_DEFINITIONS);
+  }, [resumeJson]);
   const basics = (asRecord(resumeJson.basics) ?? {}) as Record<string, unknown>;
   const picture = (asRecord(resumeJson.picture) ?? {}) as Record<
     string,
@@ -52,6 +284,8 @@ export function DesignResumeRail({
     string,
     unknown
   >[];
+  const customFieldsTitle =
+    toText(basics.customFieldsTitle).trim() || "Custom Fields";
 
   const updateBasics = (path: string, value: unknown) => {
     onUpdateResumeJson((current) => {
@@ -114,6 +348,21 @@ export function DesignResumeRail({
     });
   };
 
+  const updateCustomFieldsTitle = (title: string) => {
+    onUpdateResumeJson((current) => {
+      const next = structuredClone(current);
+      const currentBasics = (asRecord(next.basics) ?? {}) as Record<
+        string,
+        unknown
+      >;
+      next.basics = {
+        ...currentBasics,
+        customFieldsTitle: title,
+      } as DesignResumeJson["basics"];
+      return next;
+    });
+  };
+
   const updateSectionItems = (
     sectionKey: string,
     nextItems: Record<string, unknown>[],
@@ -136,6 +385,116 @@ export function DesignResumeRail({
       return next;
     });
   };
+
+  const getListSectionProps = (definition: ItemDefinition) => {
+    const section = (asRecord(sections[definition.key]) ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const items = asArray(section.items).map(
+      (item) => asRecord(item) ?? {},
+    ) as Record<string, unknown>[];
+
+    return {
+      definition,
+      items,
+      onAdd: () => onOpenDialog(definition, null),
+      onEdit: (index: number) => onOpenDialog(definition, index),
+      onUpdateItems: (nextItems: Record<string, unknown>[]) =>
+        updateSectionItems(definition.key, nextItems),
+      projectPolicy:
+        definition.key === "projects"
+          ? {
+              getMode: (projectId: string) =>
+                getProjectTailoringMode(
+                  normalizeResumeProjectsForDesignItems(
+                    items,
+                    settings?.resumeProjects?.value ?? null,
+                  ),
+                  projectId,
+                ),
+              onModeChange: (projectId: string, mode: ProjectTailoringMode) => {
+                const current = normalizeResumeProjectsForDesignItems(
+                  items,
+                  settings?.resumeProjects?.value ?? null,
+                );
+                const fromMode = getProjectTailoringMode(current, projectId);
+                updateSettingsMutation.mutate({
+                  resumeProjects: setProjectTailoringMode({
+                    settings: current,
+                    projectId,
+                    mode,
+                    maxProjectsTotal: items.length,
+                  }),
+                });
+                trackProductEvent("resume_studio_project_policy_changed", {
+                  from_mode: fromMode,
+                  to_mode: mode,
+                  project_count_bucket: bucketCount(items.length),
+                });
+              },
+              disabled: !settings || updateSettingsMutation.isPending,
+              isSaving: updateSettingsMutation.isPending,
+            }
+          : undefined,
+    };
+  };
+
+  const renderActiveSection = () => {
+    switch (activeSectionId) {
+      case "picture":
+        return (
+          <PictureSection
+            picture={picture}
+            pictureUploading={pictureUploading}
+            pictureEnabled={pictureEnabled}
+            pictureDisabledReason={pictureDisabledReason}
+            onUploadPicture={onUploadPicture}
+            onDeletePicture={onDeletePicture}
+            onUpdatePicture={updatePicture}
+          />
+        );
+      case "basics":
+        return (
+          <BasicsSection
+            resumeJson={draft.resumeJson}
+            basics={basics}
+            onUpdateBasics={updateBasics}
+          />
+        );
+      case "basics-custom-fields":
+        return (
+          <BasicsCustomFieldsSection
+            title={customFieldsTitle}
+            customFields={customFields}
+            onUpdateTitle={updateCustomFieldsTitle}
+            onChange={updateCustomFields}
+          />
+        );
+      case "summary":
+        return (
+          <SummarySection
+            resumeJson={draft.resumeJson}
+            summary={summary}
+            onUpdateSummary={updateSummary}
+          />
+        );
+      default: {
+        const definition = ITEM_DEFINITIONS.find(
+          (item) => item.key === activeSectionId,
+        );
+        return definition ? (
+          <DesignResumeListSectionContent
+            {...getListSectionProps(definition)}
+          />
+        ) : null;
+      }
+    }
+  };
+
+  if (activeSectionId) {
+    return <div className="space-y-4">{renderActiveSection()}</div>;
+  }
 
   return (
     <Accordion type="multiple" defaultValue={[]} className="space-y-3">
@@ -160,17 +519,23 @@ export function DesignResumeRail({
         title="Basics"
         subtitle="Edit your name, headline, and contact details."
       >
-        <BasicsSection basics={basics} onUpdateBasics={updateBasics} />
+        <BasicsSection
+          resumeJson={draft.resumeJson}
+          basics={basics}
+          onUpdateBasics={updateBasics}
+        />
       </DesignResumeSection>
 
       <DesignResumeSection
         value="basics-custom-fields"
-        title="Basics Custom Fields"
+        title={customFieldsTitle}
         subtitle="Add extra links or short details near your contact info."
         badge={customFields.length === 0 ? "Empty" : `${customFields.length}`}
       >
         <BasicsCustomFieldsSection
+          title={customFieldsTitle}
           customFields={customFields}
+          onUpdateTitle={updateCustomFieldsTitle}
           onChange={updateCustomFields}
         />
       </DesignResumeSection>
@@ -180,27 +545,40 @@ export function DesignResumeRail({
         title="Summary"
         subtitle="Write the short intro that appears near the top of your resume."
       >
-        <SummarySection summary={summary} onUpdateSummary={updateSummary} />
+        <SummarySection
+          resumeJson={draft.resumeJson}
+          summary={summary}
+          onUpdateSummary={updateSummary}
+        />
       </DesignResumeSection>
 
-      {ITEM_DEFINITIONS.map((definition) => {
-        const section = (asRecord(sections[definition.key]) ?? {}) as Record<
-          string,
-          unknown
-        >;
-        const items = asArray(section.items).map(
-          (item) => asRecord(item) ?? {},
-        ) as Record<string, unknown>[];
+      <div className="my-1 border-t border-border/40" />
 
+      {orderedDefinitions.map((definition) => {
+        const isReorderable = REORDERABLE_SECTION_KEYS.includes(definition.key);
         return (
           <DesignResumeListSection
             key={definition.key}
-            definition={definition}
-            items={items}
-            onAdd={() => onOpenDialog(definition, null)}
-            onEdit={(index) => onOpenDialog(definition, index)}
-            onUpdateItems={(nextItems) =>
-              updateSectionItems(definition.key, nextItems)
+            {...getListSectionProps(definition)}
+            isDragging={draggingKey === definition.key}
+            isDragTarget={
+              dragOverKey === definition.key && draggingKey !== definition.key
+            }
+            dragHandleProps={
+              isReorderable
+                ? {
+                    onDragStart: (e) => handleDragStart(e, definition.key),
+                    onDragEnd: handleDragEnd,
+                  }
+                : undefined
+            }
+            onDragOver={
+              isReorderable
+                ? (e) => handleDragOver(e, definition.key)
+                : undefined
+            }
+            onDrop={
+              isReorderable ? (e) => handleDrop(e, definition.key) : undefined
             }
           />
         );

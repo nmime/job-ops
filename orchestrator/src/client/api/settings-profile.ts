@@ -1,12 +1,15 @@
 import type { UpdateSettingsInput } from "@shared/settings-schema";
 import type {
   AppSettings,
+  DesignResumeAiFieldSuggestionRequest,
+  DesignResumeAiFieldSuggestionResponse,
   DesignResumeDocument,
   DesignResumeExportResponse,
   DesignResumeJson,
   DesignResumePatchRequest,
   DesignResumePdfResponse,
   DesignResumeStatusResponse,
+  OnboardingStatusResponse,
   ProfileStatusResponse,
   ResumeProfile,
   ResumeProjectCatalogItem,
@@ -129,6 +132,20 @@ export async function generateDesignResumePdf(): Promise<DesignResumePdfResponse
   });
 }
 
+export async function generateDesignResumeFieldSuggestion(
+  input: DesignResumeAiFieldSuggestionRequest & { signal?: AbortSignal },
+): Promise<DesignResumeAiFieldSuggestionResponse> {
+  const { signal, ...body } = input;
+  return fetchApi<DesignResumeAiFieldSuggestionResponse>(
+    "/design-resume/ai/field-suggestion",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
+}
+
 export async function getDesignResumePdfBlob(pdfUrl?: string): Promise<Blob> {
   return fetchBlobApi(
     pdfUrl ? normalizeApiPath(pdfUrl) : "/design-resume/pdf",
@@ -157,10 +174,38 @@ export async function validateLlm(input: {
   });
 }
 
+export async function getOnboardingStatus(): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/status");
+}
+
+export async function saveOnboardingModel(input: {
+  provider?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  model?: string | null;
+}): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/actions/model", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function saveOnboardingRxResume(input: {
+  apiKey?: string | null;
+  baseUrl?: string | null;
+  rxresumeBaseResumeId?: string | null;
+}): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/actions/rxresume", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getLlmModels(input?: {
   provider?: string;
   baseUrl?: string;
   apiKey?: string;
+  purpose?: string;
 }): Promise<string[]> {
   const data = await fetchApi<{ models: string[] }>("/settings/llm-models", {
     method: "POST",

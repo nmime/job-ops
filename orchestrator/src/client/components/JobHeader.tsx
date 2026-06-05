@@ -1,3 +1,4 @@
+import { isAwaitingAiScore, ScoreRing } from "@client/components";
 import type { AppliedDuplicateMatch, Job } from "@shared/types.js";
 import { Calendar, DollarSign, Loader2, MapPin, Search } from "lucide-react";
 import type React from "react";
@@ -10,9 +11,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn, formatDate, sourceLabel } from "@/lib/utils";
+import { cn, formatDate, formatJobSourceLabel, sourceLabel } from "@/lib/utils";
 import { useSettings } from "../hooks/useSettings";
-import { ScoreRing } from "../pages/job-page/JobPageLeftSidebar";
+import { formatPostingAgeLabel } from "../lib/job-posting-age";
 import { appliedDuplicateIndicator } from "../pages/orchestrator/constants";
 import {
   getJobStatusIndicator,
@@ -163,6 +164,12 @@ const AppliedDuplicatePill: React.FC<{
   );
 };
 
+const postingAgeDotColor = {
+  fresh: "bg-emerald-500",
+  aging: "bg-amber-500",
+  old: "bg-slate-500",
+};
+
 export const JobHeader: React.FC<JobHeaderProps> = ({
   job,
   className,
@@ -179,6 +186,7 @@ export const JobHeader: React.FC<JobHeaderProps> = ({
     ? undefined
     : { jobPageBackTo: `${location.pathname}${location.search}` };
   const deadline = formatDate(job.deadline);
+  const postingAge = formatPostingAgeLabel(job.datePosted);
   const jobStatusTooltip =
     job.status === "discovered" ? (
       <p className="text-xs">Found by the pipeline. Not tailored yet.</p>
@@ -235,7 +243,13 @@ export const JobHeader: React.FC<JobHeaderProps> = ({
         </div>
 
         <div className="flex w-full flex-row-reverse sm:flex-col justify-between items-end gap-4 sm:w-auto sm:justify-end h-full">
-          <ScoreRing score={job.suitabilityScore} size="sm" />
+          <ScoreRing
+            score={job.suitabilityScore}
+            size="sm"
+            isAwaitingAi={isAwaitingAiScore(job)}
+            suitabilityReason={job.suitabilityReason}
+            jobId={job.id}
+          />
           {jobCTA && <>{jobCTA}</>}
         </div>
       </div>
@@ -263,8 +277,20 @@ export const JobHeader: React.FC<JobHeaderProps> = ({
           {job.source && (
             <StatusIndicator
               variant="sky"
-              tooltip={`Job found on ${sourceLabel[job.source]}`}
-              label={job.source ? sourceLabel[job.source] : "Unknown Source"}
+              tooltip={`Job found on ${formatJobSourceLabel(job.source)}`}
+              label={
+                sourceLabel[job.source] ?? formatJobSourceLabel(job.source)
+              }
+            />
+          )}
+
+          {postingAge && (
+            <StatusIndicator
+              dotColor={postingAgeDotColor[postingAge.tone]}
+              label={postingAge.inlineLabel}
+              tooltip={postingAge.tooltip}
+              tooltipClassName="max-w-xs"
+              className="cursor-help"
             />
           )}
 

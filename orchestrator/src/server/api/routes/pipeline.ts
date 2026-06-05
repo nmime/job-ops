@@ -23,18 +23,20 @@ import {
   getProgress,
   requestPipelineCancel,
   resolvePipelineChallenge,
+  resumePipelineScoring,
   runPipeline,
   subscribeToProgress,
 } from "@server/pipeline/index";
 import * as pipelineRepo from "@server/repositories/pipeline";
+import * as pipelineSearchPresetsRepo from "@server/repositories/pipeline-search-presets";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
-import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import {
   buildChallengeViewerUrl,
   createChallengeViewerSession,
   ensureChallengeViewer,
 } from "@server/services/challenge-viewer";
 import { simulatePipelineRun } from "@server/services/demo-simulator";
+import { ensurePipelineSearchTerms } from "@server/services/pipeline-search-terms";
 import { PIPELINE_EXTRACTOR_SOURCE_IDS } from "@shared/extractors";
 import {
   createLocationIntent,
@@ -53,6 +55,21 @@ import { z } from "zod";
 
 export const pipelineRouter = Router();
 const WORKPLACE_TYPE_VALUES = ["remote", "hybrid", "onsite"] as const;
+const pipelineSourceSchema = z.enum(
+  PIPELINE_EXTRACTOR_SOURCE_IDS as [
+    (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
+    ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
+  ],
+);
+
+function toSelectedSourcesValue(
+  sources: readonly string[] | undefined,
+): string | undefined {
+  if (!Array.isArray(sources) || sources.length === 0) return undefined;
+  return [...sources]
+    .sort((left, right) => left.localeCompare(right))
+    .join("|");
+}
 
 function resolveRequestOrigin(req: Request): string | null {
   const configuredBaseUrl = process.env.JOBOPS_PUBLIC_BASE_URL?.trim();
@@ -175,6 +192,177 @@ pipelineRouter.get("/runs", async (_req: Request, res: Response) => {
   }
 });
 
+const pipelineSearchPresetConfigSchema = z.object({
+  searchTerms: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+  sources: z.array(pipelineSourceSchema).min(1),
+  country: z.string().trim().max(100),
+  cityLocations: z.array(z.string().trim().min(1).max(100)).max(25),
+  workplaceTypes: z.array(z.enum(WORKPLACE_TYPE_VALUES)).min(1).max(3),
+  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES),
+  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES),
+  topN: z.number().int().min(1).max(50),
+  minSuitabilityScore: z.number().int().min(0).max(100),
+  runBudget: z.number().int().min(50).max(1000),
+  automaticPresetId: z
+    .enum(["fast", "balanced", "detailed", "custom"])
+    .optional(),
+});
+
+const createPipelineSearchPresetSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    config: pipelineSearchPresetConfigSchema,
+  })
+  .strict();
+
+const updatePipelineSearchPresetSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    config: pipelineSearchPresetConfigSchema.optional(),
+  })
+  .strict()
+  .refine((value) => value.name !== undefined || value.config !== undefined, {
+    message: "Provide a name or config update",
+  });
+
+pipelineRouter.get("/search-presets", async (_req: Request, res: Response) => {
+  try {
+    ok(res, {
+      searches: await pipelineSearchPresetsRepo.listPipelineSearchPresets(),
+    });
+  } catch (error) {
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+pipelineRouter.post("/search-presets", async (req: Request, res: Response) => {
+  try {
+    const input = createPipelineSearchPresetSchema.parse(req.body);
+    if (
+      await pipelineSearchPresetsRepo.pipelineSearchPresetNameExists({
+        name: input.name,
+      })
+    ) {
+      return fail(
+        res,
+        conflict("A saved search with this name already exists"),
+      );
+    }
+
+    ok(
+      res,
+      await pipelineSearchPresetsRepo.createPipelineSearchPreset(input),
+      201,
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return fail(res, badRequest(error.message, error.flatten()));
+    }
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+pipelineRouter.patch(
+  "/search-presets/:id",
+  async (req: Request, res: Response) => {
+    try {
+      const input = updatePipelineSearchPresetSchema.parse(req.body);
+      if (
+        input.name !== undefined &&
+        (await pipelineSearchPresetsRepo.pipelineSearchPresetNameExists({
+          name: input.name,
+          excludingId: req.params.id,
+        }))
+      ) {
+        return fail(
+          res,
+          conflict("A saved search with this name already exists"),
+        );
+      }
+
+      const updated =
+        await pipelineSearchPresetsRepo.updatePipelineSearchPreset(
+          req.params.id,
+          input,
+        );
+      if (!updated) return fail(res, notFound("Saved search not found"));
+      ok(res, updated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return fail(res, badRequest(error.message, error.flatten()));
+      }
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
+pipelineRouter.post(
+  "/search-presets/:id/used",
+  async (req: Request, res: Response) => {
+    try {
+      const updated =
+        await pipelineSearchPresetsRepo.markPipelineSearchPresetUsed(
+          req.params.id,
+        );
+      if (!updated) return fail(res, notFound("Saved search not found"));
+      ok(res, updated);
+    } catch (error) {
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
+pipelineRouter.delete(
+  "/search-presets/:id",
+  async (req: Request, res: Response) => {
+    try {
+      const deleted =
+        await pipelineSearchPresetsRepo.deletePipelineSearchPreset(
+          req.params.id,
+        );
+      if (deleted === 0) return fail(res, notFound("Saved search not found"));
+      ok(res, { deleted: true });
+    } catch (error) {
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
 /**
  * GET /api/pipeline/runs/:id/insights - Get exact and inferred metrics for a run
  */
@@ -203,32 +391,22 @@ pipelineRouter.get(
 /**
  * POST /api/pipeline/run - Trigger the pipeline manually
  */
-const runPipelineSchema = z
-  .object({
-    topN: z.number().min(1).max(50).optional(),
-    minSuitabilityScore: z.number().min(0).max(100).optional(),
-    sources: z
-      .array(
-        z.enum(
-          PIPELINE_EXTRACTOR_SOURCE_IDS as [
-            (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
-            ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
-          ],
-        ),
-      )
-      .min(1)
-      .optional(),
-    country: z.string().trim().optional(),
-    cityLocations: z.array(z.string().trim().min(1)).optional(),
-    workplaceTypes: z
-      .array(z.enum(WORKPLACE_TYPE_VALUES))
-      .min(1)
-      .max(3)
-      .optional(),
-    searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
-    matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
-  })
-  .strict();
+const runPipelineSchema = z.object({
+  topN: z.number().min(1).max(50).optional(),
+  minSuitabilityScore: z.number().min(0).max(100).optional(),
+  sources: z.array(pipelineSourceSchema).min(1).optional(),
+  runBudget: z.number().min(50).max(1000).optional(),
+  searchTerms: z.array(z.string().trim().min(1)).optional(),
+  country: z.string().trim().optional(),
+  cityLocations: z.array(z.string().trim().min(1)).optional(),
+  workplaceTypes: z
+    .array(z.enum(WORKPLACE_TYPE_VALUES))
+    .min(1)
+    .max(3)
+    .optional(),
+  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
+  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
+});
 
 pipelineRouter.post("/run", async (req: Request, res: Response) => {
   try {
@@ -275,6 +453,7 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       const sourcePlans = planLocationSources({
         intent: locationIntent,
         sources: config.sources,
+        capabilitiesBySource: registry.locationCapabilitiesBySource ?? {},
       });
       if (sourcePlans.incompatibleSources.length > 0) {
         const incompatible = sourcePlans.plans
@@ -304,6 +483,10 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       return okWithMeta(res, simulated, { simulated: true });
     }
 
+    const searchTermsState = await ensurePipelineSearchTerms({
+      requestedSearchTerms: config.searchTerms,
+    });
+
     // Start pipeline in background
     runWithRequestContext({}, () => {
       runPipeline({
@@ -319,12 +502,15 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       "jobs_pipeline_run_started",
       {
         source_count: config.sources?.length,
+        selected_sources: toSelectedSourcesValue(config.sources),
         top_n: config.topN,
         min_suitability_score: config.minSuitabilityScore,
         country: config.country,
         has_city_locations: Array.isArray(config.cityLocations)
           ? config.cityLocations.length > 0
           : false,
+        search_terms_count: searchTermsState.searchTermsCount,
+        search_terms_source: searchTermsState.source,
       },
       {
         requestOrigin: resolveRequestOrigin(req),
@@ -375,6 +561,32 @@ pipelineRouter.post("/cancel", async (_req: Request, res: Response) => {
       pipelineRunId: cancelResult.pipelineRunId,
       alreadyRequested: cancelResult.alreadyRequested,
     });
+  } catch (error) {
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+/**
+ * POST /api/pipeline/resume-scoring - Resume a pipeline paused because LLM
+ * was not configured. Called after the user configures an API key in Settings.
+ */
+pipelineRouter.post("/resume-scoring", async (_req: Request, res: Response) => {
+  try {
+    const { resolved } = resumePipelineScoring();
+    if (!resolved) {
+      return fail(
+        res,
+        conflict("Pipeline is not paused waiting for LLM configuration"),
+      );
+    }
+    ok(res, { resolved: true });
   } catch (error) {
     fail(
       res,
@@ -470,30 +682,17 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
     // DATA_DIR rather than under extractor source directories.
     const storageDir = join(getDataDir(), "cloudflare-cookies");
 
-    const paidAttempt = await solveExtractorChallenge({
-      extractorId: body.extractorId,
-      url: challengeUrl,
-      storageDir,
-      logContext: { route: "/api/pipeline/solve-challenge" },
-    });
-    let result = paidAttempt.result;
+    // Dynamic import: browser-utils pulls in playwright which is heavy.
+    // A top-level import would slow down every server startup even though
+    // most pipeline runs never hit a challenge.
+    await ensureChallengeViewer();
 
     const { solveChallenge } = await import("browser-utils");
-    if (result?.status !== "solved") {
-      if (paidAttempt.attempted) {
-        logger.info(
-          "Opening manual challenge viewer after paid solver result",
-          {
-            route: "/api/pipeline/solve-challenge",
-            extractorId: body.extractorId,
-            provider: paidAttempt.provider,
-            status: result?.status ?? "not_attempted",
-          },
-        );
-      }
-      await ensureChallengeViewer();
-      result = await solveChallenge(challengeUrl, body.extractorId, storageDir);
-    }
+    const result = await solveChallenge(
+      challengeUrl,
+      body.extractorId,
+      storageDir,
+    );
 
     if (result.status === "solved") {
       const { remaining } = resolvePipelineChallenge(body.extractorId);
@@ -502,12 +701,14 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
         route: "/api/pipeline/solve-challenge",
         extractorId: body.extractorId,
         challengesRemaining: remaining,
+        cookiesSaved: result.cookiesSaved,
       });
 
       ok(res, {
         status: "solved",
         extractorId: body.extractorId,
         challengesRemaining: remaining,
+        cookiesSaved: result.cookiesSaved,
       });
     } else {
       logger.warn("Challenge solver did not succeed", {

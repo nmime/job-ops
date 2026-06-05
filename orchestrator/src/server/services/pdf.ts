@@ -180,7 +180,15 @@ async function resolvePdfRenderer(): Promise<PdfRenderer> {
   );
 }
 
-async function resolveLatexResumeLanguage(resumeJson: Record<string, unknown>) {
+async function resolveTypstTheme() {
+  const storedValue = await getSetting("typstTheme");
+  return (
+    settingsRegistry.typstTheme.parse(storedValue ?? undefined) ??
+    settingsRegistry.typstTheme.default()
+  );
+}
+
+async function resolveLocalResumeLanguage(resumeJson: Record<string, unknown>) {
   const writingStyle = await getWritingStyle();
   return resolveWritingOutputLanguageForResumeJson({
     style: writingStyle,
@@ -363,7 +371,7 @@ async function resolveDesignResumeForRenderer(args: {
 }> {
   const designResume = await getCurrentDesignResume();
   if (!designResume?.resumeJson) {
-    throw notFound("Design Resume has not been imported yet.");
+    throw notFound("Resume Studio has not been imported yet.");
   }
 
   const localDocument = parseV5ResumeData(
@@ -453,7 +461,7 @@ async function loadBaseResumeSource(args: {
   const { resumeId: baseResumeId } = await getConfiguredRxResumeBaseResumeId();
   if (!baseResumeId) {
     throw new Error(
-      "No Design Resume found, and no Reactive Resume base resume is configured. Import a Design Resume or select a base resume in Settings.",
+      "No Resume Studio document found, and no Reactive Resume base resume is configured. Import a resume into Resume Studio or select a base resume in Settings.",
     );
   }
 
@@ -523,13 +531,18 @@ export async function generatePdf(
     }
 
     const outputPath = getTenantJobPdfPath(jobId);
-    if (renderer === "latex") {
-      const language = await resolveLatexResumeLanguage(preparedResume.data);
+    if (renderer !== "rxresume") {
+      const [language, typstTheme] = await Promise.all([
+        resolveLocalResumeLanguage(preparedResume.data),
+        renderer === "typst" ? resolveTypstTheme() : Promise.resolve(undefined),
+      ]);
       await renderResumePdf({
         resumeJson: preparedResume.data,
         outputPath,
         jobId,
         language,
+        renderer,
+        typstTheme,
       });
     } else {
       await renderRxResumePdf({
@@ -577,13 +590,18 @@ export async function generateDesignResumePdf(options?: {
     documentId: designResume.documentId,
   });
 
-  if (renderer === "latex") {
-    const language = await resolveLatexResumeLanguage(designResume.data);
+  if (renderer !== "rxresume") {
+    const [language, typstTheme] = await Promise.all([
+      resolveLocalResumeLanguage(designResume.data),
+      renderer === "typst" ? resolveTypstTheme() : Promise.resolve(undefined),
+    ]);
     await renderResumePdf({
       resumeJson: designResume.data,
       outputPath,
       jobId: "design-resume",
       language,
+      renderer,
+      typstTheme,
     });
   } else {
     await renderRxResumePdf({

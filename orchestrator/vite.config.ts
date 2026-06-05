@@ -38,13 +38,15 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./src/setupTests.ts",
     pool: "forks",
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    maxWorkers: 4,
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
       "../docs-site/src/**/*.test.ts",
       "../docs-site/src/**/*.test.tsx",
+      "../career-boards/**/*.test.ts",
       "../shared/src/**/*.test.ts",
       "../extractors/**/tests/**/*.test.ts",
     ],
@@ -58,6 +60,14 @@ export default defineConfig({
       "@infra": path.resolve(__dirname, "./src/server/infra"),
       "@shared": path.resolve(__dirname, "../shared/src"),
       "job-ops-shared": path.resolve(__dirname, "../shared/src"),
+      "@career-boards/bamboohr": path.resolve(
+        __dirname,
+        "../career-boards/bamboohr/src/index.ts",
+      ),
+      "@career-boards/workday": path.resolve(
+        __dirname,
+        "../career-boards/workday/src/index.ts",
+      ),
     },
   },
   server: {

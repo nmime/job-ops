@@ -296,6 +296,31 @@ export const pipelineRuns = sqliteTable("pipeline_runs", {
   resultSummary: text("result_summary", { mode: "json" }),
 });
 
+export const pipelineSearchPresets = sqliteTable(
+  "pipeline_search_presets",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    config: text("config", { mode: "json" }).notNull(),
+    lastUsedAt: text("last_used_at"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantUserNameUnique: uniqueIndex(
+      "idx_pipeline_search_presets_tenant_user_name_unique",
+    ).on(table.tenantId, table.userId, table.name),
+    tenantUserUpdatedIndex: index(
+      "idx_pipeline_search_presets_tenant_user_updated",
+    ).on(table.tenantId, table.userId, table.updatedAt),
+  }),
+);
+
 export const jobChatThreads = sqliteTable(
   "job_chat_threads",
   {
@@ -314,6 +339,7 @@ export const jobChatThreads = sqliteTable(
     activeRootMessageId: text("active_root_message_id"),
     selectedNoteIds: text("selected_note_ids").notNull().default("[]"),
     selectedEmailIds: text("selected_email_ids").notNull().default("[]"),
+    selectedDocumentIds: text("selected_document_ids").notNull().default("[]"),
   },
   (table) => ({
     jobUpdatedIndex: index("idx_job_chat_threads_job_updated").on(
@@ -411,6 +437,115 @@ export const settings = sqliteTable(
     tenantKeyUnique: uniqueIndex("idx_settings_tenant_key_unique").on(
       table.tenantId,
       table.key,
+    ),
+  }),
+);
+
+export const watchlistJobStates = sqliteTable(
+  "watchlist_job_states",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    source: text("source").notNull(),
+    sourceJobId: text("source_job_id").notNull(),
+    state: text("state", { enum: ["ignored", "moved_to_workspace"] })
+      .notNull()
+      .default("ignored"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantUserSourceJobUnique: uniqueIndex(
+      "idx_watchlist_job_states_tenant_user_source_job_unique",
+    ).on(table.tenantId, table.userId, table.source, table.sourceJobId),
+    tenantUserStateIndex: index(
+      "idx_watchlist_job_states_tenant_user_state",
+    ).on(table.tenantId, table.userId, table.state),
+  }),
+);
+
+export const watchlistChecks = sqliteTable(
+  "watchlist_checks",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    lastCheckedAt: text("last_checked_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantUserUnique: uniqueIndex("idx_watchlist_checks_tenant_user_unique").on(
+      table.tenantId,
+      table.userId,
+    ),
+  }),
+);
+
+export const watchlistSeenJobs = sqliteTable(
+  "watchlist_seen_jobs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    source: text("source").notNull(),
+    sourceJobId: text("source_job_id").notNull(),
+    firstSeenAt: text("first_seen_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantUserSourceJobUnique: uniqueIndex(
+      "idx_watchlist_seen_jobs_tenant_user_source_job_unique",
+    ).on(table.tenantId, table.userId, table.source, table.sourceJobId),
+    tenantUserLastSeenIndex: index(
+      "idx_watchlist_seen_jobs_tenant_user_last_seen",
+    ).on(table.tenantId, table.userId, table.lastSeenAt),
+  }),
+);
+
+export const watchlistSelectedSources = sqliteTable(
+  "watchlist_selected_sources",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    catalogSourceId: text("catalog_source_id"),
+    label: text("label").notNull(),
+    careersUrl: text("careers_url").notNull(),
+    cxsJobsUrl: text("cxs_jobs_url"),
+    sourceType: text("source_type").notNull(),
+    isCustom: integer("is_custom", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantUserSortOrderUnique: uniqueIndex(
+      "idx_watchlist_selected_sources_tenant_user_sort_order",
+    ).on(table.tenantId, table.userId, table.sortOrder),
+    tenantUserCareersUrlUnique: uniqueIndex(
+      "idx_watchlist_selected_sources_tenant_user_careers_url",
+    ).on(table.tenantId, table.userId, table.careersUrl),
+    tenantUserIndex: index("idx_watchlist_selected_sources_tenant_user").on(
+      table.tenantId,
+      table.userId,
     ),
   }),
 );
@@ -526,6 +661,33 @@ export const designResumeAssets = sqliteTable(
   (table) => ({
     documentIndex: index("idx_design_resume_assets_document_id").on(
       table.documentId,
+    ),
+  }),
+);
+
+export const jobDocuments = sqliteTable(
+  "job_documents",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    fileName: text("file_name").notNull(),
+    mediaType: text("media_type"),
+    byteSize: integer("byte_size").notNull(),
+    storagePath: text("storage_path").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    jobIndex: index("idx_job_documents_job_id").on(table.jobId),
+    tenantJobIndex: index("idx_job_documents_tenant_job_id").on(
+      table.tenantId,
+      table.jobId,
     ),
   }),
 );
@@ -799,10 +961,15 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type NewTaskRow = typeof tasks.$inferInsert;
 export type JobNoteRow = typeof jobNotes.$inferSelect;
 export type NewJobNoteRow = typeof jobNotes.$inferInsert;
+export type JobDocumentRow = typeof jobDocuments.$inferSelect;
+export type NewJobDocumentRow = typeof jobDocuments.$inferInsert;
 export type InterviewRow = typeof interviews.$inferSelect;
 export type NewInterviewRow = typeof interviews.$inferInsert;
 export type PipelineRunRow = typeof pipelineRuns.$inferSelect;
 export type NewPipelineRunRow = typeof pipelineRuns.$inferInsert;
+export type PipelineSearchPresetRow = typeof pipelineSearchPresets.$inferSelect;
+export type NewPipelineSearchPresetRow =
+  typeof pipelineSearchPresets.$inferInsert;
 export type JobChatThreadRow = typeof jobChatThreads.$inferSelect;
 export type NewJobChatThreadRow = typeof jobChatThreads.$inferInsert;
 export type JobChatMessageRow = typeof jobChatMessages.$inferSelect;

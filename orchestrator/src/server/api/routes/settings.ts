@@ -19,6 +19,7 @@ import {
   getCodexDeviceAuthSnapshot,
   startCodexDeviceAuth,
 } from "@server/services/llm/codex/login";
+import { resolveLlmApiKey } from "@server/services/llm/credentials";
 import { LlmService } from "@server/services/llm/service";
 import { clearProfileCache } from "@server/services/profile";
 import {
@@ -34,9 +35,14 @@ import {
 import { getEffectiveSettings } from "@server/services/settings";
 import { applySettingsUpdates } from "@server/services/settings-update";
 import {
+  mapGlmProviderAlias,
+  settingsRegistry,
+} from "@shared/settings-registry";
+import {
   type UpdateSettingsInput,
   updateSettingsSchema,
 } from "@shared/settings-schema";
+import { LLM_PURPOSE_VALUES, type LlmPurpose } from "@shared/types";
 import { type Request, type Response, Router } from "express";
 
 export const settingsRouter = Router();
@@ -102,7 +108,8 @@ function normalizeLlmProviderValue(
   provider: string | null | undefined,
 ): string | undefined {
   if (!provider) return undefined;
-  return provider.trim().toLowerCase().replace(/-/g, "_");
+  const normalized = provider.trim().toLowerCase().replace(/[-.]/g, "_");
+  return mapGlmProviderAlias(normalized);
 }
 
 function getDefaultValidationBaseUrl(
@@ -111,6 +118,7 @@ function getDefaultValidationBaseUrl(
   if (provider === "lmstudio") return "http://localhost:1234";
   if (provider === "ollama") return "http://localhost:11434";
   if (provider === "openai_compatible") return "https://api.openai.com";
+  if (provider === "glm") return "https://api.z.ai/api/paas/v4";
   return undefined;
 }
 
@@ -172,16 +180,26 @@ async function resolveLlmConfig(input: {
   provider?: string | null;
   apiKey?: string | null;
   baseUrl?: string | null;
+  purpose?: LlmPurpose | null;
 }): Promise<{
   provider: string | undefined;
   apiKey: string | null;
   baseUrl: string | undefined;
 }> {
-  const [storedApiKey, storedProvider, storedBaseUrl] = await Promise.all([
-    getSetting("llmApiKey"),
-    getSetting("llmProvider"),
-    getSetting("llmBaseUrl"),
-  ]);
+  const [storedApiKey, storedProvider, storedBaseUrl, storedPurposeApiKeys] =
+    await Promise.all([
+      getSetting("llmApiKey"),
+      getSetting("llmProvider"),
+      getSetting("llmBaseUrl"),
+      getSetting("llmPurposeApiKeys"),
+    ]);
+  const purposeApiKeys =
+    settingsRegistry.llmPurposeApiKeys.parse(
+      storedPurposeApiKeys ?? undefined,
+    ) ?? {};
+  const storedPurposeApiKey = input.purpose
+    ? purposeApiKeys[input.purpose]?.trim()
+    : null;
 
   const provider = normalizeLlmProviderValue(
     input.provider?.trim() || storedProvider?.trim() || undefined,
@@ -189,6 +207,7 @@ async function resolveLlmConfig(input: {
   const usesBaseUrl =
     provider === "lmstudio" ||
     provider === "ollama" ||
+    provider === "glm" ||
     provider === "openai_compatible";
   const hasExplicitBaseUrlOverride =
     input.baseUrl !== undefined && input.baseUrl !== null;
@@ -204,13 +223,20 @@ async function resolveLlmConfig(input: {
 
   return {
     provider,
-    apiKey:
-      input.apiKey?.trim() ||
-      storedApiKey?.trim() ||
-      getOriginalEnvValue("LLM_API_KEY")?.trim() ||
-      null,
+    apiKey: resolveLlmApiKey({
+      storedApiKey: input.apiKey ?? storedApiKey,
+      purposeApiKey: storedPurposeApiKey,
+      provider,
+    }),
     baseUrl,
   };
+}
+
+function parseLlmPurpose(value: unknown): LlmPurpose | null {
+  if (typeof value !== "string") return null;
+  return (LLM_PURPOSE_VALUES as readonly string[]).includes(value)
+    ? (value as LlmPurpose)
+    : null;
 }
 
 async function getCodexAuthResponseData(): Promise<{
@@ -360,7 +386,13 @@ settingsRouter.post(
       typeof req.body?.apiKey === "string" ? req.body.apiKey : undefined;
     const baseUrl =
       typeof req.body?.baseUrl === "string" ? req.body.baseUrl : undefined;
-    const resolved = await resolveLlmConfig({ provider, apiKey, baseUrl });
+    const purpose = parseLlmPurpose(req.body?.purpose);
+    const resolved = await resolveLlmConfig({
+      provider,
+      apiKey,
+      baseUrl,
+      purpose,
+    });
 
     const llm = new LlmService({
       provider: resolved.provider,

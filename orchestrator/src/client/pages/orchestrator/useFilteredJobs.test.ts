@@ -23,7 +23,7 @@ const defaultDateFilter: JobDateFilter = {
 };
 
 describe("useFilteredJobs", () => {
-  it("keeps only ready jobs in the ready tab", () => {
+  it("keeps ready and processing jobs in the ready tab", () => {
     const jobs: Job[] = [
       { ...baseJob, id: "ready", status: "ready" },
       { ...baseJob, id: "processing", status: "processing" },
@@ -41,7 +41,10 @@ describe("useFilteredJobs", () => {
       ),
     );
 
-    expect(result.current.map((job) => job.id)).toEqual(["ready"]);
+    expect(result.current.map((job) => job.id)).toEqual([
+      "processing",
+      "ready",
+    ]);
   });
 
   it("filters by discovered date on the discovered tab", () => {
@@ -217,73 +220,53 @@ describe("useFilteredJobs", () => {
     expect(result.current.map((job) => job.id)).toEqual(["match"]);
   });
 
-  it("sorts by date using the active date context", () => {
+  it("sorts by posting date while keeping missing values last", () => {
     const jobs: Job[] = [
       {
         ...baseJob,
+        id: "missing",
+        datePosted: null,
+      },
+      {
+        ...baseJob,
         id: "older",
-        appliedAt: "2026-04-03T14:00:00.000Z",
+        datePosted: "2026-05-24",
       },
       {
         ...baseJob,
         id: "newer",
-        appliedAt: "2026-04-05T14:00:00.000Z",
+        datePosted: "2026-05-26",
       },
     ];
 
-    const { result } = renderHook(() =>
-      useFilteredJobs(
-        jobs,
-        "all",
-        {
-          dimensions: ["applied"],
-          startDate: null,
-          endDate: null,
-          preset: null,
-        },
-        "all",
-        "all",
-        { mode: "at_least", min: null, max: null },
-        { key: "date", direction: "desc" },
-      ),
+    const { result, rerender } = renderHook(
+      ({ direction }: { direction: "asc" | "desc" }) =>
+        useFilteredJobs(
+          jobs,
+          "all",
+          defaultDateFilter,
+          "all",
+          "all",
+          { mode: "at_least", min: null, max: null },
+          { key: "datePosted", direction },
+        ),
+      {
+        initialProps: { direction: "desc" as "asc" | "desc" },
+      },
     );
 
-    expect(result.current.map((job) => job.id)).toEqual(["newer", "older"]);
-  });
+    expect(result.current.map((job) => job.id)).toEqual([
+      "newer",
+      "older",
+      "missing",
+    ]);
 
-  it("falls back through the date sort priority when the primary timestamp is missing", () => {
-    const jobs: Job[] = [
-      {
-        ...baseJob,
-        id: "fallback",
-        appliedAt: "2026-04-05T14:00:00.000Z",
-        readyAt: null,
-      },
-      {
-        ...baseJob,
-        id: "ready",
-        readyAt: "2026-04-04T14:00:00.000Z",
-        appliedAt: "2026-04-03T14:00:00.000Z",
-      },
-    ];
+    rerender({ direction: "asc" });
 
-    const { result } = renderHook(() =>
-      useFilteredJobs(
-        jobs,
-        "all",
-        {
-          dimensions: ["ready", "applied"],
-          startDate: null,
-          endDate: null,
-          preset: null,
-        },
-        "all",
-        "all",
-        { mode: "at_least", min: null, max: null },
-        { key: "date", direction: "desc" },
-      ),
-    );
-
-    expect(result.current.map((job) => job.id)).toEqual(["fallback", "ready"]);
+    expect(result.current.map((job) => job.id)).toEqual([
+      "older",
+      "newer",
+      "missing",
+    ]);
   });
 });

@@ -4,6 +4,16 @@ Thanks for helping improve JobOps.
 
 This guide is intentionally short and GitHub-friendly. It focuses on contributor workflow and links to the existing docs for setup, style, and troubleshooting so we do not duplicate documentation.
 
+## Contributor Terms
+
+By submitting a pull request, patch, issue comment, documentation change, or other contribution to JobOps, you confirm that you have the right to contribute it and that you license your contribution to the JobOps maintainers and users under the project's current license terms.
+
+You also grant the JobOps maintainers a perpetual, worldwide, non-exclusive, royalty-free license to use, copy, modify, distribute, sublicense, relicense, and commercially offer your contribution as part of JobOps, including official hosted JobOps services and other commercial offerings.
+
+You keep ownership of your own contributions. This grant exists so JobOps can remain free for self-hosting while the maintainers can operate and sell official JobOps Cloud services under separate commercial terms.
+
+Do not submit code, docs, assets, generated output, or other material that you do not have permission to contribute.
+
 ## What You Can Contribute
 
 - Bug fixes and reliability improvements
@@ -20,7 +30,9 @@ Use the path that matches your change:
 | --- | --- | --- | --- |
 | Docs/content | `docs-site/docs` | `npm run docs:dev` | [Docs style guide](https://jobops.dakheera47.com/docs/next/reference/documentation-style-guide), [FAQ](https://jobops.dakheera47.com/docs/next/reference/faq) |
 | App/UI/API | `orchestrator`, `shared` | `npm --workspace orchestrator run dev` | [Self-hosting](https://jobops.dakheera47.com/docs/getting-started/self-hosting), [Troubleshooting](https://jobops.dakheera47.com/docs/next/troubleshooting/common-problems) |
+| Watchlist source adapters | `orchestrator/src/server/watchlist/adapters`, `orchestrator/src/server/config` | `npm --workspace orchestrator run dev` | [Watchlist](https://jobops.dakheera47.com/docs/next/features/watchlist) |
 | Extractors | `extractors/*`, sometimes `shared` | Relevant type checks + tests | [Add an extractor](https://jobops.dakheera47.com/docs/next/workflows/add-an-extractor), [Extractors overview](https://jobops.dakheera47.com/docs/extractors/overview) |
+| Typst resume themes | `orchestrator/src/server/services/resume-renderer/typst-themes` | `npm run typst-theme:validate` | [Reactive Resume](https://jobops.dakheera47.com/docs/features/reactive-resume) |
 
 ## Local Setup (Minimal)
 
@@ -62,6 +74,78 @@ Local URLs:
 3. If the change is user-visible, update docs (or link the relevant docs update in the same PR).
 4. Include screenshots or short clips for UI changes when helpful.
 5. Mention any tradeoffs or follow-up work in the PR description.
+
+## Adding Watchlist Sources
+
+Watchlist sources are adapter-backed. The UI, API routes, dedupe behavior, import draft creation, and source-specific copy all read from the adapter registry.
+
+### Adding a company to an existing source type
+
+If a company uses an already supported source type, add it to that source type's catalog file in `orchestrator/src/server/config`.
+
+For Workday, add the public careers site to `orchestrator/src/server/config/career-boards-workday.json`.
+
+Use this shape:
+
+```json
+{
+  "id": "company-workday",
+  "label": "Company",
+  "ats": "workday",
+  "workdayUrl": "https://company.wd1.myworkdayjobs.com/External",
+  "tags": ["software", "engineering"],
+  "countries": ["US", "UK"],
+  "status": "active"
+}
+```
+
+Rules:
+
+- Add only public Workday careers URLs, not individual job posting URLs.
+- Prefer the main external careers page for that tenant.
+- Keep `id` stable and kebab-case.
+- Keep `label` human-readable because it is shown directly in the Watchlist company picker.
+- Use concise `tags` and broad `countries` values only when you are reasonably confident they are correct.
+
+Before opening the PR:
+
+- Launch the app and confirm the company appears in Watchlist search.
+- Verify the URL resolves to the expected Workday site.
+- Update docs if the user-visible flow changed.
+
+### Adding a new source type
+
+Add a source adapter under `orchestrator/src/server/watchlist/adapters`. The adapter should own:
+
+- catalog entry parsing
+- custom source URL validation and label derivation
+- source-specific UI copy
+- job fetching and normalized row output
+- canonical job identity for ignore/check/dedupe
+- job details and import draft preparation
+- optional logo/branding lookup
+
+Then register the adapter in `orchestrator/src/server/watchlist/adapters/index.ts`. If it has a curated company catalog, add `orchestrator/src/server/config/career-boards-{sourceType}.json`; the generic catalog loader will dispatch that file to the matching adapter.
+
+Before opening the PR:
+
+- Add adapter tests for catalog parsing, URL validation, job identity, and import draft preparation.
+- Add or update Watchlist API/page tests when the source affects shared behavior.
+- Confirm the source type appears in the Watchlist picker with adapter-owned copy.
+- Update the Watchlist docs if the user-visible behavior changes.
+
+## Adding a Typst Resume Theme
+
+Typst themes are folder-based so a theme PR can stay small:
+
+1. Copy an existing folder under `orchestrator/src/server/services/resume-renderer/typst-themes`.
+2. Rename the folder and set the same kebab-case value in `theme.json` as `id`.
+3. Update `label`, `description`, `entrypoint`, and native `tokens`.
+4. Edit the Typst entrypoint, usually `main.typ`.
+5. Run `npm run typst-theme:generate` to refresh shared theme metadata.
+6. Run `npm run typst-theme:validate`.
+
+Native themes use the JobOps resume document model and token placeholders. Adapted themes can read the normalized resume document from `json(__RESUME_DATA_PATH__)` inside their Typst entrypoint, which is the recommended path for Typst Universe packages with their own layout APIs.
 
 ## Releases
 

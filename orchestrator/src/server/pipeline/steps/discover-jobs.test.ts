@@ -1,6 +1,7 @@
 import type { PipelineConfig } from "@shared/types";
+import type { ExtractorRuntimeContext } from "@shared/types/extractors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getProgress, resetProgress } from "../progress";
+import { getProgress, resetProgress, subscribeToProgress } from "../progress";
 import { discoverJobsStep } from "./discover-jobs";
 
 vi.mock("@server/repositories/settings", () => ({
@@ -296,6 +297,59 @@ describe("discoverJobsStep", () => {
     );
   });
 
+  it("streams extractor progress detail while discovery is still running", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+
+    const gradcrackerManifest = {
+      id: "gradcracker",
+      displayName: "Gradcracker",
+      providesSources: ["gradcracker"],
+      run: vi.fn(async (context: ExtractorRuntimeContext) => {
+        context.onProgress?.({
+          currentUrl: "https://www.gradcracker.com/challenge",
+          detail:
+            "Gradcracker hit a Cloudflare challenge: https://www.gradcracker.com/challenge",
+        });
+
+        return { success: true, jobs: [] };
+      }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+      searchTerms: JSON.stringify(["software developer"]),
+      jobspyCountryIndeed: "united kingdom",
+    } as any);
+
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["gradcracker", gradcrackerManifest as any]]),
+      manifestBySource: new Map([["gradcracker", gradcrackerManifest as any]]),
+      availableSources: ["gradcracker"],
+    } as any);
+
+    const updates: Array<{ step: string; detail?: string }> = [];
+    const unsubscribe = subscribeToProgress((progress) => {
+      updates.push({ step: progress.step, detail: progress.detail });
+    });
+
+    try {
+      await discoverJobsStep({
+        mergedConfig: {
+          ...baseConfig,
+          sources: ["gradcracker"],
+        },
+      });
+    } finally {
+      unsubscribe();
+    }
+
+    expect(updates).toContainEqual({
+      step: "crawling",
+      detail:
+        "Gradcracker hit a Cloudflare challenge: https://www.gradcracker.com/challenge",
+    });
+  });
+
   it("throws when all enabled sources fail", async () => {
     const settingsRepo = await import("@server/repositories/settings");
     const registryModule = await import("@server/extractors/registry");
@@ -332,6 +386,51 @@ describe("discoverJobsStep", () => {
     ).rejects.toThrow(
       "All sources failed: UK Visa Jobs: boom (sources: ukvisajobs)",
     );
+  });
+
+  it("keeps non-fatal source errors when an extractor succeeds with no jobs", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    const registryModule = await import("@server/extractors/registry");
+
+    const jobspyManifest = {
+      id: "jobspy",
+      displayName: "JobSpy",
+      providesSources: ["indeed", "linkedin", "glassdoor"],
+      run: vi.fn().mockResolvedValue({
+        success: true,
+        jobs: [],
+        sourceErrors: [
+          "linkedin: ValueError: Invalid country string: eswatini (term: forecasting)",
+        ],
+      }),
+    };
+
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+      searchTerms: JSON.stringify(["forecasting"]),
+      jobspyCountryIndeed: "netherlands",
+    } as any);
+
+    vi.mocked(registryModule.getExtractorRegistry).mockResolvedValue({
+      manifests: new Map([["jobspy", jobspyManifest as any]]),
+      manifestBySource: new Map([
+        ["indeed", jobspyManifest as any],
+        ["linkedin", jobspyManifest as any],
+        ["glassdoor", jobspyManifest as any],
+      ]),
+      availableSources: ["indeed", "linkedin", "glassdoor"],
+    } as any);
+
+    const result = await discoverJobsStep({
+      mergedConfig: {
+        ...baseConfig,
+        sources: ["indeed", "linkedin"],
+      },
+    });
+
+    expect(result.discoveredJobs).toEqual([]);
+    expect(result.sourceErrors).toEqual([
+      "linkedin: ValueError: Invalid country string: eswatini (term: forecasting)",
+    ]);
   });
 
   it("throws when all requested sources are incompatible for country", async () => {

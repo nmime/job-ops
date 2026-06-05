@@ -249,20 +249,6 @@ export const COMPANY_SUFFIXES = [
 ] as const;
 
 export const DEMO_SOURCE_BASE_URLS: Record<JobSource, string> = {
-  remotive: "https://remotive.com",
-  jobicy: "https://jobicy.com",
-  weworkremotely: "https://weworkremotely.com",
-  themuse: "https://www.themuse.com",
-  arbeitnow: "https://www.arbeitnow.com",
-  remoteok: "https://remoteok.com",
-  greenhouse: "https://boards.greenhouse.io",
-  lever: "https://jobs.lever.co",
-  ashby: "https://jobs.ashbyhq.com",
-  smartrecruiters: "https://www.smartrecruiters.com",
-  telegram: "https://t.me",
-  himalayas: "https://himalayas.app",
-  hnhiring: "https://news.ycombinator.com",
-  usajobs: "https://www.usajobs.gov",
   linkedin: "https://www.linkedin.com",
   indeed: "https://www.indeed.com",
   glassdoor: "https://www.glassdoor.com",
@@ -277,6 +263,8 @@ export const DEMO_SOURCE_BASE_URLS: Record<JobSource, string> = {
   seek: "https://www.seek.com.au",
   naukri: "https://www.naukri.com",
   everjobs: "https://everjobs.example",
+  fiveamsat: "https://khamsat.com",
+  wazzuf: "https://wuzzuf.net",
   manual: "https://example.com",
 };
 

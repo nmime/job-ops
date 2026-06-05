@@ -69,6 +69,104 @@ describe("extractor registry", () => {
     expect(registry.manifestBySource.get("linkedin")?.id).toBe("jobspy");
     expect(registry.manifestBySource.get("naukri")?.id).toBe("naukri");
     expect(registry.manifestBySource.get("ukvisajobs")?.id).toBe("ukvisajobs");
+    expect(registry.locationCapabilitiesBySource.linkedin).toMatchObject({
+      source: "linkedin",
+    });
+  });
+
+  it("normalizes per-source location capabilities from manifests", async () => {
+    const discovery = await import("./discovery");
+    const registryModule = await import("./registry");
+    registryModule.__resetExtractorRegistryForTests();
+
+    vi.mocked(discovery.discoverManifestPaths).mockResolvedValue([
+      "/tmp/jobspy.ts",
+    ]);
+    vi.mocked(discovery.loadManifestFromFile).mockResolvedValue({
+      ...makeManifest("jobspy", ["indeed", "glassdoor"], "JobSpy"),
+      locationCapabilities: {
+        indeed: { supportedCountryKeys: ["UK", "Russia"] },
+        glassdoor: {
+          supportedCountryKeys: ["United States"],
+          requiresCityLocations: true,
+        },
+      },
+    });
+
+    const registry = await registryModule.initializeExtractorRegistry();
+
+    expect(registry.locationCapabilitiesBySource.indeed).toEqual({
+      source: "indeed",
+      supportedCountryKeys: ["united kingdom", "russia"],
+      requiresCityLocations: false,
+      requiresSelectedCountry: false,
+    });
+    expect(registry.locationCapabilitiesBySource.glassdoor).toEqual({
+      source: "glassdoor",
+      supportedCountryKeys: ["united states"],
+      requiresCityLocations: true,
+      requiresSelectedCountry: true,
+    });
+  });
+
+  it("warns when location capabilities reference sources the manifest does not provide", async () => {
+    const discovery = await import("./discovery");
+    const registryModule = await import("./registry");
+    registryModule.__resetExtractorRegistryForTests();
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    vi.mocked(discovery.discoverManifestPaths).mockResolvedValue([
+      "/tmp/jobspy.ts",
+    ]);
+    vi.mocked(discovery.loadManifestFromFile).mockResolvedValue({
+      ...makeManifest("jobspy", ["indeed"], "JobSpy"),
+      locationCapabilities: {
+        linkedin: { supportedCountryKeys: ["united kingdom"] },
+      },
+    });
+
+    const registry = await registryModule.initializeExtractorRegistry();
+
+    expect(registry.manifestBySource.get("indeed")?.id).toBe("jobspy");
+    expect(registry.locationCapabilitiesBySource.indeed).toMatchObject({
+      source: "indeed",
+    });
+    expect(registry.locationCapabilitiesBySource.linkedin).toBeUndefined();
+    expect(
+      warnSpy.mock.calls.some(
+        ([message, context]) =>
+          typeof message === "string" &&
+          message.includes(
+            "location capabilities for sources it does not provide",
+          ) &&
+          typeof context === "object" &&
+          context !== null &&
+          "unknownSources" in context &&
+          Array.isArray(context.unknownSources) &&
+          context.unknownSources.includes("linkedin"),
+      ),
+    ).toBe(true);
+  });
+
+  it("throws on unknown location capability sources in strict mode", async () => {
+    const discovery = await import("./discovery");
+    const registryModule = await import("./registry");
+    registryModule.__resetExtractorRegistryForTests();
+    process.env.EXTRACTOR_REGISTRY_STRICT = "true";
+
+    vi.mocked(discovery.discoverManifestPaths).mockResolvedValue([
+      "/tmp/jobspy.ts",
+    ]);
+    vi.mocked(discovery.loadManifestFromFile).mockResolvedValue({
+      ...makeManifest("jobspy", ["indeed"], "JobSpy"),
+      locationCapabilities: {
+        linkedin: { supportedCountryKeys: ["united kingdom"] },
+      },
+    });
+
+    await expect(registryModule.initializeExtractorRegistry()).rejects.toThrow(
+      "Extractor manifest jobspy declares location capabilities for unknown sources: linkedin",
+    );
   });
 
   it("throws on duplicate manifest ids in strict mode", async () => {

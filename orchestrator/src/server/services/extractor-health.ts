@@ -33,112 +33,6 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
   ExtractorSourceId,
   HealthProbeConfig
 > = {
-  remotive: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  jobicy: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  weworkremotely: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  themuse: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  arbeitnow: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  remoteok: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  greenhouse: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      greenhouseBoardTokens: "stripe",
-      jobspyResultsWanted: "1",
-    },
-  },
-  lever: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      leverSites: "netlify",
-      jobspyResultsWanted: "1",
-    },
-  },
-  ashby: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      ashbyJobBoardNames: "anthropic",
-      jobspyResultsWanted: "1",
-    },
-  },
-  smartrecruiters: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      smartrecruitersCompanies: "PublicisGroupe",
-      jobspyResultsWanted: "1",
-    },
-  },
-  telegram: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      telegramChannels: "nodejsjobsfeed",
-      jobspyResultsWanted: "1",
-    },
-  },
-  himalayas: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      himalayasPages: "1",
-      jobspyResultsWanted: "1",
-    },
-  },
-  hnhiring: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "worldwide",
-    settings: {
-      jobspyResultsWanted: "1",
-    },
-  },
-  usajobs: {
-    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: "united states",
-    settings: {
-      // Credentials are intentionally absent for public/demo health checks;
-      // remoteapis treats missing USAJOBS credentials as a non-fatal empty result.
-      jobspyResultsWanted: "1",
-    },
-  },
   gradcracker: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
@@ -202,7 +96,7 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
     settings: {
-      workingnomadsMaxJobsPerTerm: "1",
+      jobspyResultsWanted: "1",
     },
   },
   golangjobs: {
@@ -233,10 +127,19 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
       naukriMaxJobsPerTerm: "1",
     },
   },
-  everjobs: {
+  fiveamsat: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
-    selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
-    settings: {},
+    selectedCountry: "egypt",
+    settings: {
+      fiveamsatMaxJobsPerTerm: "1",
+    },
+  },
+  wazzuf: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "egypt",
+    settings: {
+      wazzufMaxJobsPerTerm: "1",
+    },
   },
   manual: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,

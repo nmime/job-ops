@@ -4,6 +4,7 @@ export type LlmProvider =
   | "ollama"
   | "openai"
   | "openai_compatible"
+  | "glm"
   | "gemini"
   | "gemini_cli"
   | "codex";
@@ -106,6 +107,7 @@ export type ProviderStrategy = {
 export interface LlmApiError extends Error {
   status?: number;
   body?: string;
+  retryAfterMs?: number;
 }
 
 export function getLlmMessageText(content: LlmMessageContent): string {

@@ -10,7 +10,9 @@
       "@/*": ["src/*"],
       "@server/*": ["src/server/*"],
       "@client/*": ["src/client/*"],
-      "@shared/*": ["../shared/dist/*"]
+      "@shared/*": ["../shared/dist/*"],
+      "@career-boards/workday": ["../career-boards/workday/src/index.ts"],
+      "@career-boards/workday/*": ["../career-boards/workday/src/*"]
     }
   },
   "include": ["src/server/**/*"]
