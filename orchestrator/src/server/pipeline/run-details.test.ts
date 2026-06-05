@@ -105,4 +105,33 @@ describe("buildPipelineRunSavedDetails", () => {
       }),
     ]);
   });
+
+  it("captures a legacy config with missing sources without throwing", async () => {
+    const savedDetails = await buildPipelineRunSavedDetails({
+      topN: 3,
+      minSuitabilityScore: 55,
+      outputDir: "/tmp",
+    } as never);
+
+    expect(savedDetails.requestedConfig.sources).toEqual([]);
+    expect(savedDetails.effectiveConfig.compatibleSources).toEqual([]);
+    expect(savedDetails.effectiveConfig.skippedSources).toEqual([]);
+  });
+
+  it("captures legacy configs with null or malformed sources without throwing", async () => {
+    const sourceCases = [null, "linkedin", { linkedin: true }, 123] as const;
+
+    for (const sources of sourceCases) {
+      const savedDetails = await buildPipelineRunSavedDetails({
+        topN: 3,
+        minSuitabilityScore: 55,
+        sources,
+        outputDir: "/tmp",
+      } as never);
+
+      expect(savedDetails.requestedConfig.sources).toEqual([]);
+      expect(savedDetails.effectiveConfig.compatibleSources).toEqual([]);
+      expect(savedDetails.effectiveConfig.skippedSources).toEqual([]);
+    }
+  });
 });

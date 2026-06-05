@@ -1,3 +1,4 @@
+import type { ExtractorSourceId } from "@shared/extractors";
 import {
   createLocationIntentFromLegacyInputs,
   planLocationSources,
@@ -16,6 +17,12 @@ import type {
 import { getEffectiveSettings } from "../services/settings";
 
 type SnapshotLocationIntent = NonNullable<PipelineConfig["locationIntent"]>;
+
+function resolveSnapshotSources(
+  sources: PipelineConfig["sources"] | null | undefined,
+): ExtractorSourceId[] {
+  return Array.isArray(sources) ? [...sources] : [];
+}
 
 function resolveLocationIntentSnapshot(args: {
   config: PipelineConfig;
@@ -39,7 +46,7 @@ export function buildRequestedConfigSnapshot(
   return {
     topN: config.topN,
     minSuitabilityScore: config.minSuitabilityScore,
-    sources: [...config.sources],
+    sources: resolveSnapshotSources(config.sources),
     enableCrawling: config.enableCrawling !== false,
     enableScoring: config.enableScoring !== false,
     enableImporting: config.enableImporting !== false,

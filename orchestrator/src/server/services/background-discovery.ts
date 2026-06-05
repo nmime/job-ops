@@ -109,7 +109,7 @@ export function getBackgroundDiscoveryConfigFromEnv(
 function buildPipelineConfig(
   config: BackgroundDiscoveryConfig,
 ): Partial<PipelineConfig> {
-  return {
+  const pipelineConfig: Partial<PipelineConfig> = {
     topN: config.topN,
     minSuitabilityScore: config.minSuitabilityScore,
     sources: config.sources,
@@ -117,6 +117,10 @@ function buildPipelineConfig(
     // challenge solving. Manual/UI pipeline runs keep the default pause mode.
     pauseOnChallenges: false,
   };
+
+  return Object.fromEntries(
+    Object.entries(pipelineConfig).filter(([, value]) => value !== undefined),
+  ) as Partial<PipelineConfig>;
 }
 
 async function wait(ms: number): Promise<void> {

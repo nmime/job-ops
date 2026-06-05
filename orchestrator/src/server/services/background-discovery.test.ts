@@ -53,6 +53,23 @@ describe("background discovery service", () => {
     service.stop();
   });
 
+  it("omits unset optional overrides from the background pipeline config", async () => {
+    const runPipeline = vi.fn().mockResolvedValue({ success: true });
+    const service = createBackgroundDiscoveryService(
+      getBackgroundDiscoveryConfigFromEnv({
+        JOBOPS_BACKGROUND_DISCOVERY_ENABLED: "true",
+        JOBOPS_BACKGROUND_DISCOVERY_MIN_INTERVAL_MS: "0",
+      }),
+      { runPipeline, autoSolvePendingChallengesWhile: vi.fn() },
+    );
+
+    await expect(service.triggerOnce("manual")).resolves.toBe("started");
+
+    expect(runPipeline).toHaveBeenCalledWith({
+      pauseOnChallenges: false,
+    });
+  });
+
   it("does not overlap runs or bypass cooldown", async () => {
     let resolveRun: (() => void) | undefined;
     const runPipeline = vi.fn(

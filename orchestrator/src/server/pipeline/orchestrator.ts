@@ -68,6 +68,17 @@ const DEFAULT_CONFIG: PipelineConfig = {
   enableAutoTailoring: true,
 };
 
+function mergePipelineConfig(
+  config: Partial<PipelineConfig>,
+  locationIntent: NonNullable<PipelineConfig["locationIntent"]>,
+): PipelineConfig {
+  const definedConfig = Object.fromEntries(
+    Object.entries(config).filter(([, value]) => value !== undefined),
+  ) as Partial<PipelineConfig>;
+
+  return { ...DEFAULT_CONFIG, ...definedConfig, locationIntent };
+}
+
 type TenantPipelineState = {
   isRunning: boolean;
   activePipelineRunId: string | null;
@@ -252,7 +263,7 @@ export async function runPipeline(
   tenantState.cancelRequestedAt = null;
   resetProgress();
   const locationIntent = await resolveLocationIntent(config);
-  const mergedConfig = { ...DEFAULT_CONFIG, ...config, locationIntent };
+  const mergedConfig = mergePipelineConfig(config, locationIntent);
   const configSnapshot = {
     topN: mergedConfig.topN,
     minSuitabilityScore: mergedConfig.minSuitabilityScore,
