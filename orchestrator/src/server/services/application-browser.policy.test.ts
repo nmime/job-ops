@@ -54,6 +54,22 @@ describe("portal auto-apply safety policy", () => {
     });
   });
 
+
+  it("allows supported HTTP application, direct, or source URLs when portal gates and allowlist match", () => {
+    for (const url of [
+      "https://boards.greenhouse.io/acme/jobs/1",
+      "https://jobs.example.com/apply/direct",
+      "https://careers.example.org/jobs/source",
+    ]) {
+      expect(
+        evaluatePortalDomainPolicy(url, {
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS:
+            "greenhouse.io,jobs.example.com,careers.example.org",
+        }),
+      ).toMatchObject({ allowed: true });
+    }
+  });
+
   it("requires a validated session for LinkedIn and Indeed by default", () => {
     expect(
       evaluatePortalDomainPolicy("https://linkedin.com/jobs/view/1", {

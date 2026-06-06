@@ -16,7 +16,10 @@ export async function scoreJobsStep(args: {
   shouldCancel?: () => boolean;
 }): Promise<{ unprocessedJobs: Job[]; scoredJobs: ScoredJob[] }> {
   logger.info("Running scoring step");
-  const unprocessedJobs = await jobsRepo.getUnscoredDiscoveredJobs();
+  const [unprocessedJobs, scoredBacklogJobs] = await Promise.all([
+    jobsRepo.getUnscoredDiscoveredJobs(),
+    jobsRepo.getScoredDiscoveredBacklogJobs(),
+  ]);
 
   // Check if auto-skip threshold is configured
   const autoSkipThresholdRaw = await settingsRepo.getSetting(
@@ -35,7 +38,12 @@ export async function scoreJobsStep(args: {
     currentJob: undefined,
   });
 
-  const scoredJobs: ScoredJob[] = [];
+  const scoredJobs: ScoredJob[] = scoredBacklogJobs.map((job) => ({
+    ...job,
+    suitabilityScore: job.suitabilityScore,
+    suitabilityReason: job.suitabilityReason ?? "",
+    pipelineProcessingSource: "scored_backlog",
+  }));
   let completed = 0;
 
   await asyncPool({
@@ -60,6 +68,7 @@ export async function scoreJobsStep(args: {
           ...job,
           suitabilityScore: job.suitabilityScore as number,
           suitabilityReason: job.suitabilityReason ?? "",
+          pipelineProcessingSource: "newly_scored",
         });
         return;
       }
@@ -117,6 +126,7 @@ export async function scoreJobsStep(args: {
         ...job,
         suitabilityScore: score,
         suitabilityReason: reason,
+        pipelineProcessingSource: "newly_scored",
       });
     },
   });
@@ -124,6 +134,7 @@ export async function scoreJobsStep(args: {
   progressHelpers.scoringComplete(scoredJobs.length);
   logger.info("Scoring step completed", {
     scoredJobs: scoredJobs.length,
+    scoredBacklogJobs: scoredBacklogJobs.length,
     concurrency: SCORING_CONCURRENCY,
   });
 

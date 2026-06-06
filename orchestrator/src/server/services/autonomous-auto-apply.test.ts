@@ -41,6 +41,14 @@ vi.mock("@server/tenancy/context", () => ({
 
 vi.mock("./auto-apply", () => ({
   resolveAutoApplyRecipient: mocks.resolveAutoApplyRecipient,
+  resolveHttpApplicationUrl: (job: {
+    applicationLink?: string | null;
+    jobUrlDirect?: string | null;
+    jobUrl?: string | null;
+  }) =>
+    [job.applicationLink, job.jobUrlDirect, job.jobUrl]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .find((value) => /^https?:\/\//i.test(value)) ?? null,
   sendAutoApplication: mocks.sendAutoApplication,
 }));
 
@@ -140,6 +148,102 @@ describe("autonomous auto-apply", () => {
     delete process.env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED;
     clearAutonomousPortalReviewBlocksForTests();
     vi.useRealTimers();
+  });
+
+
+  it("routes explicit mailto/email-only jobs through email even when browser automation is enabled", () => {
+    const job = createJob({
+      status: "ready",
+      applicationLink: "mailto:jobs@example.com",
+      jobUrlDirect: "https://ats.example.com/apply/also-present",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        job,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "ats.example.com",
+        }),
+      ),
+    ).toMatchObject({ action: "email_ready", recipient: "jobs@example.com" });
+  });
+
+  it("routes supported HTTP application, direct, or source URLs to portal only when full-auto gates and allowlist are enabled", () => {
+    const config = getAutonomousAutoApplyConfigFromEnv({
+      JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "ats.example.com,source.example.com",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        createJob({
+          status: "ready",
+          applicationLink: "https://ats.example.com/apply/application",
+          jobUrlDirect: null,
+          jobUrl: "https://source.example.com/jobs/application",
+        }),
+        config,
+      ),
+    ).toMatchObject({ action: "portal_ready" });
+    expect(
+      classifyAutonomousAutoApply(
+        createJob({
+          status: "ready",
+          applicationLink: null,
+          jobUrlDirect: "https://ats.example.com/apply/direct",
+          jobUrl: "https://source.example.com/jobs/direct",
+        }),
+        config,
+      ),
+    ).toMatchObject({ action: "portal_ready" });
+    expect(
+      classifyAutonomousAutoApply(
+        createJob({
+          status: "ready",
+          applicationLink: null,
+          jobUrlDirect: null,
+          jobUrl: "https://source.example.com/jobs/source",
+        }),
+        config,
+      ),
+    ).toMatchObject({ action: "portal_ready" });
+
+    expect(
+      classifyAutonomousAutoApply(
+        createJob({
+          status: "ready",
+          applicationLink: null,
+          jobUrlDirect: "https://ats.example.com/apply/disabled",
+        }),
+        getAutonomousAutoApplyConfigFromEnv({}),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "browser_apply_disabled",
+    });
+  });
+
+  it("marks no route as needs review without claiming an application route", () => {
+    expect(
+      classifyAutonomousAutoApply(
+        createJob({
+          status: "ready",
+          applicationLink: null,
+          jobUrlDirect: null,
+          jobUrl: "",
+          emails: null,
+          jobDescription: null,
+          jobBrief: null,
+        }),
+        getAutonomousAutoApplyConfigFromEnv({}),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "no_application_route",
+    });
   });
 
   it("is disabled and dry-run by default", () => {
@@ -519,7 +623,7 @@ describe("autonomous auto-apply", () => {
       ),
     ).toMatchObject({
       action: "review_only_portal",
-      reasonCode: "portal_auto_apply_disabled",
+      reasonCode: "browser_apply_disabled",
     });
 
     expect(

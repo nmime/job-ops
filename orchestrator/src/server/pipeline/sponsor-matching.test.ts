@@ -24,6 +24,7 @@ vi.mock("../services/scorer", () => ({
 vi.mock("../repositories/jobs", () => ({
   updateJob: vi.fn(),
   getUnscoredDiscoveredJobs: vi.fn(),
+  getScoredDiscoveredBacklogJobs: vi.fn(),
   getJobById: vi.fn(),
   createJobs: vi.fn(),
   getAllJobUrls: vi.fn(),
@@ -84,6 +85,7 @@ describe("Sponsor Match Calculation", () => {
     updateJob = jobsRepo.updateJob as ReturnType<typeof vi.fn>;
     getUnscoredDiscoveredJobs =
       jobsRepo.getUnscoredDiscoveredJobs as ReturnType<typeof vi.fn>;
+    vi.mocked(jobsRepo.getScoredDiscoveredBacklogJobs).mockResolvedValue([]);
     createJobs = jobsRepo.createJobs as ReturnType<typeof vi.fn>;
 
     // Default mock implementations

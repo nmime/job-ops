@@ -7,6 +7,7 @@ import { getDataDir } from "@server/config/dataDir";
 import { getPaidChallengeSolverOptions } from "@server/services/captcha-solver";
 import { getPdfPath } from "@server/services/pdf";
 import { getProfile } from "@server/services/profile";
+import { resolveHttpApplicationUrl } from "./auto-apply";
 import type { Job, ResumeProfile } from "@shared/types";
 import type { Browser, Locator, Page } from "playwright";
 
@@ -674,16 +675,13 @@ function summarizeRequiredIssues(issues: RequiredFieldIssue[]): string {
 }
 
 function getApplicationUrl(job: Job): string {
-  const raw =
-    cleanString(job.applicationLink) ??
-    cleanString(job.jobUrlDirect) ??
-    cleanString(job.jobUrl);
-  if (!raw || !/^https?:\/\//i.test(raw)) {
+  const url = resolveHttpApplicationUrl(job);
+  if (!url) {
     throw badRequest(
       "Full-auto browser apply requires an http(s) application URL.",
     );
   }
-  return raw;
+  return url;
 }
 
 function splitName(profile: ResumeProfile | null): {

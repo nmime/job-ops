@@ -1631,6 +1631,11 @@ describe.sequential("Jobs API routes", () => {
   it("auto-applies a ready job by sending the real application", async () => {
     const { createJob, updateJob } = await import("@server/repositories/jobs");
     const { sendAutoApplication } = await import("@server/services/auto-apply");
+    const { submitPortalApplication } = await import(
+      "@server/services/application-browser"
+    );
+    vi.mocked(sendAutoApplication).mockClear();
+    vi.mocked(submitPortalApplication).mockClear();
     const { trackCanonicalActivationEvent } = await import(
       "@server/services/activation-funnel"
     );
@@ -1647,7 +1652,7 @@ describe.sequential("Jobs API routes", () => {
     const res = await fetch(`${baseUrl}/api/jobs/${job.id}/auto-apply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirm: true }),
+      body: JSON.stringify({ confirm: true, enableBrowser: true }),
     });
     const body = await res.json();
 
@@ -1658,6 +1663,7 @@ describe.sequential("Jobs API routes", () => {
     expect(sendAutoApplication).toHaveBeenCalledWith(
       expect.objectContaining({ id: job.id, status: "ready" }),
     );
+    expect(submitPortalApplication).not.toHaveBeenCalled();
     expect(trackCanonicalActivationEvent).toHaveBeenCalledWith(
       "application_marked_applied",
       expect.objectContaining({
@@ -1667,6 +1673,105 @@ describe.sequential("Jobs API routes", () => {
         urlPath: "/jobs",
       }),
     );
+  });
+
+
+  it("auto-applies HTTP jobs by browser only when explicitly enabled", async () => {
+    const { createJob, updateJob } = await import("@server/repositories/jobs");
+    const { sendAutoApplication } = await import("@server/services/auto-apply");
+    const { submitPortalApplication } = await import(
+      "@server/services/application-browser"
+    );
+    vi.mocked(sendAutoApplication).mockClear();
+    vi.mocked(submitPortalApplication).mockResolvedValueOnce({
+      mode: "browser",
+      status: "submitted",
+      url: "https://ats.example.com/apply/http",
+      finalUrl: "https://ats.example.com/apply/http/complete",
+      submittedAt: "2026-06-06T00:00:00.000Z",
+      fieldsFilled: 4,
+      resumeUploaded: true,
+      submitClicked: true,
+      captcha: { attempted: false, solved: false, type: null, provider: null },
+    });
+
+    const job = await createJob({
+      source: "manual",
+      title: "HTTP Apply Role",
+      employer: "Acme",
+      jobUrl: "https://source.example.com/job/http",
+      applicationLink: "https://ats.example.com/apply/http",
+      jobDescription: "Test description",
+    });
+    await updateJob(job.id, { status: "ready" });
+
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/auto-apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, enableBrowser: true }),
+    });
+    const body = await res.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe("applied");
+    expect(body.data.autoApply.mode).toBe("browser");
+    expect(submitPortalApplication).toHaveBeenCalledWith(
+      expect.objectContaining({ id: job.id, status: "ready" }),
+      expect.objectContaining({ allowCaptcha: false, dryRun: false }),
+    );
+    expect(sendAutoApplication).not.toHaveBeenCalled();
+  });
+
+  it("does not mark browser needs-review results as applied", async () => {
+    const { createJob, updateJob } = await import("@server/repositories/jobs");
+    const { submitPortalApplication } = await import(
+      "@server/services/application-browser"
+    );
+    vi.mocked(submitPortalApplication).mockResolvedValueOnce({
+      mode: "browser",
+      status: "needs_review",
+      url: "https://ats.example.com/apply/captcha",
+      finalUrl: "https://ats.example.com/apply/captcha",
+      submittedAt: null,
+      fieldsFilled: 2,
+      resumeUploaded: false,
+      submitClicked: false,
+      captcha: {
+        attempted: false,
+        solved: false,
+        type: "recaptcha-v2",
+        provider: null,
+      },
+      reason: "CAPTCHA/login/session/required fields need review.",
+      reasonCode: "captcha_challenge",
+      reviewReason: "needs_captcha",
+    });
+
+    const job = await createJob({
+      source: "manual",
+      title: "Needs Review Role",
+      employer: "Acme",
+      jobUrl: "https://source.example.com/job/needs-review",
+      applicationLink: "https://ats.example.com/apply/captcha",
+      jobDescription: "Test description",
+    });
+    await updateJob(job.id, { status: "ready" });
+
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/auto-apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, enableBrowser: true }),
+    });
+    const body = await res.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe("ready");
+    expect(body.data.appliedAt).toBeNull();
+    expect(body.data.autoApply).toMatchObject({
+      mode: "browser",
+      status: "needs_review",
+      reasonCode: "captcha_challenge",
+    });
   });
 
   it("requires explicit confirmation before auto-applying", async () => {

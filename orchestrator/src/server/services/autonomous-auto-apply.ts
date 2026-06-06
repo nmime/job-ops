@@ -16,7 +16,11 @@ import {
   submitPortalApplication,
 } from "./application-browser";
 import { transitionStage } from "./applicationTracking";
-import { resolveAutoApplyRecipient, sendAutoApplication } from "./auto-apply";
+import {
+  resolveAutoApplyRecipient,
+  resolveHttpApplicationUrl,
+  sendAutoApplication,
+} from "./auto-apply";
 import {
   getJobPdfFreshness,
   resolvePdfFingerprintContext,
@@ -172,10 +176,7 @@ export function classifyAutonomousAutoApply(
     return { action: "not_ready", reason: "Job is not READY." };
   }
 
-  const applicationUrl =
-    cleanHttpUrl(job.applicationLink) ??
-    cleanHttpUrl(job.jobUrlDirect) ??
-    cleanHttpUrl(job.jobUrl);
+  const applicationUrl = resolveHttpApplicationUrl(job);
   const hasCaptchaSignal =
     containsCaptchaSignal(job.applicationLink) ||
     containsCaptchaSignal(job.jobUrl) ||
@@ -249,15 +250,13 @@ export function classifyAutonomousAutoApply(
 
   return {
     action: "review_only_portal",
-    reasonCode: "portal_auto_apply_disabled",
-    reason:
-      "No application email found; portal applications stay human-in-loop unless JOBOPS_FULL_AUTO_APPLY_ENABLED=true and JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED=true.",
+    reason: applicationUrl
+      ? "Browser/portal application is available but full-auto browser submission is disabled."
+      : "No application route was found for this job.",
+    reasonCode: applicationUrl
+      ? "browser_apply_disabled"
+      : "no_application_route",
   };
-}
-
-function cleanHttpUrl(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  return trimmed && /^https?:\/\//i.test(trimmed) ? trimmed : null;
 }
 
 function getAutonomousMode(): AutonomousAutoApplyJobPayload["mode"] {

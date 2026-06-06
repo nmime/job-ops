@@ -12,6 +12,7 @@ vi.mock("@infra/logger", () => ({
 
 vi.mock("@server/repositories/jobs", () => ({
   getUnscoredDiscoveredJobs: vi.fn(),
+  getScoredDiscoveredBacklogJobs: vi.fn(),
   updateJob: vi.fn(),
 }));
 
@@ -59,6 +60,7 @@ describe("scoreJobsStep auto-skip behavior", () => {
         suitabilityReason: null,
       }),
     ]);
+    vi.mocked(jobsRepo.getScoredDiscoveredBacklogJobs).mockResolvedValue([]);
     vi.mocked(jobsRepo.updateJob).mockResolvedValue(null);
     vi.mocked(settingsRepo.getSetting).mockResolvedValue(null);
     vi.mocked(scorer.scoreJobSuitability).mockResolvedValue({
@@ -239,6 +241,38 @@ describe("scoreJobsStep auto-skip behavior", () => {
     expect(vi.mocked(jobsRepo.updateJob)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(progressHelpers.scoringJob)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(progressHelpers.scoringComplete)).toHaveBeenCalledWith(2);
+  });
+
+
+  it("loads cached scored discovered backlog and tags it for pipeline processing", async () => {
+    const jobsRepo = await import("@server/repositories/jobs");
+    const scorer = await import("@server/services/scorer");
+
+    vi.mocked(jobsRepo.getUnscoredDiscoveredJobs).mockResolvedValue([]);
+    vi.mocked(jobsRepo.getScoredDiscoveredBacklogJobs).mockResolvedValue([
+      createJob({
+        id: "backlog-http",
+        status: "discovered",
+        title: "Backlog Role",
+        suitabilityScore: 82,
+        suitabilityReason: "Cached fit",
+        applicationLink: null,
+        jobUrlDirect: "https://ats.example.com/apply/backlog",
+      }),
+    ]);
+
+    const result = await scoreJobsStep({ profile: {} });
+
+    expect(result.scoredJobs).toEqual([
+      expect.objectContaining({
+        id: "backlog-http",
+        suitabilityScore: 82,
+        suitabilityReason: "Cached fit",
+        pipelineProcessingSource: "scored_backlog",
+      }),
+    ]);
+    expect(vi.mocked(scorer.scoreJobSuitability)).not.toHaveBeenCalled();
+    expect(vi.mocked(jobsRepo.updateJob)).not.toHaveBeenCalled();
   });
 
   it("stops before processing when cancellation is requested", async () => {

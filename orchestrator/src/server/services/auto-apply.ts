@@ -45,7 +45,7 @@ type MailMessage = {
   attachments: MailAttachment[];
 };
 
-export type AutoApplyResult = {
+export type EmailAutoApplyResult = {
   mode: "email";
   recipient: string;
   subject: string;
@@ -55,7 +55,9 @@ export type AutoApplyResult = {
   idempotent?: boolean;
 };
 
-function cleanString(value: unknown): string | null {
+export type AutoApplyResult = EmailAutoApplyResult;
+
+export function cleanString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
@@ -85,6 +87,31 @@ export function resolveAutoApplyRecipient(
       jobBrief: job.jobBrief,
     })?.address ?? null
   );
+}
+
+
+export function resolveHttpApplicationUrl(
+  job: Pick<Job, "applicationLink" | "jobUrlDirect" | "jobUrl">,
+): string | null {
+  for (const raw of [job.applicationLink, job.jobUrlDirect, job.jobUrl]) {
+    const value = cleanString(raw);
+    if (value && /^https?:\/\//i.test(value)) return value;
+  }
+  return null;
+}
+
+export function hasProcessableApplicationRoute(
+  job: Pick<
+    Job,
+    | "applicationLink"
+    | "jobUrlDirect"
+    | "jobUrl"
+    | "jobDescription"
+    | "jobBrief"
+    | "emails"
+  >,
+): boolean {
+  return Boolean(resolveAutoApplyRecipient(job) ?? resolveHttpApplicationUrl(job));
 }
 
 function hashAutoApplicationContent(input: {

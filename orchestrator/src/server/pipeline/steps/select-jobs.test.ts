@@ -34,6 +34,49 @@ describe("selectJobsStep", () => {
     expect(selected.map((job) => job.id)).toEqual(["a", "c"]);
   });
 
+  it("selects across newly scored jobs and cached scored backlog before threshold, sort, tie-break, and topN", async () => {
+    const settingsRepo = await import("@server/repositories/settings");
+    vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+      locationSearchScope: "remote_worldwide_prioritize_selected",
+      jobspyCountryIndeed: "croatia",
+      searchCities: "Zagreb",
+    } as any);
+
+    const jobs = [
+      {
+        id: "new-low",
+        suitabilityScore: 49,
+        suitabilityReason: "below threshold",
+        pipelineProcessingSource: "newly_scored",
+      },
+      {
+        id: "backlog-high",
+        suitabilityScore: 91,
+        suitabilityReason: "cached",
+        pipelineProcessingSource: "scored_backlog",
+        location: "Remote - Worldwide",
+      },
+      {
+        id: "new-zagreb",
+        suitabilityScore: 91,
+        suitabilityReason: "new",
+        pipelineProcessingSource: "newly_scored",
+        location: null,
+        locationEvidence: { location: "Zagreb, Croatia", country: "croatia" },
+      },
+    ] as any;
+
+    const selected = await selectJobsStep({
+      scoredJobs: jobs,
+      mergedConfig: { ...baseConfig, topN: 2 },
+    });
+
+    expect(selected.map((job) => job.id)).toEqual([
+      "new-zagreb",
+      "backlog-high",
+    ]);
+  });
+
   it("breaks score ties toward selected locations when requested", async () => {
     const settingsRepo = await import("@server/repositories/settings");
     vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({

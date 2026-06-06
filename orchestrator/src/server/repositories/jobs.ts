@@ -31,6 +31,7 @@ import {
   isNull,
   lt,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import { db, schema } from "../db/index";
@@ -805,6 +806,37 @@ export async function getUnscoredDiscoveredJobs(
         eq(jobs.tenantId, tenantId),
         eq(jobs.status, "discovered"),
         isNull(jobs.suitabilityScore),
+      ),
+    )
+    .orderBy(desc(jobs.discoveredAt));
+
+  const rows =
+    typeof limit === "number" ? await query.limit(limit) : await query;
+  return rows.map(mapRowToJob);
+}
+
+/**
+ * Get discovered jobs that already have a cached score and a processable
+ * application route for proactive backlog processing.
+ */
+export async function getScoredDiscoveredBacklogJobs(
+  limit?: number,
+): Promise<Job[]> {
+  const tenantId = getActiveTenantId();
+  const query = db
+    .select()
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.tenantId, tenantId),
+        eq(jobs.status, "discovered"),
+        isNotNull(jobs.suitabilityScore),
+        or(
+          isNotNull(jobs.applicationLink),
+          isNotNull(jobs.jobUrlDirect),
+          isNotNull(jobs.jobUrl),
+          isNotNull(jobs.emails),
+        ),
       ),
     )
     .orderBy(desc(jobs.discoveredAt));

@@ -7,14 +7,77 @@ import { resolveRequestOrigin } from "@server/infra/request-origin";
 import * as jobsRepo from "@server/repositories/jobs";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
 import { transitionStage } from "@server/services/applicationTracking";
-import { sendAutoApplication } from "@server/services/auto-apply";
+import {
+  type EmailAutoApplyResult,
+  resolveAutoApplyRecipient,
+  resolveHttpApplicationUrl,
+  sendAutoApplication,
+} from "@server/services/auto-apply";
+import { submitPortalApplication } from "@server/services/application-browser";
 import { simulateApplyJob } from "@server/services/demo-simulator";
 import { notifyJobCompleteWebhook } from "@server/services/jobs/webhooks";
 import * as visaSponsors from "@server/services/visa-sponsors/index";
+import type { Job } from "@shared/types";
 import { type Request, type Response, Router } from "express";
 import { hydrateJobPdfFreshness, requireJob, toJobsRouteError } from "./shared";
 
 export const jobsApplicationRouter = Router();
+
+type JobsRouteAutoApplyResult =
+  | EmailAutoApplyResult
+  | Awaited<ReturnType<typeof submitPortalApplication>>;
+
+function parseBooleanFlag(value: unknown): boolean {
+  return (
+    value === true ||
+    value === "true" ||
+    value === "1" ||
+    value === 1 ||
+    value === "yes"
+  );
+}
+
+async function runJobsRouteAutoApply(
+  job: Job,
+  body: unknown,
+): Promise<JobsRouteAutoApplyResult> {
+  const hydratedJob = await hydrateJobPdfFreshness(job);
+  const httpUrl = resolveHttpApplicationUrl(hydratedJob);
+  const recipient = resolveAutoApplyRecipient(hydratedJob);
+  const explicitEmailRoute = Boolean(
+    hydratedJob.applicationLink?.trim().toLowerCase().startsWith("mailto:") ||
+      (recipient && !hydratedJob.applicationLink && !hydratedJob.jobUrlDirect),
+  );
+  const enableBrowser =
+    parseBooleanFlag((body as { enableBrowser?: unknown })?.enableBrowser) ||
+    parseBooleanFlag((body as { browserApply?: unknown })?.browserApply) ||
+    parseBooleanFlag((body as { portalApply?: unknown })?.portalApply);
+
+  if (explicitEmailRoute) {
+    return sendAutoApplication(hydratedJob);
+  }
+
+  if (httpUrl && enableBrowser) {
+    return submitPortalApplication(hydratedJob, {
+      allowCaptcha: parseBooleanFlag(
+        (body as { allowCaptcha?: unknown })?.allowCaptcha,
+      ),
+      dryRun: parseBooleanFlag((body as { dryRun?: unknown })?.dryRun),
+    });
+  }
+
+  return sendAutoApplication(hydratedJob);
+}
+
+function autoApplyMarksApplied(autoApply: JobsRouteAutoApplyResult): boolean {
+  return autoApply.mode === "email" || autoApply.status === "submitted";
+}
+
+function autoApplyStageNote(autoApply: JobsRouteAutoApplyResult): string {
+  return autoApply.mode === "email"
+    ? `Sent ${autoApply.mode} application to ${autoApply.recipient}`
+    : `Submitted browser application to ${autoApply.finalUrl || autoApply.url}`;
+}
 
 jobsApplicationRouter.post(
   "/:id/check-sponsor",
@@ -154,9 +217,14 @@ jobsApplicationRouter.post(
       }
 
       const job = await requireJob(req.params.id);
-      const autoApply = await sendAutoApplication(
-        await hydrateJobPdfFreshness(job),
-      );
+      const autoApply = await runJobsRouteAutoApply(job, req.body);
+
+      if (!autoApplyMarksApplied(autoApply)) {
+        return ok(res, {
+          ...(await hydrateJobPdfFreshness(job)),
+          autoApply,
+        });
+      }
 
       const appliedAtDate = new Date();
       const appliedAt = appliedAtDate.toISOString();
@@ -168,7 +236,7 @@ jobsApplicationRouter.post(
         {
           eventLabel: "Auto-applied",
           actor: "system",
-          note: `Sent ${autoApply.mode} application to ${autoApply.recipient}`,
+          note: autoApplyStageNote(autoApply),
         },
         null,
       );

@@ -53,4 +53,30 @@ describe("processJobsStep", () => {
     });
     expect(processJob).toHaveBeenCalledTimes(3);
   });
+
+  it("processes selected backlog and newly scored jobs through the pipeline origin", async () => {
+    const processJob = vi.fn().mockResolvedValue({ success: true });
+    const jobsToProcess = [
+      {
+        ...createScoredJob("backlog", "Cached Backlog"),
+        pipelineProcessingSource: "scored_backlog" as const,
+      },
+      {
+        ...createScoredJob("new", "Newly Scored"),
+        pipelineProcessingSource: "newly_scored" as const,
+      },
+    ];
+
+    const result = await processJobsStep({ jobsToProcess, processJob });
+
+    expect(result.processedCount).toBe(2);
+    expect(processJob).toHaveBeenCalledWith("backlog", {
+      force: false,
+      analyticsOrigin: "pipeline",
+    });
+    expect(processJob).toHaveBeenCalledWith("new", {
+      force: false,
+      analyticsOrigin: "pipeline",
+    });
+  });
 });

@@ -73,15 +73,44 @@ vi.mock("@server/services/job-brief", () => ({
   generateJobBrief: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("@server/services/auto-apply", () => ({
-  sendAutoApplication: vi.fn().mockResolvedValue({
-    mode: "email",
-    recipient: "jobs@example.com",
-    subject: "Application for Test Role at Acme",
-    messageId: "test-message-id",
-    attachedResume: false,
-  }),
-}));
+vi.mock("@server/services/auto-apply", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@server/services/auto-apply")>();
+  return {
+    ...actual,
+    sendAutoApplication: vi.fn().mockResolvedValue({
+      mode: "email",
+      recipient: "jobs@example.com",
+      subject: "Application for Test Role at Acme",
+      messageId: "test-message-id",
+      attachedResume: false,
+    }),
+  };
+});
+
+vi.mock("@server/services/application-browser", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@server/services/application-browser")
+  >();
+  return {
+    ...actual,
+    submitPortalApplication: vi.fn().mockResolvedValue({
+      mode: "browser",
+      status: "submitted",
+      url: "https://ats.example.com/apply",
+      finalUrl: "https://ats.example.com/apply/complete",
+      submittedAt: "2026-06-06T00:00:00.000Z",
+      fieldsFilled: 3,
+      resumeUploaded: true,
+      submitClicked: true,
+      captcha: {
+        attempted: false,
+        solved: false,
+        type: null,
+        provider: null,
+      },
+    }),
+  };
+});
 
 vi.mock("@server/services/profile", () => ({
   getProfile: vi.fn().mockResolvedValue({}),
