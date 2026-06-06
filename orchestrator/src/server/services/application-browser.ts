@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { badRequest, serviceUnavailable, upstreamError } from "@infra/errors";
@@ -45,6 +45,7 @@ export type BrowserAutoApplyResult = {
   };
   screenshotPath?: string;
   reason?: string;
+  reasonCode?: PortalBlockerReasonCode;
   reviewReason?: BrowserAutoApplyReviewReason;
 };
 
@@ -52,6 +53,47 @@ type BrowserAutoApplyOptions = {
   allowCaptcha?: boolean;
   /** Fill and validate only; never click the final submit/apply button. */
   dryRun?: boolean;
+};
+
+export type PortalBlockerReasonCode =
+  | "domain_not_allowlisted"
+  | "domain_blocked"
+  | "session_required"
+  | "login_wall"
+  | "captcha_challenge"
+  | "required_or_invalid_fields"
+  | "missing_success_signal"
+  | "no_submit_control";
+
+type PortalBlocker = {
+  code: PortalBlockerReasonCode;
+  reason: string;
+};
+
+type PortalReadinessSnapshot = {
+  title?: string;
+  text?: string;
+  fields?: Array<{
+    required?: boolean;
+    value?: string;
+    type?: string;
+    name?: string;
+    visible?: boolean;
+    ariaInvalid?: string;
+    validationMessage?: string;
+  }>;
+};
+
+export type PortalDomainPolicyDecision = {
+  allowed: boolean;
+  domain: string | null;
+  allowedDomains: string[];
+  blockedDomains: string[];
+  sessionRequiredDomains: string[];
+  sessionRequired: boolean;
+  hasValidatedSession: boolean;
+  reasonCode?: PortalBlockerReasonCode;
+  reason?: string;
 };
 
 type CaptchaDetection =
@@ -126,6 +168,188 @@ function hostnameOf(rawUrl: string): string {
   } catch {
     return "";
   }
+}
+
+function parseList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function normalizeDomainEntry(value: string): string | null {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return null;
+  if (trimmed === "*") return "*";
+  try {
+    return new URL(
+      trimmed.includes("://") ? trimmed : `https://${trimmed}`,
+    ).hostname
+      .replace(/^\.+/, "")
+      .replace(/^www\./, "");
+  } catch {
+    return trimmed.replace(/^\.+/, "").replace(/^www\./, "") || null;
+  }
+}
+
+function normalizeDomainList(entries: string[]): string[] {
+  return Array.from(
+    new Set(
+      entries
+        .map((entry) => normalizeDomainEntry(entry))
+        .filter((entry): entry is string => Boolean(entry)),
+    ),
+  );
+}
+
+function hostnameForUrl(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function domainMatches(
+  hostname: string | null,
+  policyDomains: string[],
+): boolean {
+  if (!hostname) return false;
+  return policyDomains.some(
+    (domain) =>
+      domain === "*" || hostname === domain || hostname.endsWith(`.${domain}`),
+  );
+}
+
+function getPortalAllowedDomains(env: NodeJS.ProcessEnv): string[] {
+  return normalizeDomainList(
+    parseList(
+      env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
+        env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS,
+    ),
+  );
+}
+
+function getPortalBlockedDomains(env: NodeJS.ProcessEnv): string[] {
+  return normalizeDomainList([
+    "linkedin.com",
+    "indeed.com",
+    ...parseList(
+      env.JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS ??
+        env.JOBOPS_FULL_AUTO_BLOCKED_DOMAINS,
+    ),
+  ]);
+}
+
+function getPortalSessionRequiredDomains(env: NodeJS.ProcessEnv): string[] {
+  return normalizeDomainList([
+    "linkedin.com",
+    "indeed.com",
+    ...parseList(
+      env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_REQUIRED_DOMAINS ??
+        env.JOBOPS_FULL_AUTO_SESSION_REQUIRED_DOMAINS,
+    ),
+  ]);
+}
+
+function getPortalValidatedSessionDomains(env: NodeJS.ProcessEnv): string[] {
+  return normalizeDomainList(
+    parseList(
+      env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS ??
+        env.JOBOPS_FULL_AUTO_SESSION_VALIDATED_DOMAINS,
+    ),
+  );
+}
+
+function getBrowserStorageStatePath(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const path =
+    env.JOBOPS_FULL_AUTO_BROWSER_STORAGE_STATE_PATH ??
+    env.JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH;
+  return path?.trim() ? path.trim() : undefined;
+}
+
+function storageStateHasSessionForDomain(
+  hostname: string,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const storageStatePath = getBrowserStorageStatePath(env);
+  if (!storageStatePath || !existsSync(storageStatePath)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(storageStatePath, "utf8")) as {
+      cookies?: Array<{ domain?: string; expires?: number }>;
+    };
+    const nowSeconds = Date.now() / 1000;
+    return (parsed.cookies ?? []).some((cookie) => {
+      const cookieDomain = normalizeDomainEntry(cookie.domain ?? "");
+      if (!cookieDomain) return false;
+      const notExpired =
+        cookie.expires === undefined ||
+        cookie.expires === -1 ||
+        cookie.expires > nowSeconds;
+      return notExpired && domainMatches(hostname, [cookieDomain]);
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function evaluatePortalDomainPolicy(
+  url: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PortalDomainPolicyDecision {
+  const domain = hostnameForUrl(url);
+  const allowedDomains = getPortalAllowedDomains(env);
+  const blockedDomains = getPortalBlockedDomains(env);
+  const sessionRequiredDomains = getPortalSessionRequiredDomains(env);
+  const sessionRequired = domainMatches(domain, sessionRequiredDomains);
+  const hasValidatedSession = Boolean(
+    domain &&
+      (domainMatches(domain, getPortalValidatedSessionDomains(env)) ||
+        storageStateHasSessionForDomain(domain, env)),
+  );
+
+  const base = {
+    domain,
+    allowedDomains,
+    blockedDomains,
+    sessionRequiredDomains,
+    sessionRequired,
+    hasValidatedSession,
+  };
+
+  if (!domain || !domainMatches(domain, allowedDomains)) {
+    return {
+      ...base,
+      allowed: false,
+      reasonCode: "domain_not_allowlisted",
+      reason:
+        "Portal domain is not in JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS/JOBOPS_FULL_AUTO_ALLOWED_DOMAINS.",
+    };
+  }
+
+  if (sessionRequired && !hasValidatedSession) {
+    return {
+      ...base,
+      allowed: false,
+      reasonCode: "session_required",
+      reason:
+        "Portal domain requires a validated browser session/storage state before automation.",
+    };
+  }
+
+  if (domainMatches(domain, blockedDomains) && !hasValidatedSession) {
+    return {
+      ...base,
+      allowed: false,
+      reasonCode: "domain_blocked",
+      reason:
+        "Portal domain is blocked for full-auto submissions unless a validated session is configured.",
+    };
+  }
+
+  return { ...base, allowed: true };
 }
 
 export function classifyPortalUrlForSession(
@@ -275,44 +499,102 @@ export function inspectPortalHtmlForAutoApply(
   };
 }
 
-async function detectPortalSessionGate(
-  page: Page,
-): Promise<PortalSessionGate | null> {
-  const urlGate = classifyPortalUrlForSession(page.url());
-  if (urlGate) return urlGate;
+function normalizeSnapshotText(snapshot: PortalReadinessSnapshot): string {
+  return `${snapshot.title ?? ""}\n${snapshot.text ?? ""}`
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
 
-  return await page
-    .evaluate<{
-      text: string;
-      hasPasswordField: boolean;
-      hasApplicationFormSignal: boolean;
-    }>(
-      `(() => {
-        const text = document.body && document.body.innerText || "";
-        const hasPasswordField = Array.from(document.querySelectorAll('input[type="password"]'))
-          .some((el) => {
-            const style = window.getComputedStyle(el);
-            return style && style.visibility !== 'hidden' && style.display !== 'none';
-          });
-        const fields = document.querySelectorAll(
-          'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select'
-        ).length;
-        const upload = document.querySelectorAll('input[type=file]').length;
-        const lowered = text.toLowerCase();
-        const hasApplicationFormSignal = upload > 0 || fields >= 3 ||
-          (fields > 0 && /resume|cv|cover letter|phone|email|work authorization|application questions/.test(lowered));
-        return { text, hasPasswordField, hasApplicationFormSignal };
-      })()`,
+function snapshotHasRequiredOrInvalidFields(
+  snapshot: PortalReadinessSnapshot,
+): boolean {
+  return (snapshot.fields ?? []).some((field) => {
+    if (field.visible === false) return false;
+    const type = field.type?.toLowerCase() ?? "text";
+    if (["hidden", "button", "submit", "reset", "file"].includes(type)) {
+      return false;
+    }
+    const value = field.value?.trim() ?? "";
+    return (
+      field.ariaInvalid?.toLowerCase() === "true" ||
+      Boolean(field.validationMessage?.trim()) ||
+      (Boolean(field.required) && !value)
+    );
+  });
+}
+
+export function detectPortalBlockerFromSnapshot(
+  snapshot: PortalReadinessSnapshot,
+  options: { includeRequiredFields?: boolean } = {},
+): PortalBlocker | null {
+  const text = normalizeSnapshotText(snapshot);
+  if (
+    /(sign in|log in|login|create an account|sign up|join now|authentication required|session expired)/.test(
+      text,
+    ) &&
+    /(apply|application|continue|submit|job)/.test(text)
+  ) {
+    return {
+      code: "login_wall",
+      reason: "Portal requires login/sign-up before application submission.",
+    };
+  }
+
+  if (
+    /(cloudflare|checking if the site connection is secure|verify you are human|security check|challenge page|captcha|recaptcha|hcaptcha|turnstile)/.test(
+      text,
     )
-    .then((state) =>
-      classifyPortalPageTextForSession({
-        url: page.url(),
-        text: state.text,
-        hasPasswordField: state.hasPasswordField,
-        hasApplicationFormSignal: state.hasApplicationFormSignal,
-      }),
-    )
-    .catch(() => null);
+  ) {
+    return {
+      code: "captcha_challenge",
+      reason: "Portal shows a CAPTCHA/challenge that requires manual review.",
+    };
+  }
+
+  if (
+    options.includeRequiredFields &&
+    (snapshotHasRequiredOrInvalidFields(snapshot) ||
+      /(required field|required fields|please complete|required|invalid|missing required)/.test(
+        text,
+      ))
+  ) {
+    return {
+      code: "required_or_invalid_fields",
+      reason:
+        "Portal has required/invalid fields that full-auto could not safely complete.",
+    };
+  }
+
+  return null;
+}
+
+async function detectPortalBlocker(
+  page: Page,
+  options: { includeRequiredFields?: boolean } = {},
+): Promise<PortalBlocker | null> {
+  return detectPortalBlockerFromSnapshot(
+    await page.evaluate<PortalReadinessSnapshot>(`(() => ({
+      title: document.title || "",
+      text: document.body && document.body.innerText || "",
+      fields: Array.from(document.querySelectorAll('input, textarea, select'))
+        .slice(0, 250)
+        .map((el) => {
+          const input = el;
+          const style = window.getComputedStyle(input);
+          return {
+            required: Boolean(input.required || input.getAttribute('aria-required') === 'true'),
+            value: input.value || "",
+            type: input.getAttribute('type') || input.tagName.toLowerCase(),
+            name: input.getAttribute('name') || input.getAttribute('id') || "",
+            visible: Boolean(input.offsetParent || input.getClientRects().length) && style.visibility !== 'hidden' && style.display !== 'none',
+            ariaInvalid: input.getAttribute('aria-invalid') || "",
+            validationMessage: input.validationMessage || "",
+          };
+        }),
+    }))()`),
+    options,
+  );
 }
 
 type RequiredFieldIssue = {
@@ -1243,24 +1525,6 @@ async function hasSuccessSignal(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function hasBlockingErrorSignal(page: Page): Promise<boolean> {
-  return await page
-    .evaluate<boolean>(
-      `(() => {
-      var text = document.body.innerText.toLowerCase();
-      var signals = [
-        "required",
-        "invalid",
-        "captcha",
-        "verification failed",
-        "please complete",
-      ];
-      return signals.some(function (signal) { return text.includes(signal); });
-    })()`,
-    )
-    .catch(() => false);
-}
-
 async function saveDebugScreenshot(
   page: Page,
   jobId: string,
@@ -1410,11 +1674,33 @@ export async function submitPortalApplication(
   }
   if (!isFullAutoBrowserSubmitEnabled()) {
     throw serviceUnavailable(
-      "Full-auto browser submission is disabled. Set JOBOPS_FULL_AUTO_APPLY_ENABLED=true to enable it.",
+      "Full-auto browser submission is disabled. Set JOBOPS_FULL_AUTO_APPLY_ENABLED=true and JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED=true to enable it.",
     );
   }
 
   const url = getApplicationUrl(job);
+  const domainPolicy = evaluatePortalDomainPolicy(url);
+  if (!domainPolicy.allowed) {
+    return {
+      mode: "browser",
+      status: "needs_review",
+      url,
+      finalUrl: url,
+      submittedAt: null,
+      fieldsFilled: 0,
+      resumeUploaded: false,
+      submitClicked: false,
+      captcha: { attempted: false, solved: false, type: null, provider: null },
+      reason:
+        domainPolicy.reason ??
+        "Portal domain is not authorized for full-auto submission.",
+      reasonCode: domainPolicy.reasonCode,
+      reviewReason:
+        domainPolicy.reasonCode === "session_required"
+          ? "needs_portal_session"
+          : undefined,
+    };
+  }
   const profile = await getProfile().catch((error) => {
     logger.warn("Full-auto browser apply could not load profile", {
       jobId: job.id,
@@ -1431,7 +1717,9 @@ export async function submitPortalApplication(
     const launched = await launchBrowser();
     browser = launched.browser;
     browserName = launched.browserName;
+    const storageState = getBrowserStorageStatePath();
     const context = await browser.newContext({
+      ...(storageState ? { storageState } : {}),
       userAgent:
         process.env.JOBOPS_FULL_AUTO_BROWSER_USER_AGENT ||
         (browserName === "firefox"
@@ -1451,8 +1739,8 @@ export async function submitPortalApplication(
     page = await openInitialApplyFlow(page);
     await installStealth(page).catch(() => undefined);
 
-    const initialGate = await detectPortalSessionGate(page);
-    if (initialGate) {
+    const preFillBlocker = await detectPortalBlocker(page);
+    if (preFillBlocker) {
       const screenshotPath = await saveDebugScreenshot(page, job.id);
       return {
         mode: "browser",
@@ -1470,8 +1758,14 @@ export async function submitPortalApplication(
           provider: null,
         },
         screenshotPath,
-        reason: initialGate.reason,
-        reviewReason: "needs_portal_session",
+        reason: preFillBlocker.reason,
+        reasonCode: preFillBlocker.code,
+        reviewReason:
+          preFillBlocker.code === "login_wall"
+            ? "needs_portal_session"
+            : preFillBlocker.code === "captcha_challenge"
+              ? "needs_captcha"
+              : undefined,
       };
     }
 
@@ -1480,8 +1774,10 @@ export async function submitPortalApplication(
     const resumeUploaded = await uploadResume(page, job);
     await page.waitForTimeout(500 + Math.floor(Math.random() * 750));
 
-    const gate = await detectPortalSessionGate(page);
-    if (gate) {
+    const postFillBlocker = await detectPortalBlocker(page, {
+      includeRequiredFields: true,
+    });
+    if (postFillBlocker) {
       const screenshotPath = await saveDebugScreenshot(page, job.id);
       return {
         mode: "browser",
@@ -1499,8 +1795,16 @@ export async function submitPortalApplication(
           provider: null,
         },
         screenshotPath,
-        reason: gate.reason,
-        reviewReason: "needs_portal_session",
+        reason: postFillBlocker.reason,
+        reasonCode: postFillBlocker.code,
+        reviewReason:
+          postFillBlocker.code === "login_wall"
+            ? "needs_portal_session"
+            : postFillBlocker.code === "captcha_challenge"
+              ? "needs_captcha"
+              : postFillBlocker.code === "required_or_invalid_fields"
+                ? "required_fields_missing"
+                : undefined,
       };
     }
 
@@ -1522,6 +1826,7 @@ export async function submitPortalApplication(
         captcha,
         screenshotPath,
         reason: captcha.message ?? "CAPTCHA could not be solved automatically.",
+        reasonCode: "captcha_challenge",
         reviewReason: "needs_captcha",
       };
     }
@@ -1544,6 +1849,7 @@ export async function submitPortalApplication(
         captcha,
         screenshotPath,
         reason: summarizeRequiredIssues(requiredIssues),
+        reasonCode: "required_or_invalid_fields",
         reviewReason: hasRequiredFile
           ? "resume_upload_missing"
           : "required_fields_missing",
@@ -1578,7 +1884,9 @@ export async function submitPortalApplication(
     await page.waitForTimeout(3_000);
 
     const success = await hasSuccessSignal(page);
-    const blockingError = await hasBlockingErrorSignal(page);
+    const postSubmitBlocker = await detectPortalBlocker(page, {
+      includeRequiredFields: true,
+    });
     if (submitClicked && success) {
       return {
         mode: "browser",
@@ -1606,12 +1914,15 @@ export async function submitPortalApplication(
       captcha,
       screenshotPath,
       reason: submitClicked
-        ? blockingError
-          ? "Portal still showed required/invalid/CAPTCHA signals after submit."
+        ? postSubmitBlocker
+          ? postSubmitBlocker.reason
           : "Portal did not show a success signal after submit."
         : "No usable submit/apply button was found.",
+      reasonCode: submitClicked
+        ? (postSubmitBlocker?.code ?? "missing_success_signal")
+        : "no_submit_control",
       reviewReason: submitClicked
-        ? blockingError
+        ? postSubmitBlocker
           ? "post_submit_blocking_error"
           : "no_success_signal"
         : "no_submit_button",

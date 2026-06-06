@@ -9,6 +9,7 @@ import { getActiveTenantId } from "@server/tenancy/context";
 import type { Job } from "@shared/types";
 import {
   classifyPortalUrlForSession,
+  evaluatePortalDomainPolicy,
   isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
   isFullAutoEnabled,
@@ -26,18 +27,19 @@ const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_RETRY_DELAY_MS = 30_000;
 const MIN_QUEUE_INTERVAL_MS = 10_000;
 const PORTAL_SESSION_REVIEW_NOTE_TITLE = "Autonomous portal session required";
+const terminalPortalReviewKeys = new Set<string>();
 
 export type AutonomousAutoApplyDecision =
   | { action: "email_ready"; recipient: string }
   | { action: "portal_ready"; url: string }
   | { action: "captcha_ready"; url: string; reason: string }
+  | { action: "review_only_portal"; reason: string; reasonCode?: string }
   | {
       action: "portal_session_required";
       reason: string;
       provider: "linkedin" | "indeed" | "generic";
     }
-  | { action: "review_only_portal"; reason: string }
-  | { action: "review_only_captcha"; reason: string }
+  | { action: "review_only_captcha"; reason: string; reasonCode?: string }
   | { action: "not_ready"; reason: string };
 
 export type AutonomousAutoApplyConfig = {
@@ -46,6 +48,11 @@ export type AutonomousAutoApplyConfig = {
   fullAutoEnabled: boolean;
   browserSubmitEnabled: boolean;
   captchaApplyEnabled: boolean;
+  portalAllowedDomains: string;
+  portalBlockedDomains: string;
+  portalSessionRequiredDomains: string;
+  portalSessionValidatedDomains: string;
+  portalStorageStatePath: string;
   intervalMs: number;
   batchLimit: number;
   retryDelayMs: number;
@@ -83,6 +90,26 @@ export function getAutonomousAutoApplyConfigFromEnv(
     fullAutoEnabled: isFullAutoEnabled(env),
     browserSubmitEnabled: isFullAutoBrowserSubmitEnabled(env),
     captchaApplyEnabled: isFullAutoCaptchaEnabled(env),
+    portalAllowedDomains:
+      env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
+      env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS ??
+      "",
+    portalBlockedDomains:
+      env.JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS ??
+      env.JOBOPS_FULL_AUTO_BLOCKED_DOMAINS ??
+      "",
+    portalSessionRequiredDomains:
+      env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_REQUIRED_DOMAINS ??
+      env.JOBOPS_FULL_AUTO_SESSION_REQUIRED_DOMAINS ??
+      "",
+    portalSessionValidatedDomains:
+      env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS ??
+      env.JOBOPS_FULL_AUTO_SESSION_VALIDATED_DOMAINS ??
+      "",
+    portalStorageStatePath:
+      env.JOBOPS_FULL_AUTO_BROWSER_STORAGE_STATE_PATH ??
+      env.JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH ??
+      "",
     intervalMs: Math.max(
       MIN_QUEUE_INTERVAL_MS,
       parsePositiveInteger(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_INTERVAL_MS) ??
@@ -107,6 +134,34 @@ function containsCaptchaSignal(value: string | null | undefined): boolean {
   return ["captcha", "recaptcha", "hcaptcha", "cloudflare challenge"].some(
     (signal) => normalized.includes(signal),
   );
+}
+
+export function clearAutonomousPortalReviewBlocksForTests(): void {
+  terminalPortalReviewKeys.clear();
+}
+
+function portalAttemptKey(job: Job, url: string): string {
+  let domain = "unknown";
+  try {
+    domain = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    domain = "unknown";
+  }
+  return `${job.id}:${domain}`;
+}
+
+function portalPolicyEnvFromConfig(
+  config: AutonomousAutoApplyConfig,
+): NodeJS.ProcessEnv {
+  return {
+    JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: config.portalAllowedDomains,
+    JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS: config.portalBlockedDomains,
+    JOBOPS_AUTONOMOUS_PORTAL_SESSION_REQUIRED_DOMAINS:
+      config.portalSessionRequiredDomains,
+    JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS:
+      config.portalSessionValidatedDomains,
+    JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH: config.portalStorageStatePath,
+  };
 }
 
 export function classifyAutonomousAutoApply(
@@ -137,6 +192,33 @@ export function classifyAutonomousAutoApply(
     };
   }
 
+  const portalDomainDecision =
+    applicationUrl && config.browserSubmitEnabled
+      ? evaluatePortalDomainPolicy(
+          applicationUrl,
+          portalPolicyEnvFromConfig(config),
+        )
+      : null;
+  if (applicationUrl && config.browserSubmitEnabled) {
+    if (terminalPortalReviewKeys.has(portalAttemptKey(job, applicationUrl))) {
+      return {
+        action: "review_only_portal",
+        reasonCode: "terminal_portal_blocker",
+        reason:
+          "Portal application has a terminal full-auto blocker recorded; human action is required before retry.",
+      };
+    }
+    if (!portalDomainDecision?.allowed) {
+      return {
+        action: "review_only_portal",
+        reasonCode: portalDomainDecision?.reasonCode,
+        reason:
+          portalDomainDecision?.reason ??
+          "Portal domain is not authorized for full-auto submission.",
+      };
+    }
+  }
+
   if (hasCaptchaSignal) {
     if (
       config.browserSubmitEnabled &&
@@ -152,8 +234,9 @@ export function classifyAutonomousAutoApply(
     }
     return {
       action: "review_only_captcha",
+      reasonCode: "captcha_challenge",
       reason:
-        "CAPTCHA/challenge signal detected; set JOBOPS_FULL_AUTO_APPLY_ENABLED=true plus CAPTCHA solver envs to submit autonomously.",
+        "CAPTCHA/challenge signal detected; paid portal CAPTCHA solving stays disabled unless explicitly enabled and budgeted.",
     };
   }
 
@@ -166,8 +249,9 @@ export function classifyAutonomousAutoApply(
 
   return {
     action: "review_only_portal",
+    reasonCode: "portal_auto_apply_disabled",
     reason:
-      "No application email found; portal applications stay human-in-loop unless JOBOPS_FULL_AUTO_APPLY_ENABLED=true.",
+      "No application email found; portal applications stay human-in-loop unless JOBOPS_FULL_AUTO_APPLY_ENABLED=true and JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED=true.",
   };
 }
 
@@ -492,6 +576,12 @@ async function processQueuedAutonomousAutoApply(
           decision.action === "captcha_ready" && config.captchaApplyEnabled,
       });
       if (browserApply.status !== "submitted") {
+        terminalPortalReviewKeys.add(
+          portalAttemptKey(
+            hydratedJob,
+            browserApply.finalUrl || browserApply.url,
+          ),
+        );
         if (browserApply.reviewReason === "needs_portal_session") {
           await recordPortalSessionReview({
             jobId: hydratedJob.id,
@@ -501,11 +591,28 @@ async function processQueuedAutonomousAutoApply(
               "Portal session is required before autonomous submission.",
           });
         }
+        await transitionStage(
+          hydratedJob.id,
+          "no_change",
+          Math.floor(Date.now() / 1000),
+          {
+            eventLabel: "Autonomous portal apply needs review",
+            actor: "system",
+            externalUrl: browserApply.finalUrl,
+            reasonCode: browserApply.reasonCode ?? "portal_needs_review",
+            eventType: "note",
+            note:
+              browserApply.reason ??
+              "Portal application could not be safely submitted automatically.",
+          },
+          null,
+        );
         logger.warn("Autonomous full-auto browser application needs review", {
           tenantId: input.tenantId,
           jobId: input.jobId,
           decision: decision.action,
           reason: browserApply.reason ?? null,
+          reasonCode: browserApply.reasonCode ?? null,
           reviewReason: browserApply.reviewReason ?? null,
           captchaType: browserApply.captcha.type,
           captchaAttempted: browserApply.captcha.attempted,

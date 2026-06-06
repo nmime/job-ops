@@ -63,6 +63,7 @@ vi.mock("./pdf-fingerprint", () => ({
 
 import {
   classifyAutonomousAutoApply,
+  clearAutonomousPortalReviewBlocksForTests,
   createAutonomousAutoApplyService,
   drainAutonomousAutoApplyQueue,
   enqueueAutonomousAutoApplyForJob,
@@ -120,6 +121,7 @@ describe("autonomous auto-apply", () => {
         : null,
     );
     mocks.getJobPdfFreshness.mockReturnValue("current");
+    clearAutonomousPortalReviewBlocksForTests();
   });
 
   afterEach(() => {
@@ -129,9 +131,14 @@ describe("autonomous auto-apply", () => {
     delete process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED;
     delete process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED;
     delete process.env.JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_REQUIRED_DOMAINS;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS;
     delete process.env.JOBOPS_FULL_AUTO_ENABLED;
     delete process.env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED;
     delete process.env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED;
+    clearAutonomousPortalReviewBlocksForTests();
     vi.useRealTimers();
   });
 
@@ -300,6 +307,8 @@ describe("autonomous auto-apply", () => {
 
   it("explicit FULL_AUTO enqueues and submits portal jobs via browser", async () => {
     process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS = "example.com";
     const portalJob = createJob({
       id: "job-portal",
       status: "ready",
@@ -452,6 +461,32 @@ describe("autonomous auto-apply", () => {
         captchaJob,
         getAutonomousAutoApplyConfigFromEnv({
           JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "example.com",
+        }),
+      ).action,
+    ).toBe("review_only_captcha");
+    expect(
+      classifyAutonomousAutoApply(
+        captchaJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED: "true",
+        }),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "domain_not_allowlisted",
+    });
+    expect(
+      classifyAutonomousAutoApply(
+        captchaJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "example.com",
+          JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED: "true",
         }),
       ).action,
     ).toBe("captcha_ready");
@@ -460,10 +495,150 @@ describe("autonomous auto-apply", () => {
         captchaJob,
         getAutonomousAutoApplyConfigFromEnv({
           JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "example.com",
           JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED: "false",
         }),
       ).action,
     ).toBe("review_only_captcha");
+  });
+
+  it("requires explicit portal enablement and an allowed domain before browser submit", () => {
+    const portalJob = createJob({
+      id: "job-portal-policy",
+      status: "ready",
+      applicationLink: "https://jobs.example.com/apply",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        portalJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+        }),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "portal_auto_apply_disabled",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        portalJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+        }),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "domain_not_allowlisted",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        portalJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "example.com",
+        }),
+      ).action,
+    ).toBe("portal_ready");
+  });
+
+  it("blocks LinkedIn and Indeed unless an allowed domain has a validated session", () => {
+    const linkedInJob = createJob({
+      id: "job-linkedin",
+      status: "ready",
+      applicationLink: "https://www.linkedin.com/jobs/view/123",
+    });
+    const config = getAutonomousAutoApplyConfigFromEnv({
+      JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "linkedin.com,indeed.com",
+    });
+
+    expect(classifyAutonomousAutoApply(linkedInJob, config)).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "session_required",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        linkedInJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "linkedin.com",
+          JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS: "linkedin.com",
+        }),
+      ).action,
+    ).toBe("portal_ready");
+  });
+
+  it("records a terminal blocker after portal needs-review so the same job/domain is not retried", async () => {
+    process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS = "example.com";
+    const portalJob = createJob({
+      id: "job-terminal",
+      status: "ready",
+      applicationLink: "https://example.com/apply",
+      pdfPath: "data/pdfs/job-terminal.pdf",
+      pdfSource: "uploaded",
+    });
+    mocks.submitPortalApplication.mockResolvedValueOnce({
+      mode: "browser",
+      status: "needs_review",
+      url: "https://example.com/apply",
+      finalUrl: "https://example.com/apply",
+      submittedAt: null,
+      fieldsFilled: 4,
+      resumeUploaded: true,
+      submitClicked: false,
+      captcha: { attempted: false, solved: false, type: null, provider: null },
+      reason: "Portal requires login/sign-up before application submission.",
+      reasonCode: "login_wall",
+    });
+    mocks.reserveNext
+      .mockResolvedValueOnce({
+        id: "queue-job-terminal",
+        queue: "autonomous_auto_apply",
+        payload: {
+          tenantId: "tenant-test",
+          jobId: "job-terminal",
+          requestedAt: "2026-05-04T10:00:00.000Z",
+          requestedBy: "system",
+          mode: "full_auto",
+        },
+        acceptedAt: "2026-05-04T10:00:00.000Z",
+      })
+      .mockResolvedValueOnce(null);
+    mocks.getJobById.mockResolvedValue(portalJob);
+
+    await drainAutonomousAutoApplyQueue();
+
+    expect(mocks.submitPortalApplication).toHaveBeenCalledTimes(1);
+    expect(mocks.transitionStage).toHaveBeenCalledWith(
+      "job-terminal",
+      "no_change",
+      expect.any(Number),
+      expect.objectContaining({
+        reasonCode: "login_wall",
+        eventType: "note",
+      }),
+      null,
+    );
+    expect(
+      classifyAutonomousAutoApply(
+        portalJob,
+        getAutonomousAutoApplyConfigFromEnv(process.env),
+      ),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "terminal_portal_blocker",
+    });
   });
 
   it("runs a safe scanner pass on start only when explicitly configured", async () => {
