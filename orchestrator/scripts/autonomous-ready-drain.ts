@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { getDataDir } from "@server/config/dataDir";
 import { getAllJobs, getJobById, updateJob } from "@server/repositories/jobs";
 import {
+  classifyPortalUrlForSession,
+  isFullAutoBrowserDryRunEnabled,
+  isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
   submitPortalApplication,
 } from "@server/services/application-browser";
@@ -17,9 +20,8 @@ import {
 } from "@server/services/pdf-fingerprint";
 import type { Job } from "@shared/types";
 
-process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED ??= "true";
-process.env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED ??= "true";
-process.env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED ??= "true";
+// Safety: do not force-enable real browser submissions from this drain script.
+// The caller must explicitly configure JOBOPS_FULL_AUTO_APPLY_ENABLED plus portal gates.
 process.env.JOBOPS_FULL_AUTO_BROWSER_TIMEOUT_MS ??= "90000";
 
 type DestinationResolution = {
@@ -402,6 +404,16 @@ async function markApplied(job: Job, note: string): Promise<void> {
   });
 }
 
+function portalSessionBlocker(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const gate = classifyPortalUrlForSession(url);
+  return gate ? gate.reason : null;
+}
+
+function fullAutoSubmitAllowed(): boolean {
+  return isFullAutoBrowserSubmitEnabled() && !isFullAutoBrowserDryRunEnabled();
+}
+
 async function markSkipped(job: Job, blocker: string): Promise<void> {
   await updateJob(job.id, { status: "skipped" });
   await appendLog({
@@ -431,6 +443,23 @@ async function tryEmail(job: Job, result: JobResult): Promise<boolean> {
 }
 
 async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
+  const targetUrl = job.applicationLink ?? job.jobUrlDirect ?? job.jobUrl;
+  const sessionBlocker = portalSessionBlocker(targetUrl);
+  if (sessionBlocker) {
+    stats.portalNeedsReview += 1;
+    result.portalError = sessionBlocker;
+    result.blocker = sessionBlocker;
+    result.action = "needs_portal_session";
+    return false;
+  }
+  if (!fullAutoSubmitAllowed()) {
+    stats.portalNeedsReview += 1;
+    result.portalError =
+      "Full-auto portal submit is disabled or dry-run; skipped before any real submit click.";
+    result.blocker = result.portalError;
+    result.action = "portal_pre_submit_dry_run";
+    return false;
+  }
   try {
     const portal = await submitPortalApplication(job, {
       allowCaptcha: isFullAutoCaptchaEnabled(),
@@ -502,6 +531,16 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
 
   if (resolved.portal) {
     stats.resolvedPortal += 1;
+    const sessionBlocker = portalSessionBlocker(resolved.portal);
+    if (sessionBlocker) {
+      result.portalError = sessionBlocker;
+      result.blocker = sessionBlocker;
+      result.action = "needs_portal_session";
+      stats.portalNeedsReview += 1;
+      stats.skippedNoRoute += 1;
+      await markSkipped(job, sessionBlocker);
+      return result;
+    }
     const updated = await updateJob(job.id, {
       applicationLink: resolved.portal,
     });
@@ -515,6 +554,16 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
 
   const directUrl = job.applicationLink ?? job.jobUrlDirect ?? job.jobUrl;
   if (isHttpUrl(directUrl) && !isAggregatorHost(hostname(directUrl))) {
+    const sessionBlocker = portalSessionBlocker(directUrl);
+    if (sessionBlocker) {
+      result.portalError = sessionBlocker;
+      result.blocker = sessionBlocker;
+      result.action = "needs_portal_session";
+      stats.portalNeedsReview += 1;
+      stats.skippedNoRoute += 1;
+      await markSkipped(job, sessionBlocker);
+      return result;
+    }
     if (await tryPortal(job, result)) return result;
   }
 

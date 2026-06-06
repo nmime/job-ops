@@ -8,6 +8,7 @@ import { DEFAULT_TENANT_ID } from "@server/tenancy/constants";
 import { getActiveTenantId } from "@server/tenancy/context";
 import type { Job } from "@shared/types";
 import {
+  classifyPortalUrlForSession,
   isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
   isFullAutoEnabled,
@@ -24,11 +25,17 @@ const DEFAULT_QUEUE_INTERVAL_MS = 10 * 60 * 1000;
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_RETRY_DELAY_MS = 30_000;
 const MIN_QUEUE_INTERVAL_MS = 10_000;
+const PORTAL_SESSION_REVIEW_NOTE_TITLE = "Autonomous portal session required";
 
 export type AutonomousAutoApplyDecision =
   | { action: "email_ready"; recipient: string }
   | { action: "portal_ready"; url: string }
   | { action: "captcha_ready"; url: string; reason: string }
+  | {
+      action: "portal_session_required";
+      reason: string;
+      provider: "linkedin" | "indeed" | "generic";
+    }
   | { action: "review_only_portal"; reason: string }
   | { action: "review_only_captcha"; reason: string }
   | { action: "not_ready"; reason: string };
@@ -119,6 +126,16 @@ export function classifyAutonomousAutoApply(
     containsCaptchaSignal(job.jobUrl) ||
     containsCaptchaSignal(job.jobDescription) ||
     containsCaptchaSignal(job.jobBrief);
+  const sessionGate =
+    (applicationUrl && classifyPortalUrlForSession(applicationUrl)) || null;
+
+  if (sessionGate) {
+    return {
+      action: "portal_session_required",
+      provider: sessionGate.provider,
+      reason: sessionGate.reason,
+    };
+  }
 
   if (hasCaptchaSignal) {
     if (
@@ -171,6 +188,40 @@ async function hydratePdfFreshness(job: Job): Promise<Job> {
     ...job,
     pdfFreshness: getJobPdfFreshness(job, fingerprintContext),
   };
+}
+
+function isPortalSessionReviewNote(note: {
+  title: string;
+  content: string;
+}): boolean {
+  return (
+    note.title === PORTAL_SESSION_REVIEW_NOTE_TITLE ||
+    /needs_portal_session|LinkedIn application URL is a login\/sign-up wall|authenticated portal session/i.test(
+      note.content,
+    )
+  );
+}
+
+async function hasPriorPortalSessionReview(jobId: string): Promise<boolean> {
+  const notes = await jobsRepo.listJobNotes(jobId).catch(() => []);
+  return notes.some(isPortalSessionReviewNote);
+}
+
+async function recordPortalSessionReview(input: {
+  jobId: string;
+  provider: string;
+  reason: string;
+}): Promise<void> {
+  if (await hasPriorPortalSessionReview(input.jobId)) return;
+  await jobsRepo.createJobNote({
+    jobId: input.jobId,
+    title: PORTAL_SESSION_REVIEW_NOTE_TITLE,
+    content: [
+      `needs_portal_session (${input.provider})`,
+      input.reason,
+      "Autonomous browser submit was skipped before any real submit click. Capture a logged-in portal session or provide explicit manual confirmation before retrying.",
+    ].join("\n"),
+  });
 }
 
 async function enqueuePayload(
@@ -239,7 +290,8 @@ export async function enqueueAutonomousAutoApplyForReadyJobs(input: {
 
     if (
       decision.action === "review_only_portal" ||
-      decision.action === "review_only_captcha"
+      decision.action === "review_only_captcha" ||
+      decision.action === "portal_session_required"
     ) {
       reviewOnly += 1;
       logger.info("Autonomous auto-apply left job for human review", {
@@ -342,6 +394,24 @@ async function processQueuedAutonomousAutoApply(
       const hydratedJob = await hydratePdfFreshness(job);
       const config = getAutonomousAutoApplyConfigFromEnv();
       const decision = classifyAutonomousAutoApply(hydratedJob, config);
+      if (decision.action === "portal_session_required") {
+        await recordPortalSessionReview({
+          jobId: hydratedJob.id,
+          provider: decision.provider,
+          reason: decision.reason,
+        });
+        logger.info(
+          "Autonomous full-auto portal application skipped before submit: portal session required",
+          {
+            tenantId: input.tenantId,
+            jobId: input.jobId,
+            provider: decision.provider,
+            reason: decision.reason,
+          },
+        );
+        return "processed";
+      }
+
       if (
         decision.action !== "email_ready" &&
         decision.action !== "portal_ready" &&
@@ -406,16 +476,37 @@ async function processQueuedAutonomousAutoApply(
         return "processed";
       }
 
+      if (await hasPriorPortalSessionReview(hydratedJob.id)) {
+        logger.info(
+          "Autonomous full-auto portal application skipped: prior gated portal review exists",
+          {
+            tenantId: input.tenantId,
+            jobId: input.jobId,
+          },
+        );
+        return "processed";
+      }
+
       const browserApply = await submitPortalApplication(hydratedJob, {
         allowCaptcha:
           decision.action === "captcha_ready" && config.captchaApplyEnabled,
       });
       if (browserApply.status !== "submitted") {
+        if (browserApply.reviewReason === "needs_portal_session") {
+          await recordPortalSessionReview({
+            jobId: hydratedJob.id,
+            provider: "generic",
+            reason:
+              browserApply.reason ??
+              "Portal session is required before autonomous submission.",
+          });
+        }
         logger.warn("Autonomous full-auto browser application needs review", {
           tenantId: input.tenantId,
           jobId: input.jobId,
           decision: decision.action,
           reason: browserApply.reason ?? null,
+          reviewReason: browserApply.reviewReason ?? null,
           captchaType: browserApply.captcha.type,
           captchaAttempted: browserApply.captcha.attempted,
           captchaSolved: browserApply.captcha.solved,

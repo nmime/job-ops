@@ -10,6 +10,23 @@ import { getProfile } from "@server/services/profile";
 import type { Job, ResumeProfile } from "@shared/types";
 import type { Browser, Locator, Page } from "playwright";
 
+export type BrowserAutoApplyReviewReason =
+  | "needs_portal_session"
+  | "needs_captcha"
+  | "required_fields_missing"
+  | "resume_upload_missing"
+  | "pre_submit_dry_run"
+  | "no_submit_button"
+  | "no_success_signal"
+  | "post_submit_blocking_error"
+  | "browser_error";
+
+export type PortalSessionGate = {
+  type: "needs_portal_session";
+  provider: "linkedin" | "indeed" | "generic";
+  reason: string;
+};
+
 export type BrowserAutoApplyResult = {
   mode: "browser";
   status: "submitted" | "needs_review";
@@ -28,10 +45,13 @@ export type BrowserAutoApplyResult = {
   };
   screenshotPath?: string;
   reason?: string;
+  reviewReason?: BrowserAutoApplyReviewReason;
 };
 
 type BrowserAutoApplyOptions = {
   allowCaptcha?: boolean;
+  /** Fill and validate only; never click the final submit/apply button. */
+  dryRun?: boolean;
 };
 
 type CaptchaDetection =
@@ -94,6 +114,281 @@ function cleanString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+function normalizePageText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function hostnameOf(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+export function classifyPortalUrlForSession(
+  rawUrl: string,
+): PortalSessionGate | null {
+  const normalized = rawUrl.trim();
+  if (!normalized) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  const query = parsed.search.toLowerCase();
+
+  if (
+    host.endsWith("linkedin.com") &&
+    (/(signup|login|uas\/login|checkpoint)\b/.test(path) ||
+      path.includes("/signup/") ||
+      path.includes("/login") ||
+      query.includes("session_redirect="))
+  ) {
+    return {
+      type: "needs_portal_session",
+      provider: "linkedin",
+      reason:
+        "LinkedIn application URL is a login/sign-up wall; capture a portal session before autonomous submission.",
+    };
+  }
+
+  if (
+    /(^|\.)indeed\./.test(host) &&
+    (/(account|auth|login|signin|signup|viewjob)\b/.test(path) ||
+      query.includes("from=signin"))
+  ) {
+    return {
+      type: "needs_portal_session",
+      provider: "indeed",
+      reason:
+        "Indeed application flow appears to require an authenticated portal session.",
+    };
+  }
+
+  if (/(login|signin|sign-in|signup|sign-up|register|account)\b/.test(path)) {
+    return {
+      type: "needs_portal_session",
+      provider: "generic",
+      reason:
+        "Portal URL is an authentication or account wall; human portal session is required before autonomous submission.",
+    };
+  }
+
+  return null;
+}
+
+export function classifyPortalPageTextForSession(input: {
+  url: string;
+  text: string;
+  hasPasswordField?: boolean;
+  hasApplicationFormSignal?: boolean;
+}): PortalSessionGate | null {
+  const urlGate = classifyPortalUrlForSession(input.url);
+  if (urlGate) return urlGate;
+
+  const text = normalizePageText(input.text);
+  const hasAuthLanguage =
+    /\b(sign in|log in|login|create account|join now|register|sign up|continue with google|continue with linkedin)\b/.test(
+      text,
+    );
+  const hasApplicationLanguage =
+    /\b(resume|cv|cover letter|work authorization|application questions|submit application)\b/.test(
+      text,
+    );
+
+  if (
+    (input.hasPasswordField &&
+      hasAuthLanguage &&
+      !input.hasApplicationFormSignal) ||
+    (hasAuthLanguage &&
+      !hasApplicationLanguage &&
+      /\b(apply|application)\b/.test(text))
+  ) {
+    return {
+      type: "needs_portal_session",
+      provider: hostnameOf(input.url).includes("linkedin")
+        ? "linkedin"
+        : hostnameOf(input.url).includes("indeed")
+          ? "indeed"
+          : "generic",
+      reason:
+        "Portal page is showing sign-in/sign-up controls instead of an application form.",
+    };
+  }
+
+  return null;
+}
+
+export type PortalHtmlInspection = {
+  gate: PortalSessionGate | null;
+  captchaRequired: boolean;
+  hasApplicationFormSignal: boolean;
+  hasSuccessSignal: boolean;
+  hasBlockingErrorSignal: boolean;
+  requiredIssueCount: number;
+};
+
+export function inspectPortalHtmlForAutoApply(
+  html: string,
+  url = "https://example.test/apply",
+): PortalHtmlInspection {
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ");
+  const text = stripped.replace(/<[^>]+>/g, " ");
+  const lowered = normalizePageText(text);
+  const hasPasswordField = /<input\b[^>]*type=["']?password/i.test(html);
+  const hasApplicationFormSignal =
+    /<input\b[^>]*type=["']?file/i.test(html) ||
+    /\b(resume|cv|cover letter|phone|email|submit application)\b/i.test(text);
+  const requiredIssueCount = (
+    html.match(/\brequired\b|aria-required=["']?true/gi) ?? []
+  ).length;
+
+  return {
+    gate: classifyPortalPageTextForSession({
+      url,
+      text,
+      hasPasswordField,
+      hasApplicationFormSignal,
+    }),
+    captchaRequired:
+      /\b(captcha|recaptcha|hcaptcha|turnstile|cloudflare challenge)\b/i.test(
+        `${html}\n${text}`,
+      ),
+    hasApplicationFormSignal,
+    hasSuccessSignal:
+      /\b(application submitted|application received|thank you for applying|we received your application|your application has been sent)\b/i.test(
+        lowered,
+      ),
+    hasBlockingErrorSignal:
+      /\b(required|invalid|please complete|please fill|missing|captcha|verification required)\b/i.test(
+        lowered,
+      ),
+    requiredIssueCount,
+  };
+}
+
+async function detectPortalSessionGate(
+  page: Page,
+): Promise<PortalSessionGate | null> {
+  const urlGate = classifyPortalUrlForSession(page.url());
+  if (urlGate) return urlGate;
+
+  return await page
+    .evaluate<{
+      text: string;
+      hasPasswordField: boolean;
+      hasApplicationFormSignal: boolean;
+    }>(
+      `(() => {
+        const text = document.body && document.body.innerText || "";
+        const hasPasswordField = Array.from(document.querySelectorAll('input[type="password"]'))
+          .some((el) => {
+            const style = window.getComputedStyle(el);
+            return style && style.visibility !== 'hidden' && style.display !== 'none';
+          });
+        const fields = document.querySelectorAll(
+          'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select'
+        ).length;
+        const upload = document.querySelectorAll('input[type=file]').length;
+        const lowered = text.toLowerCase();
+        const hasApplicationFormSignal = upload > 0 || fields >= 3 ||
+          (fields > 0 && /resume|cv|cover letter|phone|email|work authorization|application questions/.test(lowered));
+        return { text, hasPasswordField, hasApplicationFormSignal };
+      })()`,
+    )
+    .then((state) =>
+      classifyPortalPageTextForSession({
+        url: page.url(),
+        text: state.text,
+        hasPasswordField: state.hasPasswordField,
+        hasApplicationFormSignal: state.hasApplicationFormSignal,
+      }),
+    )
+    .catch(() => null);
+}
+
+type RequiredFieldIssue = {
+  kind: "missing_required" | "invalid" | "required_file" | "required_choice";
+};
+
+async function inspectRequiredFieldIssues(
+  page: Page,
+): Promise<RequiredFieldIssue[]> {
+  return await page
+    .evaluate<RequiredFieldIssue[]>(
+      `(() => {
+        function isVisible(el) {
+          const style = window.getComputedStyle(el);
+          if (!style || style.visibility === 'hidden' || style.display === 'none') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }
+        function isRequired(el) {
+          return el.required || el.getAttribute('aria-required') === 'true' || el.dataset.required === 'true';
+        }
+        const issues = [];
+        const fields = Array.from(document.querySelectorAll('input, textarea, select'));
+        const checkedRadioNames = new Set(
+          Array.from(document.querySelectorAll('input[type="radio"]:checked')).map((el) => el.name).filter(Boolean)
+        );
+        for (const el of fields) {
+          const tag = el.tagName.toLowerCase();
+          const type = (el.getAttribute('type') || '').toLowerCase();
+          if (el.disabled || type === 'hidden' || type === 'button' || type === 'submit' || type === 'reset') continue;
+          if (!isVisible(el)) continue;
+          if (isRequired(el)) {
+            if (type === 'file') {
+              if (!el.files || el.files.length === 0) issues.push({ kind: 'required_file' });
+              continue;
+            }
+            if (type === 'checkbox') {
+              if (!el.checked) issues.push({ kind: 'required_choice' });
+              continue;
+            }
+            if (type === 'radio') {
+              if (!el.name || !checkedRadioNames.has(el.name)) issues.push({ kind: 'required_choice' });
+              continue;
+            }
+            if (tag === 'select') {
+              if (!String(el.value || '').trim()) issues.push({ kind: 'missing_required' });
+              continue;
+            }
+            if (!String(el.value || '').trim()) issues.push({ kind: 'missing_required' });
+          }
+          if (typeof el.checkValidity === 'function' && !el.checkValidity()) {
+            issues.push({ kind: 'invalid' });
+          }
+        }
+        return issues;
+      })()`,
+    )
+    .catch(() => []);
+}
+
+function summarizeRequiredIssues(issues: RequiredFieldIssue[]): string {
+  const requiredFiles = issues.filter(
+    (issue) => issue.kind === "required_file",
+  ).length;
+  const invalid = issues.filter((issue) => issue.kind === "invalid").length;
+  const choices = issues.filter(
+    (issue) => issue.kind === "required_choice",
+  ).length;
+  const missing = issues.length - requiredFiles - invalid - choices;
+  const parts = [];
+  if (missing > 0) parts.push(`${missing} missing required field(s)`);
+  if (requiredFiles > 0)
+    parts.push(`${requiredFiles} missing required file upload(s)`);
+  if (choices > 0) parts.push(`${choices} missing required choice(s)`);
+  if (invalid > 0) parts.push(`${invalid} invalid field(s)`);
+  return `Portal pre-submit validation failed: ${parts.join(", ")}.`;
 }
 
 function getApplicationUrl(job: Job): string {
@@ -1014,6 +1309,12 @@ export function isFullAutoCaptchaEnabled(
   return parseBoolean(explicit);
 }
 
+export function isFullAutoBrowserDryRunEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return parseBoolean(env.JOBOPS_FULL_AUTO_BROWSER_DRY_RUN);
+}
+
 function getBundledFirefoxExecutablePath(): string | undefined {
   const root = process.env.PLAYWRIGHT_BROWSERS_PATH || "/ms-playwright";
   try {
@@ -1150,10 +1451,59 @@ export async function submitPortalApplication(
     page = await openInitialApplyFlow(page);
     await installStealth(page).catch(() => undefined);
 
+    const initialGate = await detectPortalSessionGate(page);
+    if (initialGate) {
+      const screenshotPath = await saveDebugScreenshot(page, job.id);
+      return {
+        mode: "browser",
+        status: "needs_review",
+        url,
+        finalUrl: page.url(),
+        submittedAt: null,
+        fieldsFilled: 0,
+        resumeUploaded: false,
+        submitClicked: false,
+        captcha: {
+          attempted: false,
+          solved: false,
+          type: null,
+          provider: null,
+        },
+        screenshotPath,
+        reason: initialGate.reason,
+        reviewReason: "needs_portal_session",
+      };
+    }
+
     const fieldsFilled = await fillApplicationForm(page, job, profile);
     await dismissCookieOverlays(page).catch(() => undefined);
     const resumeUploaded = await uploadResume(page, job);
     await page.waitForTimeout(500 + Math.floor(Math.random() * 750));
+
+    const gate = await detectPortalSessionGate(page);
+    if (gate) {
+      const screenshotPath = await saveDebugScreenshot(page, job.id);
+      return {
+        mode: "browser",
+        status: "needs_review",
+        url,
+        finalUrl: page.url(),
+        submittedAt: null,
+        fieldsFilled,
+        resumeUploaded,
+        submitClicked: false,
+        captcha: {
+          attempted: false,
+          solved: false,
+          type: null,
+          provider: null,
+        },
+        screenshotPath,
+        reason: gate.reason,
+        reviewReason: "needs_portal_session",
+      };
+    }
+
     const captcha = await solveCaptchaIfPresent(
       page,
       Boolean(options.allowCaptcha),
@@ -1172,6 +1522,50 @@ export async function submitPortalApplication(
         captcha,
         screenshotPath,
         reason: captcha.message ?? "CAPTCHA could not be solved automatically.",
+        reviewReason: "needs_captcha",
+      };
+    }
+
+    const requiredIssues = await inspectRequiredFieldIssues(page);
+    if (requiredIssues.length > 0) {
+      const screenshotPath = await saveDebugScreenshot(page, job.id);
+      const hasRequiredFile = requiredIssues.some(
+        (issue) => issue.kind === "required_file",
+      );
+      return {
+        mode: "browser",
+        status: "needs_review",
+        url,
+        finalUrl: page.url(),
+        submittedAt: null,
+        fieldsFilled,
+        resumeUploaded,
+        submitClicked: false,
+        captcha,
+        screenshotPath,
+        reason: summarizeRequiredIssues(requiredIssues),
+        reviewReason: hasRequiredFile
+          ? "resume_upload_missing"
+          : "required_fields_missing",
+      };
+    }
+
+    if (options.dryRun || isFullAutoBrowserDryRunEnabled()) {
+      const screenshotPath = await saveDebugScreenshot(page, job.id);
+      return {
+        mode: "browser",
+        status: "needs_review",
+        url,
+        finalUrl: page.url(),
+        submittedAt: null,
+        fieldsFilled,
+        resumeUploaded,
+        submitClicked: false,
+        captcha,
+        screenshotPath,
+        reason:
+          "Dry-run pre-submit checks passed; final submit/apply click was intentionally skipped.",
+        reviewReason: "pre_submit_dry_run",
       };
     }
 
@@ -1216,6 +1610,11 @@ export async function submitPortalApplication(
           ? "Portal still showed required/invalid/CAPTCHA signals after submit."
           : "Portal did not show a success signal after submit."
         : "No usable submit/apply button was found.",
+      reviewReason: submitClicked
+        ? blockingError
+          ? "post_submit_blocking_error"
+          : "no_success_signal"
+        : "no_submit_button",
     };
   } catch (error) {
     throw upstreamError("Full-auto browser application failed.", {

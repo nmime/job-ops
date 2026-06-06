@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   getAllJobs: vi.fn(),
   getJobById: vi.fn(),
   updateJob: vi.fn(),
+  listJobNotes: vi.fn(),
+  createJobNote: vi.fn(),
   sendAutoApplication: vi.fn(),
   submitPortalApplication: vi.fn(),
   resolveAutoApplyRecipient: vi.fn(),
@@ -29,6 +31,8 @@ vi.mock("@server/repositories/jobs", () => ({
   getAllJobs: mocks.getAllJobs,
   getJobById: mocks.getJobById,
   updateJob: mocks.updateJob,
+  listJobNotes: mocks.listJobNotes,
+  createJobNote: mocks.createJobNote,
 }));
 
 vi.mock("@server/tenancy/context", () => ({
@@ -81,6 +85,15 @@ describe("autonomous auto-apply", () => {
     mocks.getAllJobs.mockResolvedValue([]);
     mocks.getJobById.mockResolvedValue(null);
     mocks.updateJob.mockResolvedValue(createJob({ status: "applied" }));
+    mocks.listJobNotes.mockResolvedValue([]);
+    mocks.createJobNote.mockResolvedValue({
+      id: "note-1",
+      jobId: "job-portal",
+      title: "Autonomous portal session required",
+      content: "needs_portal_session",
+      createdAt: "2026-05-04T10:00:00.000Z",
+      updatedAt: "2026-05-04T10:00:00.000Z",
+    });
     mocks.sendAutoApplication.mockResolvedValue({
       mode: "email",
       recipient: "jobs@example.com",
@@ -326,6 +339,102 @@ describe("autonomous auto-apply", () => {
     );
     expect(mocks.updateJob).toHaveBeenCalledWith(
       "job-portal",
+      expect.objectContaining({ status: "applied" }),
+    );
+  });
+
+  it("classifies LinkedIn sign-up redirects as portal-session-required and never submits", async () => {
+    process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    const portalJob = createJob({
+      id: "job-linkedin-gated",
+      status: "ready",
+      applicationLink:
+        "https://www.linkedin.com/signup/cold-join?session_redirect=https%3A%2F%2Fnl.linkedin.com%2Fjobs%2Fview%2F123",
+      pdfPath: "data/pdfs/job-linkedin-gated.pdf",
+      pdfSource: "uploaded",
+    });
+
+    const decision = classifyAutonomousAutoApply(
+      portalJob,
+      getAutonomousAutoApplyConfigFromEnv(process.env),
+    );
+    expect(decision).toMatchObject({
+      action: "portal_session_required",
+      provider: "linkedin",
+    });
+
+    mocks.reserveNext
+      .mockResolvedValueOnce({
+        id: "queue-linkedin-gated",
+        queue: "autonomous_auto_apply",
+        payload: {
+          tenantId: "tenant-test",
+          jobId: "job-linkedin-gated",
+          requestedAt: "2026-05-04T10:00:00.000Z",
+          requestedBy: "system",
+          mode: "full_auto",
+        },
+        acceptedAt: "2026-05-04T10:00:00.000Z",
+      })
+      .mockResolvedValueOnce(null);
+    mocks.getJobById.mockResolvedValue(portalJob);
+
+    await drainAutonomousAutoApplyQueue();
+
+    expect(mocks.submitPortalApplication).not.toHaveBeenCalled();
+    expect(mocks.createJobNote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: "job-linkedin-gated",
+        title: "Autonomous portal session required",
+        content: expect.stringContaining("needs_portal_session"),
+      }),
+    );
+    expect(mocks.updateJob).not.toHaveBeenCalledWith(
+      "job-linkedin-gated",
+      expect.objectContaining({ status: "applied" }),
+    );
+  });
+
+  it("does not retry browser submit when a prior gated-portal review note exists", async () => {
+    process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    const portalJob = createJob({
+      id: "job-prior-review",
+      status: "ready",
+      applicationLink: "https://boards.greenhouse.io/example/jobs/1",
+      pdfPath: "data/pdfs/job-prior-review.pdf",
+      pdfSource: "uploaded",
+    });
+    mocks.listJobNotes.mockResolvedValue([
+      {
+        id: "note-prior",
+        jobId: "job-prior-review",
+        title: "Autonomous portal session required",
+        content: "needs_portal_session (generic)",
+        createdAt: "2026-05-04T10:00:00.000Z",
+        updatedAt: "2026-05-04T10:00:00.000Z",
+      },
+    ]);
+    mocks.reserveNext
+      .mockResolvedValueOnce({
+        id: "queue-prior-review",
+        queue: "autonomous_auto_apply",
+        payload: {
+          tenantId: "tenant-test",
+          jobId: "job-prior-review",
+          requestedAt: "2026-05-04T10:00:00.000Z",
+          requestedBy: "system",
+          mode: "full_auto",
+        },
+        acceptedAt: "2026-05-04T10:00:00.000Z",
+      })
+      .mockResolvedValueOnce(null);
+    mocks.getJobById.mockResolvedValue(portalJob);
+
+    await drainAutonomousAutoApplyQueue();
+
+    expect(mocks.submitPortalApplication).not.toHaveBeenCalled();
+    expect(mocks.updateJob).not.toHaveBeenCalledWith(
+      "job-prior-review",
       expect.objectContaining({ status: "applied" }),
     );
   });
