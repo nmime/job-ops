@@ -832,6 +832,30 @@ export const postApplicationMessages = sqliteTable(
   }),
 );
 
+export const automationProofRuns = sqliteTable(
+  "automation_proof_runs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    dryRun: integer("dry_run", { mode: "boolean" }).notNull().default(true),
+    status: text("status", { enum: ["passed", "warning", "failed"] })
+      .notNull()
+      .default("warning"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at").notNull(),
+    result: text("result", { mode: "json" }).notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantStartedAtIndex: index(
+      "idx_automation_proof_runs_tenant_started_at",
+    ).on(table.tenantId, table.startedAt),
+  }),
+);
+
 export const applicationEmailAttempts = sqliteTable(
   "application_email_attempts",
   {
@@ -1005,6 +1029,8 @@ export type PostApplicationMessageRow =
   typeof postApplicationMessages.$inferSelect;
 export type NewPostApplicationMessageRow =
   typeof postApplicationMessages.$inferInsert;
+export type AutomationProofRunRow = typeof automationProofRuns.$inferSelect;
+export type NewAutomationProofRunRow = typeof automationProofRuns.$inferInsert;
 export type TracerLinkRow = typeof tracerLinks.$inferSelect;
 export type NewTracerLinkRow = typeof tracerLinks.$inferInsert;
 export type TracerClickEventRow = typeof tracerClickEvents.$inferSelect;

@@ -26,6 +26,10 @@ vi.mock("./pages/GmailOauthCallbackPage", () => ({
   GmailOauthCallbackPage: () => null,
 }));
 
+vi.mock("./pages/AutomationProofPage", () => ({
+  AutomationProofPage: () => <div>automation-proof-page</div>,
+}));
+
 vi.mock("./pages/HomePage", () => ({
   HomePage: () => <div>overview</div>,
 }));
@@ -151,6 +155,25 @@ describe("App demo banner", () => {
     expect(localStorage.getItem("jobops.demoWaitlistBannerDismissed")).toBe(
       "1",
     );
+  });
+
+  it("renders the automation proof route", () => {
+    vi.mocked(useDemoInfo).mockReturnValue({
+      demoMode: false,
+      resetCadenceHours: 6,
+      lastResetAt: null,
+      nextResetAt: null,
+      baselineVersion: null,
+      baselineName: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/automation-proof"]}>
+        <App />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("automation-proof-page")).toBeInTheDocument();
   });
 
   it("renders the neutral Resume Studio route", () => {

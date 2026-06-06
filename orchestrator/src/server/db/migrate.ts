@@ -580,6 +580,21 @@ const migrations = [
     UNIQUE(tenant_id, provider, account_key, external_message_id)
   )`,
 
+  `CREATE TABLE IF NOT EXISTS automation_proof_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    dry_run INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'warning' CHECK(status IN ('passed', 'warning', 'failed')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_automation_proof_runs_tenant_started_at
+    ON automation_proof_runs(tenant_id, started_at)`,
+
   `CREATE TABLE IF NOT EXISTS tracer_links (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
@@ -1325,6 +1340,23 @@ sqlite.exec(
 sqlite.exec(
   "CREATE INDEX IF NOT EXISTS idx_application_email_attempts_status ON application_email_attempts(tenant_id, status)",
 );
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS automation_proof_runs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    dry_run INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'warning' CHECK(status IN ('passed', 'warning', 'failed')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_automation_proof_runs_tenant_started_at ON automation_proof_runs(tenant_id, started_at)",
+);
+
 seedLegacyOwnerFromBasicAuth();
 
 sqlite.close();

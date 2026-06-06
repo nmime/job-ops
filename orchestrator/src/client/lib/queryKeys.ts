@@ -37,6 +37,10 @@ export const queryKeys = {
     all: ["onboarding"] as const,
     status: () => [...queryKeys.onboarding.all, "status"] as const,
   },
+  automationProof: {
+    all: ["automation-proof"] as const,
+    latest: () => [...queryKeys.automationProof.all, "latest"] as const,
+  },
   jobs: {
     all: ["jobs"] as const,
     inProgressBoard: () =>

@@ -1294,7 +1294,7 @@ export function isFullAutoBrowserSubmitEnabled(
   const explicit =
     env.JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED ??
     env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED;
-  if (explicit === undefined) return true;
+  if (explicit === undefined) return false;
   return parseBoolean(explicit);
 }
 
@@ -1305,7 +1305,7 @@ export function isFullAutoCaptchaEnabled(
   const explicit =
     env.JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED ??
     env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED;
-  if (explicit === undefined) return true;
+  if (explicit === undefined) return false;
   return parseBoolean(explicit);
 }
 

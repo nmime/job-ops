@@ -2,6 +2,7 @@ export * from "./admin";
 export * from "./app-status";
 export * from "./auth";
 export * from "./auth-session";
+export * from "./automation-proof";
 export * from "./ghostwriter";
 export * from "./jobs";
 export * from "./pipeline";

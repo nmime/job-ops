@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { appStatusRouter } from "./routes/app-status";
 import { authRouter } from "./routes/auth";
+import { automationProofRouter } from "./routes/automation-proof";
 import { backupRouter } from "./routes/backup";
 import { databaseRouter } from "./routes/database";
 import { demoRouter } from "./routes/demo";
@@ -29,6 +30,8 @@ import { workspacesRouter } from "./routes/workspaces";
 export const apiRouter = Router();
 
 apiRouter.use("/app", appStatusRouter);
+apiRouter.use("/automation", automationProofRouter);
+apiRouter.use("/autonomous", automationProofRouter);
 apiRouter.use("/jobs", jobsRouter);
 apiRouter.use("/jobs/:id/chat", ghostwriterRouter);
 apiRouter.use("/demo", demoRouter);
