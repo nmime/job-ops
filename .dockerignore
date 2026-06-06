@@ -10,6 +10,29 @@
 # Data (mounted as volume)
 data/
 
+# Operational artifacts
+backups/
+**/backups/
+logs/
+**/logs/
+orchestrator/logs/
+.env.backup*
+.env.bak*
+.env.*backup*
+**/.env.backup*
+**/.env.bak*
+**/.env.*backup*
+*.sqlite
+**/*.sqlite
+*.sqlite.backup
+**/*.sqlite.backup
+*.sqlite.bak
+**/*.sqlite.bak
+*.db.backup
+**/*.db.backup
+*.db.bak
+**/*.db.bak
+
 # Environment files (passed via docker-compose)
 .env
 **/.env
