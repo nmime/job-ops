@@ -1675,7 +1675,6 @@ describe.sequential("Jobs API routes", () => {
     );
   });
 
-
   it("auto-applies HTTP jobs by browser only when explicitly enabled", async () => {
     const { createJob, updateJob } = await import("@server/repositories/jobs");
     const { sendAutoApplication } = await import("@server/services/auto-apply");
@@ -1693,6 +1692,19 @@ describe.sequential("Jobs API routes", () => {
       resumeUploaded: true,
       submitClicked: true,
       captcha: { attempted: false, solved: false, type: null, provider: null },
+      reasonCode: "portal_submitted",
+      outcomeMetadata: {
+        reasonCode: "portal_submitted",
+        status: "submitted",
+        domain: "ats.example.com",
+        source: "manual",
+        urlKind: "application_link",
+        liveSubmitAttempted: true,
+        submitClicked: true,
+        captchaType: null,
+        captchaAttempted: false,
+        captchaSolved: false,
+      },
     });
 
     const job = await createJob({
@@ -1743,7 +1755,19 @@ describe.sequential("Jobs API routes", () => {
         provider: null,
       },
       reason: "CAPTCHA/login/session/required fields need review.",
-      reasonCode: "captcha_challenge",
+      reasonCode: "portal_needs_review_captcha",
+      outcomeMetadata: {
+        reasonCode: "portal_needs_review_captcha",
+        status: "needs_review",
+        domain: "ats.example.com",
+        source: "manual",
+        urlKind: "application_link",
+        liveSubmitAttempted: false,
+        submitClicked: false,
+        captchaType: "recaptcha-v2",
+        captchaAttempted: false,
+        captchaSolved: false,
+      },
       reviewReason: "needs_captcha",
     });
 
@@ -1770,7 +1794,7 @@ describe.sequential("Jobs API routes", () => {
     expect(body.data.autoApply).toMatchObject({
       mode: "browser",
       status: "needs_review",
-      reasonCode: "captcha_challenge",
+      reasonCode: "portal_needs_review_captcha",
     });
   });
 

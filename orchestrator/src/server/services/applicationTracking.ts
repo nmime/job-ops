@@ -56,6 +56,23 @@ export const stageEventMetadataSchema = z
       .enum(["interview_log", "status_update", "note"])
       .nullable()
       .optional(),
+    portalOutcome: z
+      .object({
+        reasonCode: z.string(),
+        status: z.enum(["submitted", "needs_review", "blocked"]),
+        domain: z.string().nullable(),
+        source: z.string().nullable().optional(),
+        urlKind: z
+          .enum(["application_link", "direct_url", "source_url", "unknown"])
+          .optional(),
+        liveSubmitAttempted: z.boolean(),
+        submitClicked: z.boolean(),
+        captchaType: z.string().nullable().optional(),
+        captchaAttempted: z.boolean().optional(),
+        captchaSolved: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

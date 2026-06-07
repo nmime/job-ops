@@ -89,6 +89,18 @@ export interface StageEventMetadata {
   externalUrl?: string | null;
   reasonCode?: string | null;
   eventType?: "interview_log" | "status_update" | "note" | null;
+  portalOutcome?: {
+    reasonCode: string;
+    status: "submitted" | "needs_review" | "blocked";
+    domain: string | null;
+    source?: string | null;
+    urlKind?: "application_link" | "direct_url" | "source_url" | "unknown";
+    liveSubmitAttempted: boolean;
+    submitClicked: boolean;
+    captchaType?: string | null;
+    captchaAttempted?: boolean;
+    captchaSolved?: boolean;
+  };
 }
 
 export interface StageEvent {

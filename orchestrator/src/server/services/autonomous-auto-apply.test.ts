@@ -120,6 +120,19 @@ describe("autonomous auto-apply", () => {
       resumeUploaded: true,
       submitClicked: true,
       captcha: { attempted: false, solved: false, type: null, provider: null },
+      reasonCode: "portal_submitted",
+      outcomeMetadata: {
+        reasonCode: "portal_submitted",
+        status: "submitted",
+        domain: "example.com",
+        source: "gradcracker",
+        urlKind: "application_link",
+        liveSubmitAttempted: true,
+        submitClicked: true,
+        captchaType: null,
+        captchaAttempted: false,
+        captchaSolved: false,
+      },
     });
     mocks.resolveAutoApplyRecipient.mockImplementation((job) =>
       String(job.applicationLink ?? "").startsWith("mailto:") ||
@@ -143,13 +156,14 @@ describe("autonomous auto-apply", () => {
     delete process.env.JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS;
     delete process.env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_REQUIRED_DOMAINS;
     delete process.env.JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES;
+    delete process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK;
     delete process.env.JOBOPS_FULL_AUTO_ENABLED;
     delete process.env.JOBOPS_FULL_AUTO_BROWSER_SUBMIT_ENABLED;
     delete process.env.JOBOPS_FULL_AUTO_CAPTCHA_ENABLED;
     clearAutonomousPortalReviewBlocksForTests();
     vi.useRealTimers();
   });
-
 
   it("routes explicit mailto/email-only jobs through email even when browser automation is enabled", () => {
     const job = createJob({
@@ -174,12 +188,15 @@ describe("autonomous auto-apply", () => {
     const config = getAutonomousAutoApplyConfigFromEnv({
       JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
       JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
-      JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "ats.example.com,source.example.com",
+      JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS:
+        "ats.example.com,source.example.com",
+      JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES: "gradcracker",
     });
 
     expect(
       classifyAutonomousAutoApply(
         createJob({
+          source: "gradcracker",
           status: "ready",
           applicationLink: "https://ats.example.com/apply/application",
           jobUrlDirect: null,
@@ -191,6 +208,7 @@ describe("autonomous auto-apply", () => {
     expect(
       classifyAutonomousAutoApply(
         createJob({
+          source: "gradcracker",
           status: "ready",
           applicationLink: null,
           jobUrlDirect: "https://ats.example.com/apply/direct",
@@ -202,6 +220,7 @@ describe("autonomous auto-apply", () => {
     expect(
       classifyAutonomousAutoApply(
         createJob({
+          source: "gradcracker",
           status: "ready",
           applicationLink: null,
           jobUrlDirect: null,
@@ -458,6 +477,7 @@ describe("autonomous auto-apply", () => {
 
   it("classifies LinkedIn sign-up redirects as portal-session-required and never submits", async () => {
     process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS = "linkedin.com";
     const portalJob = createJob({
       id: "job-linkedin-gated",
       status: "ready",
@@ -510,6 +530,7 @@ describe("autonomous auto-apply", () => {
 
   it("does not retry browser submit when a prior gated-portal review note exists", async () => {
     process.env.JOBOPS_FULL_AUTO_APPLY_ENABLED = "true";
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS = "greenhouse.io";
     const portalJob = createJob({
       id: "job-prior-review",
       status: "ready",
@@ -576,12 +597,25 @@ describe("autonomous auto-apply", () => {
         getAutonomousAutoApplyConfigFromEnv({
           JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
           JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "example.com",
+        }),
+      ),
+    ).toMatchObject({
+      action: "review_only_captcha",
+      reasonCode: "portal_needs_review_captcha",
+    });
+    expect(
+      classifyAutonomousAutoApply(
+        captchaJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
           JOBOPS_AUTONOMOUS_CAPTCHA_APPLY_ENABLED: "true",
         }),
       ),
     ).toMatchObject({
       action: "review_only_portal",
-      reasonCode: "domain_not_allowlisted",
+      reasonCode: "portal_blocked_domain_not_validated",
     });
     expect(
       classifyAutonomousAutoApply(
@@ -636,7 +670,7 @@ describe("autonomous auto-apply", () => {
       ),
     ).toMatchObject({
       action: "review_only_portal",
-      reasonCode: "domain_not_allowlisted",
+      reasonCode: "portal_blocked_domain_not_validated",
     });
 
     expect(
@@ -649,6 +683,54 @@ describe("autonomous auto-apply", () => {
         }),
       ).action,
     ).toBe("portal_ready");
+  });
+
+  it("blocks source-listing fallback URLs unless the source is validated or deliberately allowed", () => {
+    const sourceFallbackJob = createJob({
+      id: "job-source-fallback",
+      source: "unsupported-board",
+      status: "ready",
+      applicationLink: null,
+      jobUrlDirect: null,
+      jobUrl: "https://source.example.com/jobs/source-only",
+    });
+
+    const baseConfig = getAutonomousAutoApplyConfigFromEnv({
+      JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+      JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "source.example.com",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(sourceFallbackJob, baseConfig),
+    ).toMatchObject({
+      action: "review_only_portal",
+      reasonCode: "portal_blocked_unsupported_source",
+    });
+
+    expect(
+      classifyAutonomousAutoApply(
+        sourceFallbackJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "source.example.com",
+          JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES: "unsupported-board",
+        }),
+      ),
+    ).toMatchObject({ action: "portal_ready" });
+
+    expect(
+      classifyAutonomousAutoApply(
+        sourceFallbackJob,
+        getAutonomousAutoApplyConfigFromEnv({
+          JOBOPS_FULL_AUTO_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED: "true",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "source.example.com",
+          JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK: "true",
+        }),
+      ),
+    ).toMatchObject({ action: "portal_ready" });
   });
 
   it("blocks LinkedIn and Indeed unless an allowed domain has a validated session", () => {
@@ -665,7 +747,7 @@ describe("autonomous auto-apply", () => {
 
     expect(classifyAutonomousAutoApply(linkedInJob, config)).toMatchObject({
       action: "review_only_portal",
-      reasonCode: "session_required",
+      reasonCode: "portal_needs_review_session_missing",
     });
 
     expect(
@@ -703,7 +785,20 @@ describe("autonomous auto-apply", () => {
       submitClicked: false,
       captcha: { attempted: false, solved: false, type: null, provider: null },
       reason: "Portal requires login/sign-up before application submission.",
-      reasonCode: "login_wall",
+      reasonCode: "portal_needs_review_login_required",
+      reviewReason: "needs_portal_session",
+      outcomeMetadata: {
+        reasonCode: "portal_needs_review_login_required",
+        status: "needs_review",
+        domain: "example.com",
+        source: "gradcracker",
+        urlKind: "application_link",
+        liveSubmitAttempted: false,
+        submitClicked: false,
+        captchaType: null,
+        captchaAttempted: false,
+        captchaSolved: false,
+      },
     });
     mocks.reserveNext
       .mockResolvedValueOnce({
@@ -729,8 +824,12 @@ describe("autonomous auto-apply", () => {
       "no_change",
       expect.any(Number),
       expect.objectContaining({
-        reasonCode: "login_wall",
+        reasonCode: "portal_needs_review_login_required",
         eventType: "note",
+        portalOutcome: expect.objectContaining({
+          reasonCode: "portal_needs_review_login_required",
+          status: "needs_review",
+        }),
       }),
       null,
     );

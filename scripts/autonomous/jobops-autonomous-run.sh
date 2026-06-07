@@ -257,21 +257,38 @@ run_ready_drain() {
   return 2
 }
 run_health_summary() {
-  docker exec "$CONTAINER" sh -lc "cd /app/orchestrator && node - <<'NODE'
-const Database = require('better-sqlite3');
-const db = new Database('/app/data/jobs.db');
-const q = (sql) => db.prepare(sql).all();
-console.log(JSON.stringify({
-  jobs: q(\"select status, count(*) as count from jobs group by status order by status\"),
-  pipelineRuns: q(\"select status, count(*) as count from pipeline_runs group by status order by status\"),
-  staleActiveRuns: q(\"select id, started_at, status from pipeline_runs where status in ('pending','running') order by started_at\"),
-  emailAttempts: q(\"select status, count(*) as count from application_email_attempts group by status order by status\"),
-  postApplicationSyncRuns: q(\"select status, count(*) as count from post_application_sync_runs group by status order by status\"),
-  postApplicationMessages: q(\"select processing_status, classification_label, message_type, count(*) as count from post_application_messages group by processing_status, classification_label, message_type order by count desc\"),
-  queuedJobs: q(\"select status, count(*) as count from jobs where status in ('ready','retry','manual','needs_manual','updated') group by status order by status\"),
-  activeClosedItems: q(\"select status, outcome, count(*) as count from jobs where status='in_progress' group by status, outcome order by outcome\"),
-}, null, 2));
-NODE"
+  local host_script="$ROOT/scripts/autonomous/jobops-monitor-artifact.mjs"
+  local container_script="/app/scripts/autonomous/jobops-monitor-artifact.mjs"
+  local artifact_path="$CONTAINER_RUN_DIR/monitor-artifact.json"
+
+  if [ -f "$host_script" ]; then
+    docker exec "$CONTAINER" sh -lc "mkdir -p /app/scripts/autonomous"
+    docker cp "$host_script" "$CONTAINER:$container_script"
+  fi
+
+  local env_args=(
+    -e JOBOPS_DB_PATH="/app/data/jobs.db"
+    -e JOBOPS_AUTONOMOUS_RUN_ID="$RUN_ID"
+    -e JOBOPS_MONITOR_ARTIFACT_PATH="$artifact_path"
+    -e JOBOPS_READY_DRAIN_RESULT_PATH="$CONTAINER_RUN_DIR/ready-drain/autonomous-ready-drain-result.json"
+    -e JOBOPS_READY_DRAIN_LOG_PATH="$CONTAINER_RUN_DIR/ready-drain/autonomous-ready-drain.ndjson"
+    -e JOBOPS_PUBLIC_HEALTH_TIMEOUT_MS="${JOBOPS_PUBLIC_HEALTH_TIMEOUT_MS:-5000}"
+  )
+  [ -n "${JOBOPS_AUTONOMOUS_PUBLIC_HEALTH_URL:-}" ] && env_args+=(
+    -e JOBOPS_AUTONOMOUS_PUBLIC_HEALTH_URL="$JOBOPS_AUTONOMOUS_PUBLIC_HEALTH_URL"
+  )
+  [ -n "${JOBOPS_PUBLIC_HEALTH_URL:-}" ] && env_args+=(
+    -e JOBOPS_PUBLIC_HEALTH_URL="$JOBOPS_PUBLIC_HEALTH_URL"
+  )
+  [ -n "${JOBOPS_PUBLIC_BASE_URL:-}" ] && env_args+=(
+    -e JOBOPS_PUBLIC_BASE_URL="$JOBOPS_PUBLIC_BASE_URL"
+  )
+  [ -n "${PUBLIC_BASE_URL:-}" ] && env_args+=(
+    -e PUBLIC_BASE_URL="$PUBLIC_BASE_URL"
+  )
+
+  docker exec "${env_args[@]}" \
+    "$CONTAINER" sh -lc "cd /app/orchestrator && node '$container_script'"
 }
 
 STATUS="success"

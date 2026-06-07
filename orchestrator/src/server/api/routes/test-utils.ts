@@ -74,7 +74,8 @@ vi.mock("@server/services/job-brief", () => ({
 }));
 
 vi.mock("@server/services/auto-apply", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@server/services/auto-apply")>();
+  const actual =
+    await importOriginal<typeof import("@server/services/auto-apply")>();
   return {
     ...actual,
     sendAutoApplication: vi.fn().mockResolvedValue({
@@ -88,9 +89,10 @@ vi.mock("@server/services/auto-apply", async (importOriginal) => {
 });
 
 vi.mock("@server/services/application-browser", async (importOriginal) => {
-  const actual = await importOriginal<
-    typeof import("@server/services/application-browser")
-  >();
+  const actual =
+    await importOriginal<
+      typeof import("@server/services/application-browser")
+    >();
   return {
     ...actual,
     submitPortalApplication: vi.fn().mockResolvedValue({
@@ -107,6 +109,19 @@ vi.mock("@server/services/application-browser", async (importOriginal) => {
         solved: false,
         type: null,
         provider: null,
+      },
+      reasonCode: "portal_submitted",
+      outcomeMetadata: {
+        reasonCode: "portal_submitted",
+        status: "submitted",
+        domain: "ats.example.com",
+        source: "manual",
+        urlKind: "application_link",
+        liveSubmitAttempted: true,
+        submitClicked: true,
+        captchaType: null,
+        captchaAttempted: false,
+        captchaSolved: false,
       },
     }),
   };

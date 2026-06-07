@@ -69,6 +69,16 @@ const delayMs = Math.max(
   0,
   Number.parseInt(process.env.JOBOPS_AUTONOMOUS_DRAIN_DELAY_MS ?? "1200", 10),
 );
+const batchLimit = Math.max(
+  1,
+  Math.min(
+    3,
+    Number.parseInt(
+      process.env.JOBOPS_AUTONOMOUS_AUTO_APPLY_BATCH_LIMIT ?? "1",
+      10,
+    ) || 1,
+  ),
+);
 
 const stats = {
   totalReadyAtStart: 0,
@@ -82,6 +92,8 @@ const stats = {
   skippedPdf: 0,
   portalNeedsReview: 0,
   errors: 0,
+  batchLimit,
+  queuedAtStart: 0,
 };
 const results: JobResult[] = [];
 
@@ -143,10 +155,55 @@ function isAggregatorHost(host: string): boolean {
   );
 }
 
-function isAtsHost(host: string): boolean {
-  return /(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|recruitee\.com|personio\.|bamboohr\.com|icims\.com|workdayjobs\.com|myworkdayjobs\.com|successfactors\.|oraclecloud\.com|jobvite\.com|teamtailor\.com|join\.com|pinpointhq\.com|talentadore\.com|careers-page\.com|applytojob\.com|rippling\.com|breezy\.hr|comeet\.|jobylon\.com|flatchr\.io)/i.test(
-    host,
+function parseList(value: string | null | undefined): string[] {
+  return (value ?? "")
+    .split(/[\n,]/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function normalizeAllowedDomain(value: string): string {
+  const withoutProtocol =
+    value.replace(/^https?:\/\//i, "").split("/")[0] ?? "";
+  return withoutProtocol
+    .toLowerCase()
+    .replace(/^www\./, "")
+    .trim();
+}
+
+function portalAllowedDomains(): string[] {
+  const configured =
+    process.env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
+    process.env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS;
+  return parseList(configured ?? "ashbyhq.com,jobs.ashbyhq.com")
+    .map(normalizeAllowedDomain)
+    .filter(Boolean);
+}
+
+function domainMatches(host: string, domains: string[]): boolean {
+  const normalizedHost = normalizeAllowedDomain(host);
+  return domains.some(
+    (domain) =>
+      normalizedHost === domain || normalizedHost.endsWith(`.${domain}`),
   );
+}
+
+function isAtsHost(host: string): boolean {
+  return domainMatches(host, portalAllowedDomains());
+}
+
+function portalAutoSubmitPolicyBlocker(
+  url: string | null | undefined,
+): string | null {
+  if (!isHttpUrl(url)) return "portal_url_missing_or_invalid";
+  const host = hostname(url);
+  if (!host || isAggregatorHost(host)) {
+    return "portal route is not a direct supported ATS/company apply page; needs human review before submission.";
+  }
+  if (!domainMatches(host, portalAllowedDomains())) {
+    return "portal route is not on the configured autonomous-submit portal allowlist; needs human review before submission.";
+  }
+  return null;
 }
 
 function addCandidateUrl(
@@ -383,7 +440,11 @@ function hasUsablePdf(job: Job): boolean {
   );
 }
 
-async function markApplied(job: Job, note: string): Promise<void> {
+async function markApplied(
+  job: Job,
+  note: string,
+  reasonCode = "autonomous_service_application",
+): Promise<void> {
   const appliedAtDate = new Date();
   transitionStage(
     job.id,
@@ -393,7 +454,7 @@ async function markApplied(job: Job, note: string): Promise<void> {
       eventLabel: "Autonomous service application",
       actor: "system",
       eventType: "status_update",
-      reasonCode: "autonomous_service_application",
+      reasonCode,
       note,
     },
     null,
@@ -419,6 +480,35 @@ async function markSkipped(job: Job, blocker: string): Promise<void> {
   await appendLog({
     ts: new Date().toISOString(),
     event: "job_skipped",
+    jobId: job.id,
+    blocker,
+  });
+}
+
+async function markNeedsReview(job: Job, blocker: string): Promise<void> {
+  const reviewedAt = new Date();
+  const occurredAt = Math.floor(reviewedAt.getTime() / 1000);
+  transitionStage(
+    job.id,
+    "no_change",
+    occurredAt,
+    {
+      eventLabel: "Autonomous service needs review",
+      actor: "system",
+      eventType: "status_update",
+      reasonCode: "portal_needs_review",
+      note: blocker,
+    },
+    "needs_human" as never,
+  );
+  await updateJob(job.id, {
+    status: "skipped",
+    outcome: "needs_human" as never,
+    closedAt: occurredAt,
+  });
+  await appendLog({
+    ts: reviewedAt.toISOString(),
+    event: "job_needs_review",
     jobId: job.id,
     blocker,
   });
@@ -452,6 +542,14 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
     result.action = "needs_portal_session";
     return false;
   }
+  const policyBlocker = portalAutoSubmitPolicyBlocker(targetUrl);
+  if (policyBlocker) {
+    stats.portalNeedsReview += 1;
+    result.portalError = policyBlocker;
+    result.blocker = policyBlocker;
+    result.action = "needs_review";
+    return false;
+  }
   if (!fullAutoSubmitAllowed()) {
     stats.portalNeedsReview += 1;
     result.portalError =
@@ -468,6 +566,7 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
       await markApplied(
         job,
         `Submitted portal application: fields=${portal.fieldsFilled}; resumeUploaded=${portal.resumeUploaded}; finalUrl=${portal.finalUrl}`,
+        "portal_submitted",
       );
       stats.portalSubmitted += 1;
       result.action = "portal_submitted";
@@ -479,9 +578,13 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
         portal.captcha.message ??
         "portal application needs review",
     );
+    result.blocker = result.portalError;
+    result.action = "needs_review";
     return false;
   } catch (error) {
     result.portalError = redact(error instanceof Error ? error.message : error);
+    result.blocker = result.portalError;
+    result.action = "needs_review";
     return false;
   }
 }
@@ -538,7 +641,17 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
       result.action = "needs_portal_session";
       stats.portalNeedsReview += 1;
       stats.skippedNoRoute += 1;
-      await markSkipped(job, sessionBlocker);
+      await markNeedsReview(job, sessionBlocker);
+      return result;
+    }
+    const policyBlocker = portalAutoSubmitPolicyBlocker(resolved.portal);
+    if (policyBlocker) {
+      result.portalError = policyBlocker;
+      result.blocker = policyBlocker;
+      result.action = "needs_review";
+      stats.portalNeedsReview += 1;
+      stats.skippedNoRoute += 1;
+      await markNeedsReview(job, policyBlocker);
       return result;
     }
     const updated = await updateJob(job.id, {
@@ -561,7 +674,17 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
       result.action = "needs_portal_session";
       stats.portalNeedsReview += 1;
       stats.skippedNoRoute += 1;
-      await markSkipped(job, sessionBlocker);
+      await markNeedsReview(job, sessionBlocker);
+      return result;
+    }
+    const policyBlocker = portalAutoSubmitPolicyBlocker(directUrl);
+    if (policyBlocker) {
+      result.portalError = policyBlocker;
+      result.blocker = policyBlocker;
+      result.action = "needs_review";
+      stats.portalNeedsReview += 1;
+      stats.skippedNoRoute += 1;
+      await markNeedsReview(job, policyBlocker);
       return result;
     }
     if (await tryPortal(job, result)) return result;
@@ -574,7 +697,11 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
       ? "alternate_routes_exhausted_no_confirmed_submit"
       : "no_contact_or_direct_ats_found_after_search");
   stats.skippedNoRoute += 1;
-  await markSkipped(job, result.blocker);
+  if (result.portalError || resolved.portal) {
+    await markNeedsReview(job, result.blocker);
+  } else {
+    await markSkipped(job, result.blocker);
+  }
   return result;
 }
 
@@ -582,16 +709,27 @@ async function main(): Promise<void> {
   await mkdir(outDir, { recursive: true });
   const ready = await getAllJobs(["ready"]);
   stats.totalReadyAtStart = ready.length;
+  stats.queuedAtStart = ready.length;
+  const readyBatch = ready
+    .slice()
+    .sort((a, b) =>
+      String(b.readyAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(
+        String(a.readyAt ?? a.updatedAt ?? a.createdAt ?? ""),
+      ),
+    )
+    .slice(0, batchLimit);
   await appendLog({
     ts: startedAt,
     event: "start",
     ready: ready.length,
+    batchLimit,
+    selected: readyBatch.length,
     maxPages,
     allowCaptcha: isFullAutoCaptchaEnabled(),
   });
   await writeProgress(false);
 
-  for (const job of ready) {
+  for (const job of readyBatch) {
     try {
       const result = await handleReadyJob(job);
       results.push(result);

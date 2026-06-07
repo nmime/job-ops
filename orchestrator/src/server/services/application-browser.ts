@@ -7,9 +7,9 @@ import { getDataDir } from "@server/config/dataDir";
 import { getPaidChallengeSolverOptions } from "@server/services/captcha-solver";
 import { getPdfPath } from "@server/services/pdf";
 import { getProfile } from "@server/services/profile";
-import { resolveHttpApplicationUrl } from "./auto-apply";
 import type { Job, ResumeProfile } from "@shared/types";
 import type { Browser, Locator, Page } from "playwright";
+import { resolveHttpApplicationUrl } from "./auto-apply";
 
 export type BrowserAutoApplyReviewReason =
   | "needs_portal_session"
@@ -21,6 +21,34 @@ export type BrowserAutoApplyReviewReason =
   | "no_success_signal"
   | "post_submit_blocking_error"
   | "browser_error";
+
+export type PortalOutcomeReasonCode =
+  | "portal_submitted"
+  | "portal_needs_review_login_required"
+  | "portal_needs_review_session_missing"
+  | "portal_needs_review_captcha"
+  | "portal_needs_review_required_fields"
+  | "portal_needs_review_resume_upload_missing"
+  | "portal_needs_review_pre_submit_dry_run"
+  | "portal_needs_review_no_submit_control"
+  | "portal_needs_review_no_success_signal"
+  | "portal_needs_review_post_submit_blocking_error"
+  | "portal_needs_review_browser_error"
+  | "portal_blocked_domain_not_validated"
+  | "portal_blocked_unsupported_source";
+
+export type PortalOutcomeMetadata = {
+  reasonCode: PortalOutcomeReasonCode;
+  status: "submitted" | "needs_review" | "blocked";
+  domain: string | null;
+  source?: string | null;
+  urlKind?: "application_link" | "direct_url" | "source_url" | "unknown";
+  liveSubmitAttempted: boolean;
+  submitClicked: boolean;
+  captchaType?: CaptchaDetection["type"] | null;
+  captchaAttempted?: boolean;
+  captchaSolved?: boolean;
+};
 
 export type PortalSessionGate = {
   type: "needs_portal_session";
@@ -46,8 +74,9 @@ export type BrowserAutoApplyResult = {
   };
   screenshotPath?: string;
   reason?: string;
-  reasonCode?: PortalBlockerReasonCode;
+  reasonCode?: PortalOutcomeReasonCode;
   reviewReason?: BrowserAutoApplyReviewReason;
+  outcomeMetadata: PortalOutcomeMetadata;
 };
 
 type BrowserAutoApplyOptions = {
@@ -59,11 +88,16 @@ type BrowserAutoApplyOptions = {
 export type PortalBlockerReasonCode =
   | "domain_not_allowlisted"
   | "domain_blocked"
+  | "unsupported_source"
   | "session_required"
   | "login_wall"
   | "captcha_challenge"
   | "required_or_invalid_fields"
+  | "resume_upload_missing"
+  | "pre_submit_dry_run"
   | "missing_success_signal"
+  | "post_submit_blocking_error"
+  | "browser_error"
   | "no_submit_control";
 
 type PortalBlocker = {
@@ -93,8 +127,26 @@ export type PortalDomainPolicyDecision = {
   sessionRequiredDomains: string[];
   sessionRequired: boolean;
   hasValidatedSession: boolean;
-  reasonCode?: PortalBlockerReasonCode;
+  reasonCode?: PortalOutcomeReasonCode;
+  blockerCode?: PortalBlockerReasonCode;
   reason?: string;
+};
+
+export type PortalSourcePolicyDecision = {
+  allowed: boolean;
+  source: string | null;
+  urlKind: "application_link" | "direct_url" | "source_url" | "unknown";
+  validatedSources: string[];
+  allowSourceUrlFallback: boolean;
+  reasonCode?: PortalOutcomeReasonCode;
+  blockerCode?: PortalBlockerReasonCode;
+  reason?: string;
+};
+
+export type PortalSubmitPolicyDecision = PortalDomainPolicyDecision & {
+  sourcePolicy: PortalSourcePolicyDecision;
+  source: string | null;
+  urlKind: PortalSourcePolicyDecision["urlKind"];
 };
 
 type CaptchaDetection =
@@ -222,12 +274,131 @@ function domainMatches(
   );
 }
 
-function getPortalAllowedDomains(env: NodeJS.ProcessEnv): string[] {
-  return normalizeDomainList(
-    parseList(
-      env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
-        env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS,
+function normalizeSourceEntry(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  return normalized || null;
+}
+
+function normalizeSourceList(entries: string[]): string[] {
+  return Array.from(
+    new Set(
+      entries
+        .map((entry) => normalizeSourceEntry(entry))
+        .filter((entry): entry is string => Boolean(entry)),
     ),
+  );
+}
+
+function getPortalValidatedSources(env: NodeJS.ProcessEnv): string[] {
+  return normalizeSourceList(
+    parseList(
+      env.JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES ??
+        env.JOBOPS_FULL_AUTO_VALIDATED_SOURCES,
+    ),
+  );
+}
+
+function isPortalSourceUrlFallbackAllowed(env: NodeJS.ProcessEnv): boolean {
+  return parseBoolean(
+    env.JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK ??
+      env.JOBOPS_FULL_AUTO_ALLOW_SOURCE_URL_FALLBACK,
+  );
+}
+
+export function classifyPortalUrlKind(
+  job: Pick<Job, "applicationLink" | "jobUrlDirect" | "jobUrl">,
+  url: string,
+): PortalSourcePolicyDecision["urlKind"] {
+  const matches = (value: string | null | undefined): boolean =>
+    Boolean(value?.trim()) && value?.trim() === url;
+  if (matches(job.applicationLink)) return "application_link";
+  if (matches(job.jobUrlDirect)) return "direct_url";
+  if (matches(job.jobUrl)) return "source_url";
+  return "unknown";
+}
+
+export function evaluatePortalSourcePolicy(
+  job: Pick<Job, "source" | "applicationLink" | "jobUrlDirect" | "jobUrl">,
+  url: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PortalSourcePolicyDecision {
+  const source = normalizeSourceEntry(String(job.source ?? ""));
+  const validatedSources = getPortalValidatedSources(env);
+  const urlKind = classifyPortalUrlKind(job, url);
+  const allowSourceUrlFallback = isPortalSourceUrlFallbackAllowed(env);
+  const sourceIsValidated = Boolean(
+    source &&
+      (validatedSources.includes("*") || validatedSources.includes(source)),
+  );
+
+  const base = {
+    source,
+    urlKind,
+    validatedSources,
+    allowSourceUrlFallback,
+  };
+
+  if (
+    urlKind === "source_url" &&
+    !sourceIsValidated &&
+    !allowSourceUrlFallback
+  ) {
+    return {
+      ...base,
+      allowed: false,
+      reasonCode: "portal_blocked_unsupported_source",
+      blockerCode: "unsupported_source",
+      reason:
+        "Portal submit URL falls back to the source listing URL, but this source is not validated for live browser submission.",
+    };
+  }
+
+  return { ...base, allowed: true };
+}
+
+export function evaluatePortalSubmitPolicy(
+  job: Pick<Job, "source" | "applicationLink" | "jobUrlDirect" | "jobUrl">,
+  url: string,
+  env: NodeJS.ProcessEnv = process.env,
+): PortalSubmitPolicyDecision {
+  const domainDecision = evaluatePortalDomainPolicy(url, env);
+  const sourcePolicy = evaluatePortalSourcePolicy(job, url, env);
+  if (!domainDecision.allowed) {
+    return {
+      ...domainDecision,
+      sourcePolicy,
+      source: sourcePolicy.source,
+      urlKind: sourcePolicy.urlKind,
+    };
+  }
+
+  if (!sourcePolicy.allowed) {
+    return {
+      ...domainDecision,
+      allowed: false,
+      reasonCode: sourcePolicy.reasonCode,
+      blockerCode: sourcePolicy.blockerCode,
+      reason: sourcePolicy.reason,
+      sourcePolicy,
+      source: sourcePolicy.source,
+      urlKind: sourcePolicy.urlKind,
+    };
+  }
+
+  return {
+    ...domainDecision,
+    sourcePolicy,
+    source: sourcePolicy.source,
+    urlKind: sourcePolicy.urlKind,
+  };
+}
+
+function getPortalAllowedDomains(env: NodeJS.ProcessEnv): string[] {
+  const configured =
+    env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
+    env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS;
+  return normalizeDomainList(
+    parseList(configured ?? "ashbyhq.com,jobs.ashbyhq.com"),
   );
 }
 
@@ -269,6 +440,66 @@ function getBrowserStorageStatePath(
     env.JOBOPS_FULL_AUTO_BROWSER_STORAGE_STATE_PATH ??
     env.JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH;
   return path?.trim() ? path.trim() : undefined;
+}
+
+function portalOutcomeReasonCodeForBlocker(
+  code: PortalBlockerReasonCode | undefined,
+): PortalOutcomeReasonCode {
+  switch (code) {
+    case "login_wall":
+      return "portal_needs_review_login_required";
+    case "session_required":
+      return "portal_needs_review_session_missing";
+    case "captcha_challenge":
+      return "portal_needs_review_captcha";
+    case "required_or_invalid_fields":
+      return "portal_needs_review_required_fields";
+    case "resume_upload_missing":
+      return "portal_needs_review_resume_upload_missing";
+    case "pre_submit_dry_run":
+      return "portal_needs_review_pre_submit_dry_run";
+    case "no_submit_control":
+      return "portal_needs_review_no_submit_control";
+    case "missing_success_signal":
+      return "portal_needs_review_no_success_signal";
+    case "post_submit_blocking_error":
+      return "portal_needs_review_post_submit_blocking_error";
+    case "domain_not_allowlisted":
+    case "domain_blocked":
+      return "portal_blocked_domain_not_validated";
+    case "unsupported_source":
+      return "portal_blocked_unsupported_source";
+    default:
+      return "portal_needs_review_browser_error";
+  }
+}
+
+function createPortalOutcomeMetadata(input: {
+  reasonCode: PortalOutcomeReasonCode;
+  domain: string | null;
+  source?: string | null;
+  urlKind?: PortalSourcePolicyDecision["urlKind"];
+  liveSubmitAttempted?: boolean;
+  submitClicked?: boolean;
+  captcha?: BrowserAutoApplyResult["captcha"];
+}): PortalOutcomeMetadata {
+  return {
+    reasonCode: input.reasonCode,
+    status:
+      input.reasonCode === "portal_submitted"
+        ? "submitted"
+        : input.reasonCode.startsWith("portal_blocked_")
+          ? "blocked"
+          : "needs_review",
+    domain: input.domain,
+    source: input.source,
+    urlKind: input.urlKind,
+    liveSubmitAttempted: Boolean(input.liveSubmitAttempted),
+    submitClicked: Boolean(input.submitClicked),
+    captchaType: input.captcha?.type ?? null,
+    captchaAttempted: input.captcha?.attempted ?? false,
+    captchaSolved: input.captcha?.solved ?? false,
+  };
 }
 
 function storageStateHasSessionForDomain(
@@ -324,7 +555,8 @@ export function evaluatePortalDomainPolicy(
     return {
       ...base,
       allowed: false,
-      reasonCode: "domain_not_allowlisted",
+      reasonCode: "portal_blocked_domain_not_validated",
+      blockerCode: "domain_not_allowlisted",
       reason:
         "Portal domain is not in JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS/JOBOPS_FULL_AUTO_ALLOWED_DOMAINS.",
     };
@@ -334,7 +566,8 @@ export function evaluatePortalDomainPolicy(
     return {
       ...base,
       allowed: false,
-      reasonCode: "session_required",
+      reasonCode: "portal_needs_review_session_missing",
+      blockerCode: "session_required",
       reason:
         "Portal domain requires a validated browser session/storage state before automation.",
     };
@@ -344,7 +577,8 @@ export function evaluatePortalDomainPolicy(
     return {
       ...base,
       allowed: false,
-      reasonCode: "domain_blocked",
+      reasonCode: "portal_blocked_domain_not_validated",
+      blockerCode: "domain_blocked",
       reason:
         "Portal domain is blocked for full-auto submissions unless a validated session is configured.",
     };
@@ -1670,15 +1904,24 @@ export async function submitPortalApplication(
       "Full-auto browser apply needs a resume PDF before submission.",
     );
   }
-  if (!isFullAutoBrowserSubmitEnabled()) {
+  const dryRun = options.dryRun || isFullAutoBrowserDryRunEnabled();
+  if (!isFullAutoBrowserSubmitEnabled() && !dryRun) {
     throw serviceUnavailable(
       "Full-auto browser submission is disabled. Set JOBOPS_FULL_AUTO_APPLY_ENABLED=true and JOBOPS_AUTONOMOUS_PORTAL_APPLY_ENABLED=true to enable it.",
     );
   }
 
   const url = getApplicationUrl(job);
-  const domainPolicy = evaluatePortalDomainPolicy(url);
-  if (!domainPolicy.allowed) {
+  const submitPolicy = evaluatePortalSubmitPolicy(job, url);
+  const outcomeBase = {
+    domain: submitPolicy.domain,
+    source: submitPolicy.source,
+    urlKind: submitPolicy.urlKind,
+  };
+  if (!submitPolicy.allowed && !dryRun) {
+    const reasonCode =
+      submitPolicy.reasonCode ??
+      portalOutcomeReasonCodeForBlocker(submitPolicy.blockerCode);
     return {
       mode: "browser",
       status: "needs_review",
@@ -1690,13 +1933,17 @@ export async function submitPortalApplication(
       submitClicked: false,
       captcha: { attempted: false, solved: false, type: null, provider: null },
       reason:
-        domainPolicy.reason ??
-        "Portal domain is not authorized for full-auto submission.",
-      reasonCode: domainPolicy.reasonCode,
+        submitPolicy.reason ??
+        "Portal domain/source is not authorized for full-auto submission.",
+      reasonCode,
       reviewReason:
-        domainPolicy.reasonCode === "session_required"
+        submitPolicy.blockerCode === "session_required"
           ? "needs_portal_session"
           : undefined,
+      outcomeMetadata: createPortalOutcomeMetadata({
+        ...outcomeBase,
+        reasonCode,
+      }),
     };
   }
   const profile = await getProfile().catch((error) => {
@@ -1757,13 +2004,17 @@ export async function submitPortalApplication(
         },
         screenshotPath,
         reason: preFillBlocker.reason,
-        reasonCode: preFillBlocker.code,
+        reasonCode: portalOutcomeReasonCodeForBlocker(preFillBlocker.code),
         reviewReason:
           preFillBlocker.code === "login_wall"
             ? "needs_portal_session"
             : preFillBlocker.code === "captcha_challenge"
               ? "needs_captcha"
               : undefined,
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: portalOutcomeReasonCodeForBlocker(preFillBlocker.code),
+        }),
       };
     }
 
@@ -1794,7 +2045,7 @@ export async function submitPortalApplication(
         },
         screenshotPath,
         reason: postFillBlocker.reason,
-        reasonCode: postFillBlocker.code,
+        reasonCode: portalOutcomeReasonCodeForBlocker(postFillBlocker.code),
         reviewReason:
           postFillBlocker.code === "login_wall"
             ? "needs_portal_session"
@@ -1803,6 +2054,10 @@ export async function submitPortalApplication(
               : postFillBlocker.code === "required_or_invalid_fields"
                 ? "required_fields_missing"
                 : undefined,
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: portalOutcomeReasonCodeForBlocker(postFillBlocker.code),
+        }),
       };
     }
 
@@ -1824,8 +2079,13 @@ export async function submitPortalApplication(
         captcha,
         screenshotPath,
         reason: captcha.message ?? "CAPTCHA could not be solved automatically.",
-        reasonCode: "captcha_challenge",
+        reasonCode: "portal_needs_review_captcha",
         reviewReason: "needs_captcha",
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: "portal_needs_review_captcha",
+          captcha,
+        }),
       };
     }
 
@@ -1847,14 +2107,23 @@ export async function submitPortalApplication(
         captcha,
         screenshotPath,
         reason: summarizeRequiredIssues(requiredIssues),
-        reasonCode: "required_or_invalid_fields",
+        reasonCode: hasRequiredFile
+          ? "portal_needs_review_resume_upload_missing"
+          : "portal_needs_review_required_fields",
         reviewReason: hasRequiredFile
           ? "resume_upload_missing"
           : "required_fields_missing",
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: hasRequiredFile
+            ? "portal_needs_review_resume_upload_missing"
+            : "portal_needs_review_required_fields",
+          captcha,
+        }),
       };
     }
 
-    if (options.dryRun || isFullAutoBrowserDryRunEnabled()) {
+    if (dryRun) {
       const screenshotPath = await saveDebugScreenshot(page, job.id);
       return {
         mode: "browser",
@@ -1869,7 +2138,13 @@ export async function submitPortalApplication(
         screenshotPath,
         reason:
           "Dry-run pre-submit checks passed; final submit/apply click was intentionally skipped.",
+        reasonCode: "portal_needs_review_pre_submit_dry_run",
         reviewReason: "pre_submit_dry_run",
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: "portal_needs_review_pre_submit_dry_run",
+          captcha,
+        }),
       };
     }
 
@@ -1896,10 +2171,23 @@ export async function submitPortalApplication(
         resumeUploaded,
         submitClicked,
         captcha,
+        reasonCode: "portal_submitted",
+        outcomeMetadata: createPortalOutcomeMetadata({
+          ...outcomeBase,
+          reasonCode: "portal_submitted",
+          liveSubmitAttempted: true,
+          submitClicked,
+          captcha,
+        }),
       };
     }
 
     const screenshotPath = await saveDebugScreenshot(page, job.id);
+    const finalReasonCode = submitClicked
+      ? postSubmitBlocker
+        ? portalOutcomeReasonCodeForBlocker(postSubmitBlocker.code)
+        : "portal_needs_review_no_success_signal"
+      : "portal_needs_review_no_submit_control";
     return {
       mode: "browser",
       status: "needs_review",
@@ -1916,14 +2204,19 @@ export async function submitPortalApplication(
           ? postSubmitBlocker.reason
           : "Portal did not show a success signal after submit."
         : "No usable submit/apply button was found.",
-      reasonCode: submitClicked
-        ? (postSubmitBlocker?.code ?? "missing_success_signal")
-        : "no_submit_control",
+      reasonCode: finalReasonCode,
       reviewReason: submitClicked
         ? postSubmitBlocker
           ? "post_submit_blocking_error"
           : "no_success_signal"
         : "no_submit_button",
+      outcomeMetadata: createPortalOutcomeMetadata({
+        ...outcomeBase,
+        reasonCode: finalReasonCode,
+        liveSubmitAttempted: true,
+        submitClicked,
+        captcha,
+      }),
     };
   } catch (error) {
     throw upstreamError("Full-auto browser application failed.", {

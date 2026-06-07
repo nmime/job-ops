@@ -9,7 +9,7 @@ import { getActiveTenantId } from "@server/tenancy/context";
 import type { Job } from "@shared/types";
 import {
   classifyPortalUrlForSession,
-  evaluatePortalDomainPolicy,
+  evaluatePortalSubmitPolicy,
   isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
   isFullAutoEnabled,
@@ -57,6 +57,8 @@ export type AutonomousAutoApplyConfig = {
   portalSessionRequiredDomains: string;
   portalSessionValidatedDomains: string;
   portalStorageStatePath: string;
+  portalValidatedSources: string;
+  portalAllowSourceUrlFallback: boolean;
   intervalMs: number;
   batchLimit: number;
   retryDelayMs: number;
@@ -97,7 +99,7 @@ export function getAutonomousAutoApplyConfigFromEnv(
     portalAllowedDomains:
       env.JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS ??
       env.JOBOPS_FULL_AUTO_ALLOWED_DOMAINS ??
-      "",
+      "ashbyhq.com,jobs.ashbyhq.com",
     portalBlockedDomains:
       env.JOBOPS_AUTONOMOUS_PORTAL_BLOCKED_DOMAINS ??
       env.JOBOPS_FULL_AUTO_BLOCKED_DOMAINS ??
@@ -114,6 +116,14 @@ export function getAutonomousAutoApplyConfigFromEnv(
       env.JOBOPS_FULL_AUTO_BROWSER_STORAGE_STATE_PATH ??
       env.JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH ??
       "",
+    portalValidatedSources:
+      env.JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES ??
+      env.JOBOPS_FULL_AUTO_VALIDATED_SOURCES ??
+      "",
+    portalAllowSourceUrlFallback: parseBoolean(
+      env.JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK ??
+        env.JOBOPS_FULL_AUTO_ALLOW_SOURCE_URL_FALLBACK,
+    ),
     intervalMs: Math.max(
       MIN_QUEUE_INTERVAL_MS,
       parsePositiveInteger(env.JOBOPS_AUTONOMOUS_AUTO_APPLY_INTERVAL_MS) ??
@@ -165,6 +175,9 @@ function portalPolicyEnvFromConfig(
     JOBOPS_AUTONOMOUS_PORTAL_SESSION_VALIDATED_DOMAINS:
       config.portalSessionValidatedDomains,
     JOBOPS_AUTONOMOUS_PORTAL_STORAGE_STATE_PATH: config.portalStorageStatePath,
+    JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES: config.portalValidatedSources,
+    JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK:
+      config.portalAllowSourceUrlFallback ? "true" : "false",
   };
 }
 
@@ -193,9 +206,10 @@ export function classifyAutonomousAutoApply(
     };
   }
 
-  const portalDomainDecision =
+  const portalSubmitDecision =
     applicationUrl && config.browserSubmitEnabled
-      ? evaluatePortalDomainPolicy(
+      ? evaluatePortalSubmitPolicy(
+          job,
           applicationUrl,
           portalPolicyEnvFromConfig(config),
         )
@@ -209,13 +223,13 @@ export function classifyAutonomousAutoApply(
           "Portal application has a terminal full-auto blocker recorded; human action is required before retry.",
       };
     }
-    if (!portalDomainDecision?.allowed) {
+    if (!portalSubmitDecision?.allowed) {
       return {
         action: "review_only_portal",
-        reasonCode: portalDomainDecision?.reasonCode,
+        reasonCode: portalSubmitDecision?.reasonCode,
         reason:
-          portalDomainDecision?.reason ??
-          "Portal domain is not authorized for full-auto submission.",
+          portalSubmitDecision?.reason ??
+          "Portal domain/source is not authorized for full-auto submission.",
       };
     }
   }
@@ -235,7 +249,7 @@ export function classifyAutonomousAutoApply(
     }
     return {
       action: "review_only_captcha",
-      reasonCode: "captcha_challenge",
+      reasonCode: "portal_needs_review_captcha",
       reason:
         "CAPTCHA/challenge signal detected; paid portal CAPTCHA solving stays disabled unless explicitly enabled and budgeted.",
     };
@@ -294,6 +308,7 @@ async function recordPortalSessionReview(input: {
   jobId: string;
   provider: string;
   reason: string;
+  reasonCode?: string | null;
 }): Promise<void> {
   if (await hasPriorPortalSessionReview(input.jobId)) return;
   await jobsRepo.createJobNote({
@@ -381,6 +396,8 @@ export async function enqueueAutonomousAutoApplyForReadyJobs(input: {
         jobId: job.id,
         decision: decision.action,
         reason: decision.reason,
+        reasonCode:
+          "reasonCode" in decision ? (decision.reasonCode ?? null) : null,
       });
       continue;
     }
@@ -482,6 +499,7 @@ async function processQueuedAutonomousAutoApply(
           jobId: hydratedJob.id,
           provider: decision.provider,
           reason: decision.reason,
+          reasonCode: null,
         });
         logger.info(
           "Autonomous full-auto portal application skipped before submit: portal session required",
@@ -490,6 +508,7 @@ async function processQueuedAutonomousAutoApply(
             jobId: input.jobId,
             provider: decision.provider,
             reason: decision.reason,
+            reasonCode: "portal_needs_review_session_missing",
           },
         );
         return "processed";
@@ -505,6 +524,7 @@ async function processQueuedAutonomousAutoApply(
           jobId: input.jobId,
           decision: decision.action,
           reason: decision.reason,
+          reasonCode: "reasonCode" in decision ? decision.reasonCode : null,
         });
         return "processed";
       }
@@ -598,8 +618,12 @@ async function processQueuedAutonomousAutoApply(
             eventLabel: "Autonomous portal apply needs review",
             actor: "system",
             externalUrl: browserApply.finalUrl,
-            reasonCode: browserApply.reasonCode ?? "portal_needs_review",
+            reasonCode:
+              browserApply.outcomeMetadata.reasonCode ??
+              browserApply.reasonCode ??
+              "portal_needs_review_browser_error",
             eventType: "note",
+            portalOutcome: browserApply.outcomeMetadata,
             note:
               browserApply.reason ??
               "Portal application could not be safely submitted automatically.",
@@ -611,7 +635,11 @@ async function processQueuedAutonomousAutoApply(
           jobId: input.jobId,
           decision: decision.action,
           reason: browserApply.reason ?? null,
-          reasonCode: browserApply.reasonCode ?? null,
+          reasonCode:
+            browserApply.outcomeMetadata.reasonCode ??
+            browserApply.reasonCode ??
+            null,
+          portalOutcome: browserApply.outcomeMetadata,
           reviewReason: browserApply.reviewReason ?? null,
           captchaType: browserApply.captcha.type,
           captchaAttempted: browserApply.captcha.attempted,
@@ -631,7 +659,10 @@ async function processQueuedAutonomousAutoApply(
           eventLabel: "Autonomous full-auto browser apply",
           actor: "system",
           externalUrl: browserApply.finalUrl,
+          reasonCode:
+            browserApply.outcomeMetadata.reasonCode ?? "portal_submitted",
           note: `Submitted portal application via browser automation; fields=${browserApply.fieldsFilled}; resumeUploaded=${browserApply.resumeUploaded}; captcha=${browserApply.captcha.type ?? "none"}/${browserApply.captcha.solved ? "solved" : "not-needed"}`,
+          portalOutcome: browserApply.outcomeMetadata,
         },
         null,
       );

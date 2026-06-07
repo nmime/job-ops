@@ -7,6 +7,7 @@ import {
   classifyPortalUrlForSession,
   detectPortalBlockerFromSnapshot,
   evaluatePortalDomainPolicy,
+  evaluatePortalSubmitPolicy,
   inspectPortalHtmlForAutoApply,
   isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
@@ -36,7 +37,27 @@ describe("portal auto-apply safety policy", () => {
     ).toBe(true);
   });
 
-  it("allows only configured direct ATS/company domains", () => {
+  it("defaults to an Ashby-only allowlist when no portal allowlist env is set", () => {
+    expect(
+      evaluatePortalDomainPolicy(
+        "https://jobs.ashbyhq.com/acme/application/1",
+        {},
+      ),
+    ).toMatchObject({ allowed: true, domain: "jobs.ashbyhq.com" });
+
+    expect(
+      evaluatePortalDomainPolicy(
+        "https://boards.greenhouse.io/acme/jobs/1",
+        {},
+      ),
+    ).toMatchObject({
+      allowed: false,
+      reasonCode: "portal_blocked_domain_not_validated",
+      blockerCode: "domain_not_allowlisted",
+    });
+  });
+
+  it("allows only explicitly configured direct ATS/company domains", () => {
     expect(
       evaluatePortalDomainPolicy("https://boards.greenhouse.io/acme/jobs/1", {
         JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS:
@@ -50,10 +71,10 @@ describe("portal auto-apply safety policy", () => {
       }),
     ).toMatchObject({
       allowed: false,
-      reasonCode: "domain_not_allowlisted",
+      reasonCode: "portal_blocked_domain_not_validated",
+      blockerCode: "domain_not_allowlisted",
     });
   });
-
 
   it("allows supported HTTP application, direct, or source URLs when portal gates and allowlist match", () => {
     for (const url of [
@@ -70,12 +91,51 @@ describe("portal auto-apply safety policy", () => {
     }
   });
 
+  it("gates source-listing fallback URLs separately from validated domains", () => {
+    const job = {
+      source: "unknown-board",
+      applicationLink: null,
+      jobUrlDirect: null,
+      jobUrl: "https://jobs.example.com/source-only",
+    };
+
+    expect(
+      evaluatePortalSubmitPolicy(job, job.jobUrl, {
+        JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "jobs.example.com",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reasonCode: "portal_blocked_unsupported_source",
+      blockerCode: "unsupported_source",
+      source: "unknown-board",
+      urlKind: "source_url",
+    });
+
+    expect(
+      evaluatePortalSubmitPolicy(job, job.jobUrl, {
+        JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "jobs.example.com",
+        JOBOPS_AUTONOMOUS_PORTAL_VALIDATED_SOURCES: "unknown-board",
+      }),
+    ).toMatchObject({ allowed: true, source: "unknown-board" });
+
+    expect(
+      evaluatePortalSubmitPolicy(job, job.jobUrl, {
+        JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "jobs.example.com",
+        JOBOPS_AUTONOMOUS_PORTAL_ALLOW_SOURCE_URL_FALLBACK: "true",
+      }),
+    ).toMatchObject({ allowed: true, source: "unknown-board" });
+  });
+
   it("requires a validated session for LinkedIn and Indeed by default", () => {
     expect(
       evaluatePortalDomainPolicy("https://linkedin.com/jobs/view/1", {
         JOBOPS_AUTONOMOUS_PORTAL_ALLOWED_DOMAINS: "linkedin.com",
       }),
-    ).toMatchObject({ allowed: false, reasonCode: "session_required" });
+    ).toMatchObject({
+      allowed: false,
+      reasonCode: "portal_needs_review_session_missing",
+      blockerCode: "session_required",
+    });
 
     expect(
       evaluatePortalDomainPolicy("https://indeed.com/viewjob?jk=1", {
