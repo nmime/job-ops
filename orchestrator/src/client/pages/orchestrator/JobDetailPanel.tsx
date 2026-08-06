@@ -8,6 +8,7 @@ import { GhostwriterDrawer } from "@client/components/ghostwriter/GhostwriterDra
 import { JobDetailsEditDrawer } from "@client/components/JobDetailsEditDrawer";
 import { KbdHint } from "@client/components/KbdHint";
 import { OpenJobListingButton } from "@client/components/OpenJobListingButton";
+import { Tip } from "@client/components/Tip";
 import { TooltipWhenDisabled } from "@client/components/TooltipWhenDisabled";
 import { TailoringWorkspace } from "@client/components/tailoring/TailoringWorkspace";
 import {
@@ -16,7 +17,9 @@ import {
 } from "@client/hooks/queries/useJobMutations";
 import { useProfile } from "@client/hooks/useProfile";
 import { useRescoreJob } from "@client/hooks/useRescoreJob";
+import { useSettings } from "@client/hooks/useSettings";
 import { uploadJobPdfFromFile } from "@client/lib/job-pdf-upload";
+import { resolveFilenameLanguage } from "@client/lib/pdf-filename";
 import {
   getPdfActionLabels,
   isPdfRegenerating,
@@ -56,6 +59,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { parseJobBrief } from "@/client/components/JobBriefPane";
 import { showErrorToast } from "@/client/lib/error-toast";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -64,13 +68,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { trackProductEvent } from "@/lib/analytics";
 import {
   cn,
@@ -79,14 +78,18 @@ import {
   safeFilenamePart,
 } from "@/lib/utils";
 import type { FilterTab } from "./constants";
+import type { SelectedJobLoadState } from "./useOrchestratorData";
 
 interface JobDetailPanelProps {
   activeTab: FilterTab;
   activeJobs: JobListItem[];
   selectedJob: Job | null;
+  selectedJobListItem: JobListItem | null;
+  selectedJobLoadState: SelectedJobLoadState;
   onSelectJobId: (jobId: string | null) => void;
   onJobUpdated: () => Promise<void>;
   onPauseRefreshChange?: (paused: boolean) => void;
+  onRetrySelectedJob: () => void;
 }
 
 type InspectorTab = "brief" | "tailoring" | "apply";
@@ -120,6 +123,42 @@ const tabCopy: Record<
       "!border-emerald-400/65 !bg-emerald-500/20 !text-emerald-100",
   },
 };
+
+const InspectorTabsList: React.FC<{
+  inspectorTab: InspectorTab;
+  disabled?: boolean;
+}> = ({ inspectorTab, disabled = false }) => (
+  <TabsList className="mb-4 grid h-auto grid-cols-3 gap-1 rounded-lg bg-muted/90 text-sm">
+    {Object.entries(tabCopy).map(([value, copy]) => {
+      const isSelected = inspectorTab === value;
+      const trigger = (
+        <TabsTrigger
+          key={value}
+          value={value}
+          disabled={disabled}
+          className={cn(
+            "flex flex-1 items-center gap-1.5 lg:flex-none",
+            isSelected && copy.selectedClassName,
+          )}
+        >
+          <span className={cn("size-1.5 rounded-full", copy.dotClassName)} />
+          <span className="text-sm">{copy.label}</span>
+        </TabsTrigger>
+      );
+
+      return (
+        <Tip
+          key={value}
+          asChild
+          content={<p>{copy.description}</p>}
+          contentClassName="max-w-xs text-center"
+        >
+          {trigger}
+        </Tip>
+      );
+    })}
+  </TabsList>
+);
 
 const statusTone: Record<
   Job["status"],
@@ -181,7 +220,7 @@ const getPrimaryAction = (job: Job): string => {
 };
 
 const getDefaultInspectorTab = (
-  job: Job | null,
+  job: Pick<Job, "status"> | null,
   activeTab: FilterTab,
 ): InspectorTab => {
   if (!job) return "brief";
@@ -278,9 +317,12 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   activeTab,
   activeJobs,
   selectedJob,
+  selectedJobListItem,
+  selectedJobLoadState,
   onSelectJobId,
   onJobUpdated,
   onPauseRefreshChange,
+  onRetrySelectedJob,
 }) => {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("brief");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -298,13 +340,19 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const markAsAppliedMutation = useMarkAsAppliedMutation();
   const skipJobMutation = useSkipJobMutation();
   const { isRescoring, rescoreJob } = useRescoreJob(onJobUpdated);
-  const { personName } = useProfile();
+  const { settings } = useSettings();
+  const { personName, profile } = useProfile();
+  const filenameLanguage = resolveFilenameLanguage({ settings, profile });
 
   const jobLink = selectedJob
     ? selectedJob.applicationLink || selectedJob.jobUrl
     : "#";
   const selectedPdfFilename = selectedJob
-    ? `${safeFilenamePart(personName || "Unknown")}_${safeFilenamePart(selectedJob.employer || "Unknown")}.pdf`
+    ? `${safeFilenamePart(personName || "Unknown", {
+        language: filenameLanguage,
+      })}_${safeFilenamePart(selectedJob.employer || "Unknown", {
+        language: filenameLanguage,
+      })}.pdf`
     : "resume.pdf";
   const selectedProjectIds = useMemo(
     () => selectedJob?.selectedProjectIds?.split(",").filter(Boolean) ?? [],
@@ -344,14 +392,15 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   }, [loadCatalog]);
 
   useEffect(() => {
-    const currentJobId = selectedJob?.id ?? null;
+    const selection = selectedJob ?? selectedJobListItem;
+    const currentJobId = selection?.id ?? null;
     const currentSelectionKey = `${activeTab}:${currentJobId ?? ""}`;
     if (previousSelectionKeyRef.current === currentSelectionKey) return;
     previousSelectionKeyRef.current = currentSelectionKey;
-    setInspectorTab(getDefaultInspectorTab(selectedJob, activeTab));
+    setInspectorTab(getDefaultInspectorTab(selection, activeTab));
     setIsEditDetailsOpen(false);
     onPauseRefreshChange?.(false);
-  }, [activeTab, selectedJob, onPauseRefreshChange]);
+  }, [activeTab, selectedJob, selectedJobListItem, onPauseRefreshChange]);
 
   useEffect(() => {
     return () => onPauseRefreshChange?.(false);
@@ -596,17 +645,118 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   );
 
   if (!selectedJob) {
+    if (selectedJobListItem) {
+      const isLoadingDetails = selectedJobLoadState !== "error";
+      const listingUrl =
+        selectedJobListItem.applicationLink || selectedJobListItem.jobUrl;
+      const summaryPdfMessage = isPdfRegenerating(selectedJobListItem)
+        ? PDF_REGENERATING_MESSAGE
+        : isPdfStale(selectedJobListItem)
+          ? STALE_PDF_MESSAGE
+          : null;
+
+      return (
+        <Tabs
+          value={inspectorTab}
+          aria-busy={isLoadingDetails}
+          className="flex min-h-0 min-w-0 flex-1 flex-col p-1 lg:sticky lg:top-24 lg:max-h-[calc(100vh-8rem)] lg:self-start lg:overflow-y-auto"
+        >
+          <InspectorTabsList inspectorTab={inspectorTab} disabled />
+          <JobHeader
+            job={selectedJobListItem}
+            jobCTA={
+              listingUrl ? (
+                <OpenJobListingButton href={listingUrl} />
+              ) : undefined
+            }
+          />
+
+          <div className="flex min-w-0 flex-col gap-4 rounded-lg rounded-t-none border border-t-0 border-border/50 bg-card p-4">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Stat
+                label="Location"
+                value={selectedJobListItem.location}
+                tone="blue"
+              />
+              <Stat
+                label="Salary"
+                value={selectedJobListItem.salary}
+                tone="green"
+              />
+              <Stat label="Function" value={selectedJobListItem.jobFunction} />
+              <Stat label="Type" value={selectedJobListItem.jobType} />
+            </div>
+
+            {summaryPdfMessage ? (
+              <p className="text-xs text-muted-foreground">
+                {summaryPdfMessage}
+              </p>
+            ) : null}
+
+            {selectedJobLoadState === "error" ? (
+              <Alert>
+                <CircleAlert />
+                <AlertTitle>Couldn&apos;t load job details</AlertTitle>
+                <AlertDescription className="flex flex-col items-start gap-3">
+                  <p>
+                    The summary is still available. Try loading the details
+                    again.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={onRetrySelectedJob}
+                  >
+                    Retry
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <>
+                <output
+                  className="flex items-center gap-2 text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+                  Loading full job details…
+                </output>
+                <div
+                  className="flex flex-col gap-4"
+                  aria-hidden="true"
+                  data-testid="job-detail-skeleton"
+                >
+                  <div className="flex flex-col gap-2">
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-11/12" />
+                  </div>
+                  <Skeleton className="h-24 w-full" />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <Skeleton className="h-12 w-full" />
+                    <Skeleton className="h-12 w-full" />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </Tabs>
+      );
+    }
+
     return (
-      <div className="flex h-full min-h-[260px] flex-col items-center justify-center gap-2 text-center">
-        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border/50 bg-muted/20">
-          <FileText className="h-5 w-5 text-muted-foreground" />
+      <div className="min-w-0 rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex h-full min-h-[260px] flex-col items-center justify-center gap-2 text-center">
+          <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-border/50 bg-muted/20">
+            <FileText className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="text-sm font-medium text-muted-foreground">
+            No job selected
+          </div>
+          <p className="max-w-[220px] text-xs text-muted-foreground/70">
+            Select a job to see the brief, tailoring, and application kit.
+          </p>
         </div>
-        <div className="text-sm font-medium text-muted-foreground">
-          No job selected
-        </div>
-        <p className="max-w-[220px] text-xs text-muted-foreground/70">
-          Select a job to see the brief, tailoring, and application kit.
-        </p>
       </div>
     );
   }
@@ -654,37 +804,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       onValueChange={(value) => setInspectorTab(value as InspectorTab)}
       className="flex min-h-0 min-w-0 flex-1 flex-col lg:sticky lg:top-24 lg:self-start lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto p-1"
     >
-      <TooltipProvider delayDuration={0}>
-        <TabsList className="grid h-auto grid-cols-3 gap-1 rounded-lg text-sm bg-muted/90 mb-4">
-          {Object.entries(tabCopy).map(([value, copy]) => {
-            const isSelected = inspectorTab === value;
-            const trigger = (
-              <TabsTrigger
-                key={value}
-                value={value}
-                className={cn(
-                  "flex-1 flex items-center lg:flex-none gap-1.5",
-                  isSelected && copy.selectedClassName,
-                )}
-              >
-                <span
-                  className={cn("h-1.5 w-1.5 rounded-full", copy.dotClassName)}
-                />
-                <span className="text-sm">{copy.label}</span>
-              </TabsTrigger>
-            );
-
-            return (
-              <Tooltip key={value}>
-                <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-                <TooltipContent className="max-w-xs text-center">
-                  <p>{copy.description}</p>
-                </TooltipContent>
-              </Tooltip>
-            );
-          })}
-        </TabsList>
-      </TooltipProvider>
+      <InspectorTabsList inspectorTab={inspectorTab} />
       <JobHeader
         job={selectedJob}
         onCheckSponsor={async () => {
@@ -692,17 +812,21 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
           await onJobUpdated();
         }}
         jobCTA={
-          <div className="flex shrink-0 gap-2">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 sm:flex sm:shrink-0">
             <GhostwriterDrawer
               job={selectedJob}
               triggerLabel="Ask Ghostwriter"
               triggerVariant="ghost"
+              triggerClassName="w-full min-w-0 justify-start overflow-hidden sm:w-auto"
             />
             <Button
               size="sm"
               onClick={() => void handlePrimaryAction()}
               disabled={primaryBusy || selectedJob.status === "processing"}
-              className={cn(tone.button)}
+              className={cn(
+                "col-start-1 row-start-2 w-full min-w-0 justify-start sm:w-auto sm:justify-center",
+                tone.button,
+              )}
             >
               {primaryBusy ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -719,7 +843,12 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" aria-label="More actions">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="More actions"
+                  className="col-start-2 row-span-2 row-start-1 self-center"
+                >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -816,7 +945,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
         }
       />
 
-      <div className="flex flex-col min-w-0 rounded-lg rounded-t-none border border-t-0 border-border/50 bg-card p-4">
+      <div className="flex min-w-0 flex-col rounded-lg rounded-t-none border border-t-0 border-border/50 bg-card p-4">
         <TabsContent value="brief" className="space-y-4">
           {!brief && (
             <div className="grid gap-2 sm:grid-cols-2">
@@ -858,14 +987,14 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
             <div className="space-y-4">
               <div
                 className={cn(
-                  "flex min-h-16 items-center justify-between gap-3 rounded-md border px-3 py-3",
+                  "flex min-h-16 flex-col gap-3 rounded-md border px-3 py-3 sm:flex-row sm:items-center sm:justify-between",
                   applicationKitReady
                     ? "border-emerald-500/20 bg-emerald-500/[0.04]"
                     : "border-amber-500/20 bg-amber-500/[0.04]",
                 )}
               >
-                <div className="flex min-w-0 items-center w-full justify-between">
-                  <div className="flex gap-3">
+                <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 gap-3">
                     <span
                       className={cn(
                         "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border",
@@ -880,7 +1009,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                         <CircleAlert className="h-4 w-4" />
                       )}
                     </span>
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-sm font-semibold text-foreground/90">
                         {applicationKitReady
                           ? "Application materials ready"
@@ -894,7 +1023,11 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                     </div>
                   </div>
 
-                  <Button asChild variant="outline">
+                  <Button
+                    asChild
+                    variant="outline"
+                    className="w-full justify-center sm:w-auto sm:shrink-0"
+                  >
                     <a href={`/job/${selectedJob.id}`}>
                       Open Job Page
                       <ArrowRight />

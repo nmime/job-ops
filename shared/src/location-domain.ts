@@ -1,7 +1,9 @@
 import {
   formatCountryLabel,
+  getSourceSupportedCountryKeys,
   isSourceAllowedForCountry,
   normalizeCountryKey,
+  sourceRequiresCityLocations,
 } from "./location-support.js";
 import { normalizeStringArray } from "./normalize-string-array.js";
 import {
@@ -42,6 +44,9 @@ export const LOCATION_WORKPLACE_TYPE_VALUES = [
 export type LocationWorkplaceType =
   (typeof LOCATION_WORKPLACE_TYPE_VALUES)[number];
 
+export const LOCATION_INPUT_MODE_VALUES = ["radius", "cities"] as const;
+export type LocationInputMode = (typeof LOCATION_INPUT_MODE_VALUES)[number];
+
 export type LocationEvidenceEntryKind =
   | "location"
   | "city"
@@ -60,6 +65,12 @@ export type LocationEvidenceQuality =
   | "weak"
   | "unknown";
 
+export interface LocationProximity {
+  latitude: number;
+  longitude: number;
+  radiusMiles: number;
+}
+
 const BROAD_COUNTRY_SENTINELS = new Set([
   "",
   "all",
@@ -77,6 +88,7 @@ export interface LocationIntentInput {
   geoScope?: string | null;
   searchScope?: string | null;
   matchStrictness?: string | null;
+  proximity?: LocationProximity | null;
 }
 
 export interface LocationIntent {
@@ -87,6 +99,7 @@ export interface LocationIntent {
   geoScope: LocationGeoScope;
   searchScope: LocationSearchScope;
   matchStrictness: LocationMatchStrictness;
+  proximity?: LocationProximity | null;
 }
 
 export interface LocationEvidenceInput {
@@ -124,12 +137,16 @@ export interface LocationSourceCapabilitiesInput {
   source: JobSource | string;
   supportedCountryKeys?: readonly string[] | null;
   requiresCityLocations?: boolean | null;
+  requiresSelectedCountry?: boolean | null;
+  supportsNativeRadius?: boolean | null;
 }
 
 export interface LocationSourceCapabilities {
   source: JobSource | string;
   supportedCountryKeys: string[] | null;
   requiresCityLocations: boolean;
+  requiresSelectedCountry: boolean;
+  supportsNativeRadius: boolean;
 }
 
 export interface LocationSourcePlan {
@@ -140,6 +157,7 @@ export interface LocationSourcePlan {
   requestedCities: string[];
   allowRemoteWorldwide: boolean;
   prioritizeSelectedLocation: boolean;
+  usesNativeRadius: boolean;
   isCompatible: boolean;
   canRun: boolean;
   reasons: string[];
@@ -303,64 +321,7 @@ function inferWorkplaceTypeFromEvidence(
 function createDefaultSupportedCountryKeys(
   source: JobSource | string,
 ): string[] | null {
-  switch (source) {
-    case "gradcracker":
-    case "ukvisajobs":
-      return ["united kingdom"];
-    case "seek":
-      return ["australia", "new zealand"];
-    case "naukri":
-      return ["india"];
-    case "jobindex":
-      return ["denmark"];
-    case "glassdoor":
-      return [
-        "australia",
-        "austria",
-        "belgium",
-        "brazil",
-        "canada",
-        "france",
-        "germany",
-        "hong kong",
-        "india",
-        "ireland",
-        "italy",
-        "mexico",
-        "netherlands",
-        "new zealand",
-        "singapore",
-        "spain",
-        "switzerland",
-        "united kingdom",
-        "united states",
-        "vietnam",
-      ];
-    case "adzuna":
-      return [
-        "united kingdom",
-        "united states",
-        "austria",
-        "australia",
-        "belgium",
-        "brazil",
-        "canada",
-        "switzerland",
-        "germany",
-        "spain",
-        "france",
-        "india",
-        "italy",
-        "mexico",
-        "netherlands",
-        "new zealand",
-        "poland",
-        "singapore",
-        "south africa",
-      ];
-    default:
-      return null;
-  }
+  return getSourceSupportedCountryKeys(source as JobSource);
 }
 
 function buildEvidenceLocationText(
@@ -430,6 +391,27 @@ function normalizeGeoScope(value: string | null | undefined): LocationGeoScope {
   return LOCATION_GEO_SCOPE_VALUES.includes(value as LocationGeoScope)
     ? (value as LocationGeoScope)
     : "selected_only";
+}
+
+function normalizeLocationProximity(
+  value: LocationProximity | null | undefined,
+): LocationProximity | null {
+  if (!value) return null;
+  const { latitude, longitude, radiusMiles } = value;
+  if (
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180 ||
+    !Number.isFinite(radiusMiles) ||
+    radiusMiles < 1 ||
+    radiusMiles > 200
+  ) {
+    return null;
+  }
+  return { latitude, longitude, radiusMiles };
 }
 
 function normalizeSearchCitiesInput(
@@ -517,6 +499,7 @@ export function normalizeLocationIntent(
     geoScope,
     searchScope: geoScope,
     matchStrictness: normalizeLocationMatchStrictness(value.matchStrictness),
+    proximity: normalizeLocationProximity(value.proximity),
   };
 }
 
@@ -580,7 +563,10 @@ export function getDefaultLocationSourceCapabilities(
   return {
     source,
     supportedCountryKeys: createDefaultSupportedCountryKeys(source),
-    requiresCityLocations: source === "glassdoor",
+    requiresCityLocations: sourceRequiresCityLocations(source as JobSource),
+    requiresSelectedCountry:
+      source === "adzuna" || source === "glassdoor" || source === "seek",
+    supportsNativeRadius: false,
   };
 }
 
@@ -600,6 +586,14 @@ export function normalizeLocationSourceCapabilities(
       "requiresCityLocations" in value
         ? (value.requiresCityLocations ?? defaults.requiresCityLocations)
         : defaults.requiresCityLocations,
+    requiresSelectedCountry:
+      "requiresSelectedCountry" in value
+        ? (value.requiresSelectedCountry ?? defaults.requiresSelectedCountry)
+        : defaults.requiresSelectedCountry,
+    supportsNativeRadius:
+      "supportsNativeRadius" in value
+        ? (value.supportsNativeRadius ?? defaults.supportsNativeRadius)
+        : defaults.supportsNativeRadius,
   };
 }
 
@@ -627,6 +621,9 @@ export function planLocationSource(args: {
     intent.geoScope !== "selected_only";
   const prioritizeSelectedLocation =
     intent.geoScope === "remote_worldwide_prioritize_selected";
+  const usesNativeRadius = Boolean(
+    intent.proximity && capabilities.supportsNativeRadius,
+  );
 
   let isCompatible = true;
   const reasons: string[] = [];
@@ -642,7 +639,7 @@ export function planLocationSource(args: {
         : `Selected country ${formatCountryLabel(requestedCountry)} is not supported.`,
     );
   } else {
-    if (capabilities.supportedCountryKeys !== null) {
+    if (capabilities.requiresSelectedCountry) {
       isCompatible = false;
       reasons.push("A selected country is required for this source.");
     } else {
@@ -659,9 +656,11 @@ export function planLocationSource(args: {
   }
 
   if (capabilities.requiresCityLocations) {
-    if (requestedCities.length === 0) {
+    if (requestedCities.length === 0 && !intent.proximity) {
       isCompatible = false;
       reasons.push("At least one city is required for this source.");
+    } else if (requestedCities.length === 0) {
+      reasons.push("The map radius will be expanded into nearby places.");
     } else {
       reasons.push("Requested cities satisfy this source requirement.");
     }
@@ -675,6 +674,7 @@ export function planLocationSource(args: {
     requestedCities,
     allowRemoteWorldwide,
     prioritizeSelectedLocation,
+    usesNativeRadius,
     isCompatible,
     canRun: isCompatible,
     reasons,
@@ -751,10 +751,10 @@ export function matchLocationIntent(
     };
   }
 
-  const countryMatched =
-    normalizedEvidence.country !== null
-      ? normalizeCountryKey(normalizedEvidence.country) === selectedCountry
-      : matchesRequestedCountry(evidenceLocation, selectedCountry);
+  const countryMatched = matchesRequestedCountry(
+    normalizedEvidence.country ?? evidenceLocation,
+    selectedCountry,
+  );
 
   if (countryMatched) {
     if (requestedCities.length === 0) {
@@ -873,6 +873,19 @@ export function describeLocationIntent(
   const remoteSelected = workplaceTypes.includes("remote");
   const nonRemotePhrase = describeNonRemoteWorkplaceTypes(workplaceTypes);
 
+  if (normalized.proximity) {
+    const radius = `${normalized.proximity.radiusMiles} ${
+      normalized.proximity.radiusMiles === 1 ? "mile" : "miles"
+    }`;
+    const scope =
+      normalized.geoScope === "selected_only"
+        ? ""
+        : remoteSelected
+          ? " plus remote jobs worldwide"
+          : "";
+    return `You'll get jobs within ${radius} of your selected map point${scope}.`;
+  }
+
   let summary: string;
   switch (normalized.geoScope) {
     case "selected_plus_remote_worldwide":
@@ -922,6 +935,7 @@ export function summarizeLocationIntent(
 export function buildLocationPreferencesSummary(args: {
   country: string;
   cityLocations: string[];
+  proximity?: LocationProximity | null;
   workplaceTypes: Array<"remote" | "hybrid" | "onsite">;
   searchScope: LocationSearchScope;
   matchStrictness: LocationMatchStrictness;
@@ -929,6 +943,7 @@ export function buildLocationPreferencesSummary(args: {
   return describeLocationIntent({
     selectedCountry: args.country,
     cityLocations: args.cityLocations,
+    proximity: args.proximity,
     workplaceTypes: args.workplaceTypes,
     geoScope: args.searchScope,
     matchStrictness: args.matchStrictness,
@@ -957,6 +972,7 @@ export function createLocationIntentFromLegacyInputs(
     workplaceTypes: value.workplaceTypes ?? [],
     geoScope: value.geoScope ?? value.searchScope ?? null,
     matchStrictness: value.matchStrictness ?? null,
+    proximity: value.proximity ?? null,
   });
 }
 
@@ -979,6 +995,9 @@ export function getPrimaryLocationLabel(
   intent: LocationIntentInput | LocationIntent,
 ): string {
   const normalized = normalizeLocationIntent(intent);
+  if (normalized.proximity) {
+    return `${normalized.proximity.radiusMiles}-mile map area`;
+  }
   return describeSelectedGeography(
     normalized.selectedCountry,
     normalized.cityLocations,

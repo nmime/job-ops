@@ -1,7 +1,9 @@
 import {
   EXTRACTOR_SOURCE_IDS,
   sourceLabel as getExtractorSourceLabel,
+  isExtractorSourceId,
 } from "@shared/extractors";
+import { safeFilenamePart as sharedSafeFilenamePart } from "@shared/filename-sanitizer";
 import type { Job } from "@shared/types";
 import { stripHtmlTags } from "@shared/utils/string";
 import { type ClassValue, clsx } from "clsx";
@@ -104,11 +106,7 @@ export async function copyTextToClipboard(text: string) {
 // --- Text Processing ---
 export const stripHtml = (value: string) => stripHtmlTags(value);
 
-export const safeFilenamePart = (value: string) => {
-  const cleaned = value.replace(/[^a-z0-9]/gi, "_");
-  if (cleaned.replace(/_/g, "") === "") return "Unknown";
-  return cleaned || "Unknown";
-};
+export const safeFilenamePart = sharedSafeFilenamePart;
 
 // --- Comparisons & Math ---
 export function arraysEqual(a: string[], b: string[]) {
@@ -138,11 +136,27 @@ export const formatJobForWebhook = (job: Job) => {
   );
 };
 
-export const sourceLabel: Record<Job["source"], string> =
+export const sourceLabel: Partial<Record<Job["source"], string>> =
   EXTRACTOR_SOURCE_IDS.reduce(
     (acc, source) => {
       acc[source] = getExtractorSourceLabel(source);
       return acc;
     },
-    {} as Record<Job["source"], string>,
+    {} as Partial<Record<Job["source"], string>>,
   );
+
+export function formatJobSourceLabel(source?: string | null): string {
+  if (!source) return "Unknown Source";
+  if (isExtractorSourceId(source)) return getExtractorSourceLabel(source);
+
+  const [namespace, ...rest] = source.split(":");
+  if (namespace === "workday" && rest.length > 0) {
+    const company = rest
+      .join(":")
+      .replace(/[-_]+/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    return `Workday: ${company}`;
+  }
+
+  return source;
+}

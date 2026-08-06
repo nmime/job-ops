@@ -1,7 +1,6 @@
-import { EXTRACTOR_SOURCE_METADATA } from "@shared/extractors";
+import * as api from "@client/api";
 import {
   createLocationIntent,
-  type LocationSourcePlan,
   planLocationSources,
 } from "@shared/location-intelligence.js";
 import type {
@@ -13,54 +12,54 @@ import {
   normalizeCountryKey,
   SUPPORTED_COUNTRY_KEYS,
 } from "@shared/location-support.js";
-import type { AppSettings, JobSource } from "@shared/types";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { Info, Loader2, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type AppSettings,
+  type CreatePipelineSearchPresetInput,
+  type JobSource,
+  MAX_PIPELINE_RUN_BUDGET,
+  MIN_PIPELINE_RUN_BUDGET,
+  normalizePipelineRunBudget,
+  type PipelineSearchPreset,
+  type PipelineSearchPresetConfig,
+  type UpdatePipelineSearchPresetInput,
+  type WatchlistSelectedSource,
+} from "@shared/types";
+import { ArrowLeft, Info } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+import { showErrorToast } from "@/client/lib/error-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { SearchableDropdown } from "@/components/ui/searchable-dropdown";
-import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getDetectedCountryKey } from "@/lib/user-location";
-import { sourceLabel } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { AutomaticRankingPreferencesCard } from "./AutomaticRankingPreferencesCard";
+import { AutomaticRunFooter } from "./AutomaticRunFooter";
+import {
+  AutomaticRunAdvancedSettings,
+  AutomaticRunSettingsCard,
+} from "./AutomaticRunSettingsCard";
+import { AutomaticSavedSearchControls } from "./AutomaticSavedSearchControls";
+import { AutomaticSaveSearchDialog } from "./AutomaticSaveSearchDialog";
+import { AutomaticSearchPrompt } from "./AutomaticSearchPrompt";
+import { AutomaticSearchTermsCard } from "./AutomaticSearchTermsCard";
+import {
+  AutomaticSourcePickerCard,
+  type AutomaticSourcePickerRow,
+} from "./AutomaticSourcePickerCard";
 import {
   AUTOMATIC_PRESETS,
   type AutomaticPresetId,
   type AutomaticPresetSelection,
   type AutomaticRunValues,
-  calculateAutomaticEstimate,
   loadAutomaticRunMemory,
-  MATCH_STRICTNESS_OPTIONS,
   normalizeWorkplaceTypes,
-  parseCityLocationsInput,
   parseCityLocationsSetting,
-  parseSearchTermsInput,
-  SEARCH_SCOPE_OPTIONS,
   saveAutomaticRunMemory,
   summarizeLocationPreferences,
-  WORKPLACE_TYPE_OPTIONS,
   type WorkplaceType,
 } from "./automatic-run";
-import { TokenizedInput } from "./TokenizedInput";
+import { getSourceStatus } from "./automatic-run-source-status";
 
 interface AutomaticRunTabProps {
   open: boolean;
@@ -69,17 +68,36 @@ interface AutomaticRunTabProps {
   pipelineSources: JobSource[];
   onToggleSource: (source: JobSource, checked: boolean) => void;
   onSetPipelineSources: (sources: JobSource[]) => void;
+  watchlistSources?: WatchlistSelectedSource[];
+  selectedWatchlistSourceIds?: string[];
+  onToggleWatchlistSource?: (sourceId: string, checked: boolean) => void;
+  onSetSelectedWatchlistSourceIds?: (ids: string[]) => void;
+  isWatchlistSourcesLoading?: boolean;
   isPipelineRunning: boolean;
   onSaveAndRun: (values: AutomaticRunValues) => Promise<void>;
+  savedSearches?: PipelineSearchPreset[];
+  isSavedSearchesLoading?: boolean;
+  onCreateSavedSearch?: (
+    input: CreatePipelineSearchPresetInput,
+  ) => Promise<PipelineSearchPreset>;
+  onUpdateSavedSearch?: (
+    id: string,
+    input: UpdatePipelineSearchPresetInput,
+  ) => Promise<PipelineSearchPreset>;
+  onDeleteSavedSearch?: (id: string) => Promise<void>;
+  onApplySavedSearch?: (preset: PipelineSearchPreset) => Promise<void>;
 }
 
 const DEFAULT_VALUES: AutomaticRunValues = {
   topN: 10,
   minSuitabilityScore: 50,
   searchTerms: ["web developer"],
-  runBudget: 200,
+  scoringInstructions: "",
+  runBudget: MIN_PIPELINE_RUN_BUDGET,
   country: "",
   cityLocations: [],
+  locationMode: "radius",
+  proximity: null,
   workplaceTypes: ["remote", "hybrid", "onsite"],
   searchScope: "selected_only",
   matchStrictness: "exact_only",
@@ -92,22 +110,17 @@ interface AutomaticRunFormValues {
   country: string;
   cityLocations: string[];
   cityLocationDraft: string;
+  locationMode: AutomaticRunValues["locationMode"];
+  proximity: AutomaticRunValues["proximity"];
   workplaceTypes: WorkplaceType[];
   searchScope: LocationSearchScope;
   matchStrictness: LocationMatchStrictness;
   searchTerms: string[];
   searchTermDraft: string;
+  scoringInstructions: string;
 }
 
-const GLASSDOOR_COUNTRY_REASON =
-  "Glassdoor is not available for the selected country.";
-const GLASSDOOR_LOCATION_REASON =
-  "Add at least one city in Location preferences to enable Glassdoor.";
 const HIDDEN_COUNTRY_KEYS = new Set(["usa/ca"]);
-const MIN_RUN_BUDGET = 50;
-const MAX_RUN_BUDGET = 1000;
-const SOURCE_MOTION_EASE = [0.22, 1, 0.36, 1] as const;
-
 function normalizeUiCountryKey(value: string): string {
   const normalized = normalizeCountryKey(value);
   if (normalized === "usa/ca") return "united states";
@@ -121,122 +134,7 @@ function toNumber(input: string, min: number, max: number, fallback: number) {
 }
 
 function normalizeRunBudget(value: number): number {
-  return Math.min(MAX_RUN_BUDGET, Math.max(MIN_RUN_BUDGET, Math.round(value)));
-}
-
-function formatWorkplaceTypeLabel(workplaceType: WorkplaceType): string {
-  if (workplaceType === "onsite") return "Onsite";
-  return workplaceType.charAt(0).toUpperCase() + workplaceType.slice(1);
-}
-
-function getKnownJobSource(
-  source: LocationSourcePlan["source"],
-): JobSource | null {
-  return source in EXTRACTOR_SOURCE_METADATA ? (source as JobSource) : null;
-}
-
-function getSourceStatus(args: {
-  countrySelected: boolean;
-  plan: LocationSourcePlan;
-}): {
-  badgeLabel: string;
-  detail: string;
-  available: boolean;
-} {
-  const { countrySelected, plan } = args;
-  const { source, requestedCountry, requestedCities } = plan;
-  const knownSource = getKnownJobSource(source);
-  const countryLabel = requestedCountry
-    ? formatCountryLabel(requestedCountry)
-    : "";
-  const sourceName = knownSource ? sourceLabel[knownSource] : source;
-  const isUkOnlySource = knownSource
-    ? Boolean(EXTRACTOR_SOURCE_METADATA[knownSource]?.ukOnly)
-    : false;
-
-  if (!countrySelected) {
-    if (source === "glassdoor" || isUkOnlySource) {
-      return {
-        badgeLabel: "Select country",
-        detail:
-          "Pick a country first to check whether this source is available.",
-        available: false,
-      };
-    }
-
-    return {
-      badgeLabel: "Available",
-      detail: "This source is available without a country selection.",
-      available: true,
-    };
-  }
-
-  if (source === "glassdoor") {
-    if (
-      plan.capabilities.supportedCountryKeys !== null &&
-      requestedCountry !== null &&
-      !plan.capabilities.supportedCountryKeys.includes(requestedCountry)
-    ) {
-      return {
-        badgeLabel: "Blocked",
-        detail: GLASSDOOR_COUNTRY_REASON,
-        available: false,
-      };
-    }
-
-    if (
-      plan.capabilities.requiresCityLocations &&
-      requestedCities.length === 0
-    ) {
-      return {
-        badgeLabel: "Needs city",
-        detail: GLASSDOOR_LOCATION_REASON,
-        available: false,
-      };
-    }
-
-    return {
-      badgeLabel: "Available",
-      detail: "Glassdoor is available for this location intent.",
-      available: true,
-    };
-  }
-
-  if (isUkOnlySource && !plan.canRun) {
-    return {
-      badgeLabel: "UK only",
-      detail: `${sourceName} is available only when country is United Kingdom.`,
-      available: false,
-    };
-  }
-
-  if (!plan.canRun) {
-    return {
-      badgeLabel: "Blocked",
-      detail: `${sourceName} is not available for ${countryLabel || "the selected country"}.`,
-      available: false,
-    };
-  }
-
-  return {
-    badgeLabel: "Available",
-    detail: "Available for this location intent.",
-    available: true,
-  };
-}
-
-interface SourcePickerRow {
-  source: JobSource;
-  selected: boolean;
-  status: ReturnType<typeof getSourceStatus>;
-}
-
-function getRadioOptionClassName(selected: boolean): string {
-  return `flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 text-sm transition-colors ${
-    selected
-      ? "border-border/70 bg-muted/20 text-foreground"
-      : "border-border/60 text-foreground hover:bg-muted/20"
-  }`;
+  return normalizePipelineRunBudget(value);
 }
 
 export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
@@ -246,12 +144,41 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
   pipelineSources,
   onToggleSource,
   onSetPipelineSources,
+  watchlistSources = [],
+  selectedWatchlistSourceIds = [],
+  onToggleWatchlistSource,
+  onSetSelectedWatchlistSourceIds,
+  isWatchlistSourcesLoading = false,
   isPipelineRunning,
   onSaveAndRun,
+  savedSearches = [],
+  isSavedSearchesLoading = false,
+  onCreateSavedSearch,
+  onUpdateSavedSearch,
+  onDeleteSavedSearch,
+  onApplySavedSearch,
 }) => {
   const [isSaving, setIsSaving] = useState(false);
+  const [nearbyPlaceCount, setNearbyPlaceCount] = useState<number | null>(null);
+  const [isPlanningSearch, setIsPlanningSearch] = useState(false);
+  const [searchPrompt, setSearchPrompt] = useState("");
+  const [automaticTab, setAutomaticTab] = useState<"describe" | "details">(
+    "describe",
+  );
+  const [planSummary, setPlanSummary] = useState<string | null>(null);
+  const [planWarnings, setPlanWarnings] = useState<string[]>([]);
+  const [planSource, setPlanSource] = useState<"ai" | "fallback" | null>(null);
+  const wasOpenRef = useRef(open);
+  const [isSavingSearch, setIsSavingSearch] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const prefersReducedMotion = useReducedMotion();
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveDialogMode, setSaveDialogMode] = useState<"create" | "update">(
+    "create",
+  );
+  const [saveName, setSaveName] = useState("");
+  const [selectedSavedSearchId, setSelectedSavedSearchId] = useState<
+    string | null
+  >(null);
   const [sourceDisplayOrder, setSourceDisplayOrder] =
     useState<JobSource[]>(enabledSources);
   const [browserCountrySuggestion, setBrowserCountrySuggestion] = useState<
@@ -267,11 +194,14 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
       country: DEFAULT_VALUES.country,
       cityLocations: [],
       cityLocationDraft: "",
+      locationMode: DEFAULT_VALUES.locationMode,
+      proximity: DEFAULT_VALUES.proximity,
       workplaceTypes: DEFAULT_VALUES.workplaceTypes,
       searchScope: DEFAULT_VALUES.searchScope,
       matchStrictness: DEFAULT_VALUES.matchStrictness,
       searchTerms: DEFAULT_VALUES.searchTerms,
       searchTermDraft: "",
+      scoringInstructions: DEFAULT_VALUES.scoringInstructions,
     },
   });
 
@@ -281,11 +211,37 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
   const countryInput = watch("country");
   const cityLocations = watch("cityLocations");
   const cityLocationDraft = watch("cityLocationDraft");
+  const locationMode = watch("locationMode");
+  const proximity = watch("proximity");
   const workplaceTypes = watch("workplaceTypes");
   const searchScope = watch("searchScope");
   const matchStrictness = watch("matchStrictness");
   const searchTerms = watch("searchTerms");
   const searchTermDraft = watch("searchTermDraft");
+  const scoringInstructions = watch("scoringInstructions");
+
+  useEffect(() => {
+    if (!open || locationMode !== "radius" || !proximity) {
+      setNearbyPlaceCount(null);
+      return;
+    }
+
+    setNearbyPlaceCount(null);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      void api
+        .previewLocationArea(proximity, controller.signal)
+        .then(({ locations }) => setNearbyPlaceCount(locations.length))
+        .catch(() => {
+          if (!controller.signal.aborted) setNearbyPlaceCount(null);
+        });
+    }, 750);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [locationMode, open, proximity]);
 
   useEffect(() => {
     if (!open) return;
@@ -344,6 +300,21 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     const rememberedMatchStrictness =
       settings?.locationMatchStrictness?.value ??
       DEFAULT_VALUES.matchStrictness;
+    const rememberedLocationMode =
+      settings?.locationSearchMode?.override ??
+      (rememberedLocations.length > 0 ? "cities" : DEFAULT_VALUES.locationMode);
+    const rememberedProximity =
+      settings?.locationLatitude?.value != null &&
+      settings?.locationLongitude?.value != null
+        ? {
+            latitude: settings.locationLatitude.value,
+            longitude: settings.locationLongitude.value,
+            radiusMiles:
+              settings.locationRadiusMiles?.value ??
+              DEFAULT_VALUES.proximity?.radiusMiles ??
+              50,
+          }
+        : null;
 
     setBrowserCountrySuggestion(suggestion);
     reset({
@@ -353,15 +324,31 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
       country: countryValue,
       cityLocations: rememberedLocations,
       cityLocationDraft: "",
+      locationMode: rememberedLocationMode,
+      proximity: rememberedProximity,
       workplaceTypes: rememberedWorkplaceTypes,
       searchScope: rememberedSearchScope,
       matchStrictness: rememberedMatchStrictness,
       searchTerms: settings?.searchTerms?.value ?? DEFAULT_VALUES.searchTerms,
       searchTermDraft: "",
+      scoringInstructions: DEFAULT_VALUES.scoringInstructions,
     });
     setSelectedPreset(memory?.presetId ?? "custom");
     setAdvancedOpen(false);
+    setPlanSummary(null);
+    setPlanWarnings([]);
+    setPlanSource(null);
   }, [open, settings, reset]);
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setAutomaticTab("describe");
+      setPlanSummary(null);
+      setPlanWarnings([]);
+      setPlanSource(null);
+    }
+    wasOpenRef.current = open;
+  }, [open]);
 
   useEffect(() => {
     setSourceDisplayOrder((current) => {
@@ -392,16 +379,19 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
       ),
       runBudget: toNumber(
         runBudgetInput,
-        MIN_RUN_BUDGET,
-        MAX_RUN_BUDGET,
+        MIN_PIPELINE_RUN_BUDGET,
+        MAX_PIPELINE_RUN_BUDGET,
         DEFAULT_VALUES.runBudget,
       ),
       country: normalizedCountry || DEFAULT_VALUES.country,
       cityLocations,
+      locationMode,
+      proximity: locationMode === "radius" ? proximity : null,
       workplaceTypes: normalizeWorkplaceTypes(workplaceTypes),
       searchScope,
       matchStrictness,
       searchTerms,
+      scoringInstructions: scoringInstructions.trim(),
     };
   }, [
     topNInput,
@@ -409,10 +399,13 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     runBudgetInput,
     countryInput,
     cityLocations,
+    locationMode,
+    proximity,
     workplaceTypes,
     searchScope,
     matchStrictness,
     searchTerms,
+    scoringInstructions,
   ]);
 
   const workplaceTypeSelectionInvalid = workplaceTypes.length === 0;
@@ -422,6 +415,7 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
       createLocationIntent({
         selectedCountry: values.country,
         cityLocations: values.cityLocations,
+        proximity: values.proximity,
         workplaceTypes: values.workplaceTypes,
         searchScope: values.searchScope,
         matchStrictness: values.matchStrictness,
@@ -432,6 +426,7 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
       values.matchStrictness,
       values.searchScope,
       values.workplaceTypes,
+      values.proximity,
     ],
   );
 
@@ -467,7 +462,7 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     [pipelineSources, isSourceAvailableForRun],
   );
   const countrySelectionInvalid = values.country.length === 0;
-  const sourceRows = useMemo<SourcePickerRow[]>(
+  const sourceRows = useMemo<AutomaticSourcePickerRow[]>(
     () =>
       sourceDisplayOrder.flatMap((source) => {
         const plan = sourcePlanBySource.get(source);
@@ -503,23 +498,6 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     () => sourceRows.filter((row) => !row.status.available),
     [sourceRows],
   );
-  const sourceMotionTransition = useMemo(
-    () =>
-      prefersReducedMotion
-        ? { duration: 0 }
-        : { duration: 0.22, ease: SOURCE_MOTION_EASE },
-    [prefersReducedMotion],
-  );
-  const sourceSectionInitial = prefersReducedMotion
-    ? false
-    : { opacity: 0, y: -8 };
-  const sourceSectionAnimate = { opacity: 1, y: 0 };
-  const sourceRowInitial = prefersReducedMotion
-    ? { opacity: 1 }
-    : { opacity: 0, y: 8, scale: 0.985 };
-  const sourceRowExit = prefersReducedMotion
-    ? { opacity: 0 }
-    : { opacity: 0, y: -6, scale: 0.985 };
   const countrySuggestion =
     browserCountrySuggestion && browserCountrySuggestion !== values.country
       ? browserCountrySuggestion
@@ -544,18 +522,45 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     pipelineSources,
   ]);
 
-  const estimate = useMemo(
-    () =>
-      calculateAutomaticEstimate({
-        values,
-        sources: compatiblePipelineSources,
-      }),
-    [values, compatiblePipelineSources],
-  );
-
   const locationSummary = useMemo(
     () => summarizeLocationPreferences(values),
     [values],
+  );
+  const selectedSavedSearch = useMemo(
+    () =>
+      selectedSavedSearchId
+        ? (savedSearches.find(
+            (search) => search.id === selectedSavedSearchId,
+          ) ?? null)
+        : null,
+    [savedSearches, selectedSavedSearchId],
+  );
+  const savedSearchSupportEnabled = Boolean(
+    onCreateSavedSearch ||
+      onUpdateSavedSearch ||
+      onDeleteSavedSearch ||
+      onApplySavedSearch ||
+      savedSearches.length > 0,
+  );
+  const currentSavedSearchConfig = useMemo<PipelineSearchPresetConfig>(
+    () => ({
+      searchTerms: values.searchTerms,
+      sources: pipelineSources as PipelineSearchPresetConfig["sources"],
+      country: values.country,
+      cityLocations: values.cityLocations,
+      locationMode: values.locationMode,
+      proximity: values.proximity,
+      workplaceTypes: values.workplaceTypes,
+      searchScope: values.searchScope,
+      matchStrictness: values.matchStrictness,
+      topN: values.topN,
+      minSuitabilityScore: values.minSuitabilityScore,
+      runBudget: values.runBudget,
+      scoringInstructions: values.scoringInstructions,
+      automaticPresetId: selectedPreset,
+      watchlistSelectedSourceIds: [...selectedWatchlistSourceIds],
+    }),
+    [pipelineSources, selectedPreset, selectedWatchlistSourceIds, values],
   );
 
   const runDisabled =
@@ -564,20 +569,8 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
     compatiblePipelineSources.length === 0 ||
     values.searchTerms.length === 0 ||
     countrySelectionInvalid ||
+    (values.locationMode === "radius" && !values.proximity) ||
     workplaceTypeSelectionInvalid;
-  const runDisabledReason = isPipelineRunning
-    ? "A pipeline run is already in progress."
-    : isSaving
-      ? "Saving run settings before launch."
-      : compatiblePipelineSources.length === 0
-        ? "No compatible sources for this location setup."
-        : values.searchTerms.length === 0
-          ? "Add at least one search term."
-          : countrySelectionInvalid
-            ? "Select a country before starting."
-            : workplaceTypeSelectionInvalid
-              ? "Select at least one workplace type."
-              : null;
 
   const toggleWorkplaceType = (
     workplaceType: WorkplaceType,
@@ -620,11 +613,138 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
         runBudget: values.runBudget,
         presetId: selectedPreset,
       });
-      await onSaveAndRun(values);
+      await onSaveAndRun({
+        ...values,
+        watchlistSelectedSourceIds: [...selectedWatchlistSourceIds],
+      });
+    } catch (error) {
+      showErrorToast(error, "Failed to start search");
     } finally {
       setIsSaving(false);
     }
   };
+
+  const applySearchConfig = (config: PipelineSearchPresetConfig) => {
+    setSelectedPreset(config.automaticPresetId ?? "custom");
+    setValue("topN", String(config.topN), { shouldDirty: true });
+    setValue("minSuitabilityScore", String(config.minSuitabilityScore), {
+      shouldDirty: true,
+    });
+    setValue("runBudget", String(normalizeRunBudget(config.runBudget)), {
+      shouldDirty: true,
+    });
+    setValue("country", normalizeUiCountryKey(config.country), {
+      shouldDirty: true,
+    });
+    setValue("cityLocations", config.cityLocations, { shouldDirty: true });
+    setValue("cityLocationDraft", "");
+    setValue(
+      "locationMode",
+      config.locationMode ?? (config.proximity ? "radius" : "cities"),
+      { shouldDirty: true },
+    );
+    setValue("proximity", config.proximity ?? null, { shouldDirty: true });
+    setValue("workplaceTypes", normalizeWorkplaceTypes(config.workplaceTypes), {
+      shouldDirty: true,
+    });
+    setValue("searchScope", config.searchScope, { shouldDirty: true });
+    setValue("matchStrictness", config.matchStrictness, { shouldDirty: true });
+    setValue("searchTerms", config.searchTerms, { shouldDirty: true });
+    setValue("searchTermDraft", "");
+    setValue("scoringInstructions", config.scoringInstructions ?? "", {
+      shouldDirty: true,
+    });
+
+    const nextSources = config.sources.filter((source) =>
+      enabledSources.includes(source),
+    );
+    if (nextSources.length > 0) {
+      onSetPipelineSources(nextSources);
+    }
+
+    if (Array.isArray(config.watchlistSelectedSourceIds)) {
+      const availableIds = new Set(watchlistSources.map((source) => source.id));
+      const restored = config.watchlistSelectedSourceIds.filter((id) =>
+        availableIds.has(id),
+      );
+      onSetSelectedWatchlistSourceIds?.(restored);
+    }
+  };
+
+  const applySavedSearch = async (preset: PipelineSearchPreset) => {
+    setSelectedSavedSearchId(preset.id);
+    applySearchConfig(preset.config);
+    await onApplySavedSearch?.(preset);
+  };
+
+  const handleGenerateSearchPlan = async () => {
+    const prompt = searchPrompt.trim();
+    if (!prompt) return;
+
+    setIsPlanningSearch(true);
+    try {
+      const result = await api.planPipelineSearch({
+        prompt,
+        currentConfig: currentSavedSearchConfig,
+      });
+      applySearchConfig(result.config);
+      setSelectedSavedSearchId(null);
+      setPlanSummary(result.summary);
+      setPlanWarnings(result.warnings);
+      setPlanSource(result.source);
+      setAutomaticTab("details");
+    } catch (error) {
+      showErrorToast(error, "Failed to generate search settings");
+    } finally {
+      setIsPlanningSearch(false);
+    }
+  };
+
+  const openSaveDialog = (mode: "create" | "update") => {
+    setSaveDialogMode(mode);
+    setSaveName(mode === "update" ? (selectedSavedSearch?.name ?? "") : "");
+    setSaveDialogOpen(true);
+  };
+
+  const handleSaveSearch = async () => {
+    const name = saveName.trim();
+    if (!name) return;
+
+    setIsSavingSearch(true);
+    try {
+      if (saveDialogMode === "update" && selectedSavedSearch) {
+        await onUpdateSavedSearch?.(selectedSavedSearch.id, {
+          name,
+          config: currentSavedSearchConfig,
+        });
+        setSelectedSavedSearchId(selectedSavedSearch.id);
+      } else if (onCreateSavedSearch) {
+        const created = await onCreateSavedSearch({
+          name,
+          config: currentSavedSearchConfig,
+        });
+        setSelectedSavedSearchId(created.id);
+      }
+      setSaveDialogOpen(false);
+    } finally {
+      setIsSavingSearch(false);
+    }
+  };
+
+  const handleDeleteSelectedSearch = async () => {
+    if (!selectedSavedSearch || !onDeleteSavedSearch) return;
+    const id = selectedSavedSearch.id;
+    await onDeleteSavedSearch(id);
+    setSelectedSavedSearchId(null);
+  };
+
+  useEffect(() => {
+    if (!selectedSavedSearchId) return;
+    if (savedSearches.some((search) => search.id === selectedSavedSearchId)) {
+      return;
+    }
+    setSelectedSavedSearchId(null);
+  }, [savedSearches, selectedSavedSearchId]);
 
   const countryOptions = useMemo(
     () =>
@@ -639,629 +759,261 @@ export const AutomaticRunTab: React.FC<AutomaticRunTabProps> = ({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 space-y-4 overflow-y-auto pr-1">
-        <Card>
-          <CardContent className="space-y-6 pt-6">
-            <div className="grid items-center gap-3 md:grid-cols-[120px_1fr]">
-              <Label className="text-base font-semibold">Preset</Label>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={selectedPreset === "fast" ? "default" : "outline"}
-                  aria-pressed={selectedPreset === "fast"}
-                  onClick={() => applyPreset("fast")}
-                >
-                  Fast
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={
-                    selectedPreset === "balanced" ? "default" : "outline"
-                  }
-                  aria-pressed={selectedPreset === "balanced"}
-                  onClick={() => applyPreset("balanced")}
-                >
-                  Balanced
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={
-                    selectedPreset === "detailed" ? "default" : "outline"
-                  }
-                  aria-pressed={selectedPreset === "detailed"}
-                  onClick={() => applyPreset("detailed")}
-                >
-                  Detailed
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={
-                    selectedPreset === "custom" ? "secondary" : "outline"
-                  }
-                  aria-pressed={selectedPreset === "custom"}
-                  onClick={() => setSelectedPreset("custom")}
-                >
-                  Custom
-                </Button>
-              </div>
-            </div>
-            <Separator />
-            <Accordion
-              type="single"
-              collapsible
-              defaultValue="location-intent"
-              className="w-full"
-            >
-              <AccordionItem value="location-intent" className="border-b-0">
-                <AccordionTrigger
-                  aria-label="Review and edit location intent"
-                  className="gap-4 py-2 hover:no-underline"
-                >
-                  <div className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0 space-y-1">
-                      <p className="py-0 text-base font-semibold hover:no-underline">
-                        Location preferences
-                      </p>
-                      <p className="truncate text-sm text-muted-foreground whitespace-pre-wrap">
-                        {locationSummary}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                      {countrySuggestion ? (
-                        <Badge
-                          variant="outline"
-                          className="rounded-full border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
-                        >
-                          Browser suggestion
-                        </Badge>
-                      ) : null}
-                    </div>
-                  </div>
-                </AccordionTrigger>
-                <AccordionContent className="space-y-4 pt-4">
-                  {countrySuggestion ? (
-                    <Alert className="border-sky-500/20 bg-sky-500/5">
-                      <Info className="h-4 w-4" />
-                      <AlertTitle>Detected from your browser</AlertTitle>
-                      <AlertDescription>
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <p className="text-sm leading-6 text-muted-foreground">
-                            We detected{" "}
-                            <span className="font-medium text-foreground">
-                              {formatCountryLabel(countrySuggestion)}
-                            </span>{" "}
-                            as a helpful starting point. Apply it to unlock
-                            country-specific sources, or choose another country.
-                          </p>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="shrink-0"
-                            onClick={() =>
-                              setValue("country", countrySuggestion, {
-                                shouldDirty: true,
-                              })
-                            }
-                          >
-                            Use suggestion
-                          </Button>
-                        </div>
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
+      <AutomaticSaveSearchDialog
+        open={saveDialogOpen}
+        mode={saveDialogMode}
+        name={saveName}
+        isSaving={isSavingSearch}
+        onOpenChange={setSaveDialogOpen}
+        onNameChange={setSaveName}
+        onSave={() => void handleSaveSearch()}
+      />
 
-                  <div className="grid gap-4 md:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-                    <div className="space-y-2">
-                      <Label className="text-base font-semibold">Country</Label>
-                      <SearchableDropdown
-                        value={values.country}
-                        options={countryOptions}
-                        onValueChange={(country) =>
-                          setValue("country", country, {
-                            shouldDirty: true,
-                          })
-                        }
-                        placeholder="Select country"
-                        searchPlaceholder="Search country..."
-                        emptyText="No matching countries."
-                        triggerClassName="h-10 w-full"
-                        ariaLabel={
-                          values.country
-                            ? formatCountryLabel(values.country)
-                            : "Select country"
-                        }
-                      />
-                      {countrySelectionInvalid ? (
-                        <p className="text-xs text-destructive">
-                          {countrySuggestion
-                            ? "Select a country or use the browser suggestion."
-                            : "Select a country."}
-                        </p>
-                      ) : null}
-                    </div>
+      <Tabs
+        value={automaticTab}
+        onValueChange={(value) =>
+          setAutomaticTab(value === "details" ? "details" : "describe")
+        }
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <TabsList className="sr-only">
+          <TabsTrigger value="describe">Describe search</TabsTrigger>
+          <TabsTrigger value="details">Configure details</TabsTrigger>
+        </TabsList>
 
-                    <div className="space-y-2">
-                      <Label
-                        htmlFor="city-locations-input"
-                        className="text-base font-semibold"
-                      >
-                        Cities
-                      </Label>
-                      <TokenizedInput
-                        id="city-locations-input"
-                        values={cityLocations}
-                        draft={cityLocationDraft}
-                        parseInput={parseCityLocationsInput}
-                        onDraftChange={(value) =>
-                          setValue("cityLocationDraft", value)
-                        }
-                        onValuesChange={(value) =>
-                          setValue("cityLocations", value, {
-                            shouldDirty: true,
-                          })
-                        }
-                        placeholder='e.g. "London"'
-                        removeLabelPrefix="Remove city"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Work arrangement
-                    </p>
-                    <div className="flex flex-wrap gap-2 gap-x-4">
-                      {WORKPLACE_TYPE_OPTIONS.map((workplaceType) => {
-                        const checkboxId = `workplace-type-${workplaceType}`;
-                        const checked = workplaceTypes.includes(workplaceType);
-
-                        return (
-                          <label
-                            key={workplaceType}
-                            htmlFor={checkboxId}
-                            className="flex cursor-pointer items-center gap-3 text-sm transition-colors"
-                          >
-                            <Checkbox
-                              id={checkboxId}
-                              checked={checked}
-                              onCheckedChange={(nextChecked) => {
-                                toggleWorkplaceType(
-                                  workplaceType,
-                                  nextChecked === true,
-                                );
-                              }}
-                            />
-                            {formatWorkplaceTypeLabel(workplaceType)}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {workplaceTypeSelectionInvalid ? (
-                      <p className="text-xs text-destructive">
-                        Select at least one workplace type.
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div className="space-y-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Location scope
-                    </p>
-                    <RadioGroup
-                      value={searchScope}
-                      onValueChange={(value) =>
-                        setValue("searchScope", value as LocationSearchScope, {
-                          shouldDirty: true,
-                        })
-                      }
-                      className="gap-2"
-                    >
-                      {SEARCH_SCOPE_OPTIONS.map((option) => {
-                        const id = `search-scope-${option.value}`;
-                        const selected = searchScope === option.value;
-                        return (
-                          <label
-                            key={option.value}
-                            htmlFor={id}
-                            className={getRadioOptionClassName(selected)}
-                          >
-                            <RadioGroupItem value={option.value} id={id} />
-                            <span className="text-sm font-medium">
-                              {option.label}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </RadioGroup>
-                  </div>
-
-                  <div className="space-y-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                      Match strictness
-                    </p>
-                    <RadioGroup
-                      value={matchStrictness}
-                      onValueChange={(value) =>
-                        setValue(
-                          "matchStrictness",
-                          value as LocationMatchStrictness,
-                          {
-                            shouldDirty: true,
-                          },
-                        )
-                      }
-                      className="gap-2"
-                    >
-                      {MATCH_STRICTNESS_OPTIONS.map((option) => {
-                        const id = `match-strictness-${option.value}`;
-                        const selected = matchStrictness === option.value;
-                        return (
-                          <label
-                            key={option.value}
-                            htmlFor={id}
-                            className={getRadioOptionClassName(selected)}
-                          >
-                            <RadioGroupItem value={option.value} id={id} />
-                            <span className="text-sm font-medium">
-                              {option.label}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </RadioGroup>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-
-            <Accordion
-              type="single"
-              collapsible
-              value={advancedOpen ? "advanced" : ""}
-              onValueChange={(value) => setAdvancedOpen(value === "advanced")}
-            >
-              <AccordionItem value="advanced" className="border-b-0">
-                <AccordionTrigger className="py-0 text-base font-semibold hover:no-underline">
-                  Run settings
-                </AccordionTrigger>
-                <AccordionContent className="pt-4">
-                  <div className="grid gap-4 md:grid-cols-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="top-n">Resumes tailored</Label>
-                      <Input
-                        id="top-n"
-                        type="number"
-                        min={1}
-                        max={50}
-                        value={topNInput}
-                        onChange={(event) => {
-                          setSelectedPreset("custom");
-                          setValue("topN", event.target.value);
-                        }}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="min-score">Min suitability score</Label>
-                      <Input
-                        id="min-score"
-                        type="number"
-                        min={0}
-                        max={100}
-                        value={minScoreInput}
-                        onChange={(event) => {
-                          setSelectedPreset("custom");
-                          setValue("minSuitabilityScore", event.target.value);
-                        }}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="jobs-per-term">Max jobs discovered</Label>
-                      <Input
-                        id="jobs-per-term"
-                        type="number"
-                        min={MIN_RUN_BUDGET}
-                        max={MAX_RUN_BUDGET}
-                        value={runBudgetInput}
-                        onChange={(event) => {
-                          setSelectedPreset("custom");
-                          setValue("runBudget", event.target.value);
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Auto-apply stays in draft mode: selected jobs get tailored
-                    materials only; nothing is submitted without your
-                    confirmation.
-                  </p>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>CV-derived search terms</CardTitle>
-            <CardDescription>
-              These terms are generated from your CV profile and can be edited
-              before each run.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TokenizedInput
-              id="search-terms-input"
-              values={searchTerms}
-              draft={searchTermDraft}
-              parseInput={parseSearchTermsInput}
-              onDraftChange={(value) => setValue("searchTermDraft", value)}
-              onValuesChange={(value) =>
-                setValue("searchTerms", value, { shouldDirty: true })
-              }
-              placeholder="Type and press Enter"
-              helperText="Add multiple terms by separating with commas or pressing Enter."
-              removeLabelPrefix="Remove"
-            />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-1">
-            <CardTitle>Sources</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Accordion type="single" collapsible className="w-full">
-              <AccordionItem value="sources" className="border-b-0">
-                <AccordionTrigger
-                  aria-label="Review and edit sources"
-                  className="gap-4 py-2 hover:no-underline"
-                >
-                  <motion.div
-                    layout
-                    transition={sourceMotionTransition}
-                    className="flex w-full flex-col gap-3 text-left sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <motion.div
-                      layout
-                      transition={sourceMotionTransition}
-                      className="min-w-0 space-y-1"
-                    >
-                      <p className="text-sm font-semibold text-foreground">
-                        {selectedSourceRows.length === 0
-                          ? "Choose sources for this run"
-                          : `${selectedSourceRows.length} source${selectedSourceRows.length === 1 ? "" : "s"} selected`}
-                      </p>
-                    </motion.div>
-                    <motion.div
-                      layout
-                      transition={sourceMotionTransition}
-                      className="flex shrink-0 flex-wrap gap-2"
-                    >
-                      <Badge variant="outline" className="rounded-full">
-                        {selectedSourceRows.length} selected
-                      </Badge>
-                      <Badge variant="outline" className="rounded-full">
-                        {
-                          sourceRows.filter((row) => row.status.available)
-                            .length
-                        }{" "}
-                        available
-                      </Badge>
-                      {unavailableSourceRows.length > 0 ? (
-                        <Badge variant="outline" className="rounded-full">
-                          {unavailableSourceRows.length} unavailable
-                        </Badge>
-                      ) : null}
-                    </motion.div>
-                  </motion.div>
-                </AccordionTrigger>
-                <AccordionContent className="pt-4">
-                  <motion.div
-                    initial={sourceSectionInitial}
-                    animate={sourceSectionAnimate}
-                    transition={sourceMotionTransition}
-                    className="space-y-5"
-                  >
-                    {selectedSourceRows.length > 0 ? (
-                      <motion.div
-                        layout
-                        transition={sourceMotionTransition}
-                        className="space-y-2"
-                      >
-                        <motion.p
-                          layout
-                          transition={sourceMotionTransition}
-                          className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground"
-                        >
-                          Selected
-                        </motion.p>
-                        <motion.div
-                          layout
-                          transition={sourceMotionTransition}
-                          className="grid gap-2 md:grid-cols-2"
-                        >
-                          <AnimatePresence initial={false} mode="popLayout">
-                            {selectedSourceRows.map((row) => (
-                              <motion.div
-                                key={row.source}
-                                layout
-                                initial={sourceRowInitial}
-                                animate={sourceSectionAnimate}
-                                exit={sourceRowExit}
-                                transition={sourceMotionTransition}
-                              >
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  aria-label={sourceLabel[row.source]}
-                                  aria-pressed
-                                  title="Included in this run."
-                                  className="flex h-auto w-full items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/10 px-3 py-3 text-left text-foreground transition-colors duration-200 hover:bg-primary/15"
-                                  onClick={() =>
-                                    handleSourceToggle(row.source, false)
-                                  }
-                                >
-                                  <span className="min-w-0">
-                                    <span className="block text-sm font-semibold">
-                                      {sourceLabel[row.source]}
-                                    </span>
-                                  </span>
-                                </Button>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                        </motion.div>
-                      </motion.div>
-                    ) : null}
-
-                    {readySourceRows.length > 0 ? (
-                      <motion.div
-                        layout
-                        transition={sourceMotionTransition}
-                        className="space-y-2"
-                      >
-                        <motion.p
-                          layout
-                          transition={sourceMotionTransition}
-                          className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground"
-                        >
-                          Available
-                        </motion.p>
-                        <motion.div
-                          layout
-                          transition={sourceMotionTransition}
-                          className="grid gap-2 md:grid-cols-2"
-                        >
-                          <AnimatePresence initial={false} mode="popLayout">
-                            {readySourceRows.map((row) => (
-                              <motion.div
-                                key={row.source}
-                                layout
-                                initial={sourceRowInitial}
-                                animate={sourceSectionAnimate}
-                                exit={sourceRowExit}
-                                transition={sourceMotionTransition}
-                              >
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  aria-label={sourceLabel[row.source]}
-                                  aria-pressed={false}
-                                  title="Available for this location setup."
-                                  className="flex h-auto w-full items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/60 px-3 py-3 text-left text-foreground transition-colors duration-200 hover:bg-muted/40"
-                                  onClick={() =>
-                                    handleSourceToggle(row.source, true)
-                                  }
-                                >
-                                  <span className="min-w-0">
-                                    <span className="block text-sm font-semibold">
-                                      {sourceLabel[row.source]}
-                                    </span>
-                                  </span>
-                                </Button>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                        </motion.div>
-                      </motion.div>
-                    ) : null}
-
-                    {unavailableSourceRows.length > 0 ? (
-                      <motion.div
-                        layout
-                        transition={sourceMotionTransition}
-                        className="space-y-2"
-                      >
-                        <motion.p
-                          layout
-                          transition={sourceMotionTransition}
-                          className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground"
-                        >
-                          Currently unavailable
-                        </motion.p>
-                        <motion.div
-                          layout
-                          transition={sourceMotionTransition}
-                          className="grid gap-2 md:grid-cols-2"
-                        >
-                          <AnimatePresence initial={false} mode="popLayout">
-                            {unavailableSourceRows.map((row) => (
-                              <motion.div
-                                key={row.source}
-                                layout
-                                initial={sourceRowInitial}
-                                animate={sourceSectionAnimate}
-                                exit={sourceRowExit}
-                                transition={sourceMotionTransition}
-                              >
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  disabled
-                                  aria-label={sourceLabel[row.source]}
-                                  title={row.status.detail}
-                                  className="flex h-auto w-full items-start justify-between gap-3 rounded-xl border border-border/50 bg-transparent px-3 py-3 text-left text-foreground/80 disabled:pointer-events-none disabled:opacity-100"
-                                >
-                                  <span className="min-w-0 space-y-1">
-                                    <span className="block text-sm font-semibold">
-                                      {sourceLabel[row.source]}
-                                    </span>
-                                    <span className="block text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
-                                      {row.status.detail}
-                                    </span>
-                                  </span>
-                                  <Badge
-                                    variant="outline"
-                                    className="shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em]"
-                                  >
-                                    {row.status.badgeLabel}
-                                  </Badge>
-                                </Button>
-                              </motion.div>
-                            ))}
-                          </AnimatePresence>
-                        </motion.div>
-                      </motion.div>
-                    ) : null}
-                  </motion.div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="mt-3 flex shrink-0 items-center justify-between border-t border-border/60 bg-background pt-3">
-        <div className="hidden text-sm text-muted-foreground md:block">
-          Est: {estimate.discovered.min}-{estimate.discovered.max} jobs, ~
-          {values.topN} resumes
-        </div>
-        <div className="ml-auto flex flex-col items-end gap-1">
-          <Button
-            type="button"
-            className="gap-2"
-            disabled={runDisabled}
-            onClick={() => void handleSaveAndRun()}
+        <div
+          className={cn(
+            "min-h-0 flex-1",
+            automaticTab === "details"
+              ? "overflow-visible pr-1"
+              : "overflow-y-auto",
+          )}
+        >
+          <TabsContent
+            value="describe"
+            className="mt-0 flex min-h-0 flex-1 flex-col items-center py-10 sm:py-14"
           >
-            {isSaving ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles className="h-4 w-4" />
-            )}
-            Start run now
-          </Button>
-          {runDisabledReason ? (
-            <p className="max-w-72 text-right text-xs text-muted-foreground">
-              {runDisabledReason}
-            </p>
-          ) : null}
+            <AutomaticSearchPrompt
+              searchPrompt={searchPrompt}
+              isPlanningSearch={isPlanningSearch}
+              planSummary={planSummary}
+              planWarnings={planWarnings}
+              planSource={planSource}
+              onSearchPromptChange={setSearchPrompt}
+              onGenerateSearchPlan={() => void handleGenerateSearchPlan()}
+              onConfigureManually={() => setAutomaticTab("details")}
+            />
+          </TabsContent>
+
+          <TabsContent
+            value="details"
+            className="mt-0 flex flex-col gap-6 pb-8"
+          >
+            <header>
+              <div className="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="w-fit"
+                  onClick={() => setAutomaticTab("describe")}
+                >
+                  <ArrowLeft data-icon="inline-start" />
+                  Describe search
+                </Button>
+                <h1 className="text-3xl font-semibold tracking-tight">
+                  Configure your search
+                </h1>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                  Tell Job Ops what matters, review the plan, then search your
+                  selected sources.
+                </p>
+              </div>
+            </header>
+
+            {planSummary ? (
+              <Alert>
+                <Info />
+                <AlertTitle>
+                  {planSource === "fallback"
+                    ? "Current settings kept"
+                    : "Review generated settings"}
+                </AlertTitle>
+                <AlertDescription className="flex flex-col gap-2">
+                  <p>{planSummary}</p>
+                  {planWarnings.length > 0 ? (
+                    <ul className="flex list-disc flex-col gap-1 pl-5">
+                      {planWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+              <div className="flex min-w-0 flex-col gap-4">
+                <AutomaticSearchTermsCard
+                  selectedPreset={selectedPreset}
+                  searchTerms={searchTerms}
+                  searchTermDraft={searchTermDraft}
+                  onApplyPreset={applyPreset}
+                  onSelectCustomPreset={() => setSelectedPreset("custom")}
+                  onSearchTermDraftChange={(value) =>
+                    setValue("searchTermDraft", value)
+                  }
+                  onSearchTermsChange={(value) =>
+                    setValue("searchTerms", value, { shouldDirty: true })
+                  }
+                />
+
+                <AutomaticRunSettingsCard
+                  values={values}
+                  countryOptions={countryOptions}
+                  countrySuggestion={countrySuggestion}
+                  countrySelectionInvalid={countrySelectionInvalid}
+                  cityLocationDraft={cityLocationDraft}
+                  workplaceTypes={workplaceTypes}
+                  workplaceTypeSelectionInvalid={workplaceTypeSelectionInvalid}
+                  onCountryChange={(country) => {
+                    setValue("country", country, { shouldDirty: true });
+                    if (
+                      values.locationMode === "cities" &&
+                      normalizeUiCountryKey(country) !== values.country
+                    ) {
+                      setValue("proximity", null, { shouldDirty: true });
+                    }
+                  }}
+                  onUseCountrySuggestion={() => {
+                    if (!countrySuggestion) return;
+                    setValue("country", countrySuggestion, {
+                      shouldDirty: true,
+                    });
+                    setValue("proximity", null, { shouldDirty: true });
+                  }}
+                  onCityLocationDraftChange={(value) =>
+                    setValue("cityLocationDraft", value)
+                  }
+                  onCityLocationsChange={(value) =>
+                    setValue("cityLocations", value, { shouldDirty: true })
+                  }
+                  onLocationModeChange={(value) =>
+                    setValue("locationMode", value, { shouldDirty: true })
+                  }
+                  onProximityChange={(value) =>
+                    setValue("proximity", value, { shouldDirty: true })
+                  }
+                  onToggleWorkplaceType={toggleWorkplaceType}
+                />
+
+                <AutomaticRankingPreferencesCard
+                  scoringInstructions={scoringInstructions}
+                  onScoringInstructionsChange={(value) =>
+                    setValue("scoringInstructions", value, {
+                      shouldDirty: true,
+                    })
+                  }
+                />
+
+                <AutomaticSourcePickerCard
+                  sourceRows={sourceRows}
+                  selectedSourceRows={selectedSourceRows}
+                  readySourceRows={readySourceRows}
+                  unavailableSourceRows={unavailableSourceRows}
+                  watchlistSources={watchlistSources}
+                  selectedWatchlistSourceIds={selectedWatchlistSourceIds}
+                  isWatchlistSourcesLoading={isWatchlistSourcesLoading}
+                  onSourceToggle={handleSourceToggle}
+                  onWatchlistSourceToggle={onToggleWatchlistSource}
+                />
+
+                <AutomaticRunAdvancedSettings
+                  searchScope={searchScope}
+                  matchStrictness={matchStrictness}
+                  advancedOpen={advancedOpen}
+                  topNInput={topNInput}
+                  minScoreInput={minScoreInput}
+                  runBudgetInput={runBudgetInput}
+                  minRunBudget={MIN_PIPELINE_RUN_BUDGET}
+                  maxRunBudget={MAX_PIPELINE_RUN_BUDGET}
+                  onSearchScopeChange={(value) =>
+                    setValue("searchScope", value, { shouldDirty: true })
+                  }
+                  onMatchStrictnessChange={(value) =>
+                    setValue("matchStrictness", value, { shouldDirty: true })
+                  }
+                  onAdvancedOpenChange={setAdvancedOpen}
+                  onTopNInputChange={(value) => {
+                    setSelectedPreset("custom");
+                    setValue("topN", value);
+                  }}
+                  onMinScoreInputChange={(value) => {
+                    setSelectedPreset("custom");
+                    setValue("minSuitabilityScore", value);
+                  }}
+                  onRunBudgetInputChange={(value) => {
+                    setSelectedPreset("custom");
+                    setValue("runBudget", value);
+                  }}
+                  onRunBudgetInputBlur={() =>
+                    setValue(
+                      "runBudget",
+                      String(
+                        normalizeRunBudget(
+                          Number.parseInt(runBudgetInput, 10) ||
+                            DEFAULT_VALUES.runBudget,
+                        ),
+                      ),
+                    )
+                  }
+                />
+              </div>
+
+              <aside className="flex flex-col gap-4 lg:sticky lg:top-20">
+                {savedSearchSupportEnabled ? (
+                  <AutomaticSavedSearchControls
+                    savedSearches={savedSearches}
+                    selectedSavedSearch={selectedSavedSearch}
+                    selectedSavedSearchId={selectedSavedSearchId}
+                    isLoading={isSavedSearchesLoading}
+                    canCreate={Boolean(onCreateSavedSearch)}
+                    canUpdate={Boolean(onUpdateSavedSearch)}
+                    canDelete={Boolean(onDeleteSavedSearch)}
+                    onApplySavedSearch={(preset) =>
+                      void applySavedSearch(preset)
+                    }
+                    onOpenSaveDialog={openSaveDialog}
+                    onDeleteSelectedSearch={() =>
+                      void handleDeleteSelectedSearch()
+                    }
+                  />
+                ) : null}
+
+                <AutomaticRunFooter
+                  searchTerms={values.searchTerms}
+                  locationCount={
+                    values.locationMode === "radius"
+                      ? nearbyPlaceCount
+                      : values.cityLocations.length
+                  }
+                  locationSummary={locationSummary}
+                  workplaceTypes={values.workplaceTypes}
+                  scoringInstructions={values.scoringInstructions}
+                  selectedPreset={selectedPreset}
+                  jobBoardCount={
+                    selectedSourceRows.length +
+                    selectedWatchlistSourceIds.length
+                  }
+                  isSaving={isSaving}
+                  disabled={runDisabled}
+                  onRunSearch={() => void handleSaveAndRun()}
+                />
+              </aside>
+            </div>
+          </TabsContent>
         </div>
-      </div>
+      </Tabs>
     </div>
   );
 };

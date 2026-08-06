@@ -1,4 +1,7 @@
-import { getAdzunaCountryCode } from "@shared/location-support.js";
+import {
+  ADZUNA_SUPPORTED_COUNTRY_KEYS,
+  getAdzunaCountryCode,
+} from "@shared/location-support.js";
 import { resolveSearchCities } from "@shared/search-cities.js";
 import type {
   ExtractorManifest,
@@ -54,6 +57,9 @@ export const manifest: ExtractorManifest = {
   providesSources: ["adzuna"],
   requiredEnvVars: ["ADZUNA_APP_ID", "ADZUNA_APP_KEY"],
   capabilities: { locationEvidence: true },
+  locationCapabilities: {
+    adzuna: { supportedCountryKeys: ADZUNA_SUPPORTED_COUNTRY_KEYS },
+  },
   async run(context) {
     if (context.shouldCancel?.()) {
       return { success: true, jobs: [] };
@@ -68,9 +74,17 @@ export const manifest: ExtractorManifest = {
       };
     }
 
-    const maxJobsPerTerm = context.settings.adzunaMaxJobsPerTerm
+    const configuredMaxJobsPerTerm = context.settings.adzunaMaxJobsPerTerm
       ? parseInt(context.settings.adzunaMaxJobsPerTerm, 10)
       : 50;
+    const locationCount = Math.max(
+      1,
+      context.sourceLocationPlan?.requestedCities.length ?? 0,
+    );
+    const maxJobsPerTerm = Math.max(
+      1,
+      Math.ceil(configuredMaxJobsPerTerm / locationCount),
+    );
 
     let result: Awaited<ReturnType<typeof runAdzuna>>;
     try {
@@ -79,6 +93,7 @@ export const manifest: ExtractorManifest = {
         countryKey: context.selectedCountry,
         searchTerms: context.searchTerms,
         locations: resolveSearchCities({
+          list: context.sourceLocationPlan?.requestedCities,
           single:
             context.settings.searchCities ?? context.settings.jobspyLocation,
         }),

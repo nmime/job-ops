@@ -29,6 +29,16 @@ function resolveLocationIntentSnapshot(args: {
       workplaceTypes: args.settings.workplaceTypes.value,
       searchScope: args.settings.locationSearchScope.value,
       matchStrictness: args.settings.locationMatchStrictness.value,
+      proximity:
+        args.settings.locationSearchMode.value === "radius" &&
+        args.settings.locationLatitude.value != null &&
+        args.settings.locationLongitude.value != null
+          ? {
+              latitude: args.settings.locationLatitude.value,
+              longitude: args.settings.locationLongitude.value,
+              radiusMiles: args.settings.locationRadiusMiles.value,
+            }
+          : null,
     })
   );
 }
@@ -36,6 +46,7 @@ function resolveLocationIntentSnapshot(args: {
 export function buildRequestedConfigSnapshot(
   config: PipelineConfig,
 ): PipelineRunRequestedConfig {
+  const watchlistFilter = config.watchlistSelectedSourceIds;
   return {
     topN: config.topN,
     minSuitabilityScore: config.minSuitabilityScore,
@@ -44,6 +55,10 @@ export function buildRequestedConfigSnapshot(
     enableScoring: config.enableScoring !== false,
     enableImporting: config.enableImporting !== false,
     enableAutoTailoring: config.enableAutoTailoring !== false,
+    watchlistSelectedSourceIds:
+      watchlistFilter === undefined || watchlistFilter === null
+        ? null
+        : [...watchlistFilter],
   };
 }
 

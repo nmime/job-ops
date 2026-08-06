@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ClaudeCliClient } from "./claude-cli/client";
 import { CodexClient } from "./codex/client";
 import { GeminiCliClient } from "./gemini-cli/client";
 import { LlmService } from "./service";
@@ -54,6 +55,52 @@ describe("LlmService provider normalization", () => {
 
     expect(llm.getProvider()).toBe("gemini_cli");
     expect(llm.getBaseUrl()).toBe("");
+  });
+
+  it("supports claude_cli provider normalization", () => {
+    const llm = new LlmService({
+      provider: "claude-cli",
+    });
+
+    expect(llm.getProvider()).toBe("claude_cli");
+    expect(llm.getBaseUrl()).toBe("");
+  });
+
+  it("supports GLM provider normalization and aliases", () => {
+    const glm = new LlmService({
+      provider: "glm",
+    });
+    const zhipu = new LlmService({
+      provider: "zhipu-ai",
+    });
+
+    expect(glm.getProvider()).toBe("glm");
+    expect(glm.getBaseUrl()).toBe("https://api.z.ai/api/paas/v4");
+    expect(zhipu.getProvider()).toBe("glm");
+  });
+
+  it("supports Anthropic provider normalization and Claude alias", () => {
+    const anthropic = new LlmService({
+      provider: "anthropic",
+    });
+    const claude = new LlmService({
+      provider: "claude",
+    });
+
+    expect(anthropic.getProvider()).toBe("anthropic");
+    expect(anthropic.getBaseUrl()).toBe("https://api.anthropic.com");
+    expect(claude.getProvider()).toBe("anthropic");
+    expect(claude.getBaseUrl()).toBe("https://api.anthropic.com");
+  });
+
+  it("ignores stale configured base URLs for native Anthropic", () => {
+    const llm = new LlmService({
+      provider: "anthropic",
+      baseUrl: "https://openrouter.ai",
+    });
+
+    expect(llm.getProvider()).toBe("anthropic");
+    expect(llm.getBaseUrl()).toBe("https://api.anthropic.com");
   });
 
   it("retries codex JSON parsing failures and succeeds on a later attempt", async () => {
@@ -128,5 +175,50 @@ describe("LlmService provider normalization", () => {
 
     expect(models[0]).toBe("google/gemini-3-flash-preview");
     expect(models.length).toBeGreaterThan(1);
+  });
+
+  it("delegates claude_cli credential validation to the Claude CLI client", async () => {
+    const validateSpy = vi
+      .spyOn(ClaudeCliClient.prototype, "validateCredentials")
+      .mockResolvedValue({ valid: true, message: null });
+
+    const llm = new LlmService({ provider: "claude_cli" });
+    const result = await llm.validateCredentials();
+
+    expect(result).toEqual({ valid: true, message: null });
+    expect(validateSpy).toHaveBeenCalledOnce();
+  });
+
+  it("returns curated models for claude_cli", async () => {
+    const llm = new LlmService({ provider: "claude_cli" });
+    const models = await llm.listModels();
+
+    expect(models[0]).toBe("claude-sonnet-5");
+    expect(models.length).toBeGreaterThan(1);
+  });
+
+  it("lists Requesty models from the /models endpoint", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "openai/gpt-4o-mini" },
+            { id: "anthropic/claude-sonnet-4-5" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const llm = new LlmService({
+      provider: "requesty",
+      apiKey: "rqsty-sk-test",
+    });
+    const models = await llm.listModels();
+
+    expect(models).toContain("openai/gpt-4o-mini");
+    expect(models).toContain("anthropic/claude-sonnet-4-5");
+    const [requestedUrl] = fetchSpy.mock.calls[0] ?? [];
+    expect(String(requestedUrl)).toBe("https://router.requesty.ai/v1/models");
   });
 });

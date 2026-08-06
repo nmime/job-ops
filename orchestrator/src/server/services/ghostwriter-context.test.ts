@@ -1,11 +1,31 @@
 import type { AppError } from "@infra/errors";
 import { createJob } from "@shared/testing/factories";
+import JSZip from "jszip";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildJobChatPromptContext } from "./ghostwriter-context";
+
+const mocks = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
+
+vi.mock("node:fs/promises", () => ({
+  default: {
+    open: mocks.open,
+  },
+  open: mocks.open,
+}));
+
+vi.mock("pdf-parse", () => ({
+  default: vi.fn(),
+}));
 
 vi.mock("../repositories/jobs", () => ({
   getJobById: vi.fn(),
   listJobNotesByIds: vi.fn(),
+}));
+
+vi.mock("../repositories/job-documents", () => ({
+  listJobDocumentsByIds: vi.fn(),
 }));
 
 vi.mock("./post-application/job-emails", () => ({
@@ -29,16 +49,58 @@ vi.mock("./writing-style", async (importOriginal) => {
   };
 });
 
+import pdfParse from "pdf-parse";
+import { listJobDocumentsByIds } from "../repositories/job-documents";
 import { getJobById, listJobNotesByIds } from "../repositories/jobs";
 import { getSetting } from "../repositories/settings";
 import { listJobPostApplicationEmailsByIds } from "./post-application/job-emails";
 import { getProfile } from "./profile";
 import { getWritingStyle } from "./writing-style";
 
+function makePdfParseResult(text: string) {
+  return {
+    numpages: 1,
+    numrender: 1,
+    info: {},
+    metadata: null,
+    version: "default" as const,
+    text,
+  };
+}
+
+function mockDocumentFile(buffer: Buffer) {
+  const read = vi.fn(
+    async (
+      target: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) => {
+      const start = position ?? 0;
+      const bytesRead = buffer.copy(
+        target,
+        offset,
+        start,
+        Math.min(buffer.byteLength, start + length),
+      );
+      return { bytesRead, buffer: target };
+    },
+  );
+  const close = vi.fn(async () => undefined);
+
+  mocks.open.mockResolvedValue({ read, close });
+  return { read, close };
+}
+
 describe("buildJobChatPromptContext", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(listJobNotesByIds).mockResolvedValue([]);
+    vi.mocked(listJobDocumentsByIds).mockResolvedValue([]);
+    mockDocumentFile(Buffer.from(""));
+    vi.mocked(pdfParse).mockResolvedValue(
+      makePdfParseResult("PDF context text"),
+    );
     vi.mocked(listJobPostApplicationEmailsByIds).mockResolvedValue([]);
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(getWritingStyle).mockResolvedValue({
@@ -58,7 +120,7 @@ describe("buildJobChatPromptContext", () => {
       id: "job-ctx-1",
       title: "Software Engineer",
       employer: "JP Morgan",
-      jobDescription: "A".repeat(5000),
+      jobDescription: `<p>${"A".repeat(5000)}</p>`,
     });
 
     vi.mocked(getJobById).mockResolvedValue(job);
@@ -126,7 +188,9 @@ describe("buildJobChatPromptContext", () => {
     expect(context.systemPrompt).toContain(
       "Avoid these terms: synergy, leverage",
     );
-    expect(context.jobSnapshot).toContain('"id": "job-ctx-1"');
+    expect(context.jobSnapshot).toContain('"id":"job-ctx-1"');
+    expect(context.jobSnapshot).not.toContain("<p>");
+    expect(context.jobSnapshot).not.toContain("\n");
     expect(context.jobSnapshot.length).toBeLessThan(6000);
     expect(context.profileSnapshot).toContain("Name: Test User");
     expect(context.profileSnapshot).toContain("Skills:");
@@ -175,6 +239,37 @@ describe("buildJobChatPromptContext", () => {
 
     expect(context.systemPrompt).toContain(
       "When the user does not request a language, default to writing user-visible resume or application content in French.",
+    );
+  });
+
+  it("matches Ghostwriter language to detected job description language when configured", async () => {
+    const job = createJob({
+      id: "job-ctx-jd-language",
+      jobDescription:
+        "Wir suchen Erfahrung mit Entwicklung und Verantwortung für APIs.",
+    });
+    vi.mocked(getJobById).mockResolvedValue(job);
+    vi.mocked(getWritingStyle).mockResolvedValue({
+      tone: "professional",
+      formality: "medium",
+      constraints: "",
+      doNotUse: "",
+      languageMode: "match-job-description",
+      manualLanguage: "english",
+      summaryMaxWords: null,
+      maxKeywordsPerSkill: null,
+    });
+    vi.mocked(getProfile).mockResolvedValue({
+      basics: {
+        name: "Claire",
+        summary: "I build reliable data platforms and work with product teams.",
+      },
+    });
+
+    const context = await buildJobChatPromptContext(job.id);
+
+    expect(context.systemPrompt).toContain(
+      "When the user does not request a language, default to writing user-visible resume or application content in German.",
     );
   });
 
@@ -371,6 +466,165 @@ describe("buildJobChatPromptContext", () => {
     expect(context.selectedEmailsSnapshot).not.toContain("mail.google.com");
     expect(context.selectedEmailsSnapshot).not.toContain("Not selected");
     expect(context.selectedEmailsSnapshot).not.toContain("A".repeat(1301));
+  });
+
+  it("builds selected job documents context with shared truncation limits", async () => {
+    const job = createJob({ id: "job-ctx-documents" });
+    vi.mocked(getJobById).mockResolvedValue(job);
+    vi.mocked(getProfile).mockResolvedValue({});
+    vi.mocked(listJobDocumentsByIds).mockResolvedValue([
+      {
+        id: "doc-2",
+        jobId: job.id,
+        fileName: "skip.txt",
+        mediaType: "text/plain",
+        byteSize: 7,
+        storagePath: "/tmp/skip.txt",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "doc-1",
+        jobId: job.id,
+        fileName: "take-home.md",
+        mediaType: "text/markdown",
+        byteSize: 7000,
+        storagePath: "/tmp/take-home.md",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    mockDocumentFile(Buffer.from("A".repeat(7000)));
+
+    const context = await buildJobChatPromptContext(job.id, [], [], ["doc-1"]);
+
+    expect(listJobDocumentsByIds).toHaveBeenCalledWith(job.id, ["doc-1"]);
+    expect(mocks.open).toHaveBeenCalledWith("/tmp/take-home.md", "r");
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Selected Job Documents:",
+    );
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Document 1: take-home.md",
+    );
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Context note: document text trimmed for AI context limits.",
+    );
+    expect(context.selectedDocumentsSnapshot).not.toContain("skip.txt");
+    expect(context.selectedDocumentsSnapshot).not.toContain("A".repeat(6001));
+  });
+
+  it("extracts DOCX documents for selected job document context", async () => {
+    const job = createJob({ id: "job-ctx-docx" });
+    const zip = new JSZip();
+    zip.file(
+      "word/document.xml",
+      `
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:body>
+            <w:p><w:r><w:t>Interview pack</w:t></w:r></w:p>
+            <w:p><w:r><w:t>Discuss reliability &amp; incident response.</w:t></w:r></w:p>
+          </w:body>
+        </w:document>
+      `,
+    );
+
+    vi.mocked(getJobById).mockResolvedValue(job);
+    vi.mocked(getProfile).mockResolvedValue({});
+    vi.mocked(listJobDocumentsByIds).mockResolvedValue([
+      {
+        id: "doc-docx",
+        jobId: job.id,
+        fileName: "interview-pack.docx",
+        mediaType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        byteSize: 2048,
+        storagePath: "/tmp/interview-pack.docx",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    mockDocumentFile(await zip.generateAsync({ type: "nodebuffer" }));
+
+    const context = await buildJobChatPromptContext(
+      job.id,
+      [],
+      [],
+      ["doc-docx"],
+    );
+
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Document 1: interview-pack.docx",
+    );
+    expect(context.selectedDocumentsSnapshot).toContain("Interview pack");
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Discuss reliability & incident response.",
+    );
+  });
+
+  it("extracts PDF documents for selected job document context", async () => {
+    const job = createJob({ id: "job-ctx-pdf" });
+    vi.mocked(getJobById).mockResolvedValue(job);
+    vi.mocked(getProfile).mockResolvedValue({});
+    vi.mocked(pdfParse).mockResolvedValueOnce(
+      makePdfParseResult("Interview pack\nDiscuss reliability."),
+    );
+    vi.mocked(listJobDocumentsByIds).mockResolvedValue([
+      {
+        id: "doc-pdf",
+        jobId: job.id,
+        fileName: "interview-pack.pdf",
+        mediaType: "application/pdf",
+        byteSize: 2048,
+        storagePath: "/tmp/interview-pack.pdf",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    mockDocumentFile(Buffer.from("%PDF-1.4"));
+
+    const context = await buildJobChatPromptContext(
+      job.id,
+      [],
+      [],
+      ["doc-pdf"],
+    );
+
+    expect(pdfParse).toHaveBeenCalledOnce();
+    expect(context.selectedDocumentsSnapshot).toContain(
+      "Document 1: interview-pack.pdf",
+    );
+    expect(context.selectedDocumentsSnapshot).toContain("Interview pack");
+    expect(context.selectedDocumentsSnapshot).toContain("Discuss reliability.");
+  });
+
+  it("reads only the configured document prefix for Ghostwriter context", async () => {
+    const job = createJob({ id: "job-ctx-document-prefix" });
+    vi.mocked(getJobById).mockResolvedValue(job);
+    vi.mocked(getProfile).mockResolvedValue({});
+    vi.mocked(listJobDocumentsByIds).mockResolvedValue([
+      {
+        id: "doc-large",
+        jobId: job.id,
+        fileName: "large.txt",
+        mediaType: "text/plain",
+        byteSize: 10 * 1024 * 1024,
+        storagePath: "/tmp/large.txt",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    const { read, close } = mockDocumentFile(Buffer.from("A".repeat(7000)));
+
+    await buildJobChatPromptContext(job.id, [], [], ["doc-large"]);
+
+    expect(mocks.open).toHaveBeenCalledWith("/tmp/large.txt", "r");
+    expect(read).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      0,
+      2 * 1024 * 1024,
+      0,
+    );
+    expect(close).toHaveBeenCalled();
   });
 
   it("throws not found for unknown job", async () => {

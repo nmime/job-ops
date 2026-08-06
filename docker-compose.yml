@@ -45,6 +45,12 @@ services:
         - path: ./visa-sponsor-providers
           target: /app/visa-sponsor-providers
           action: sync+restart
+        - path: ./career-boards/bamboohr/src
+          target: /app/career-boards/bamboohr/src
+          action: sync+restart
+        - path: ./career-boards/workday/src
+          target: /app/career-boards/workday/src
+          action: sync+restart
         # Sync extractor changes
         - path: ./extractors/gradcracker/src
           target: /app/extractors/gradcracker/src
@@ -72,6 +78,12 @@ services:
           action: sync+restart
         - path: ./extractors/naukri
           target: /app/extractors/naukri
+          action: sync+restart
+        - path: ./extractors/fiveamsat
+          target: /app/extractors/fiveamsat
+          action: sync+restart
+        - path: ./extractors/wazzuf
+          target: /app/extractors/wazzuf
           action: sync+restart
     restart: unless-stopped
     healthcheck:

@@ -1,6 +1,11 @@
+import { open } from "node:fs/promises";
 import { badRequest, notFound } from "@infra/errors";
 import { logger } from "@infra/logger";
 import { sanitizeUnknown } from "@infra/sanitize";
+import {
+  buildGhostwriterDocumentContextItems,
+  normalizeGhostwriterSelectedDocumentIds,
+} from "@shared/ghostwriter-document-context.js";
 import {
   buildGhostwriterEmailContextItems,
   normalizeGhostwriterSelectedEmailIds,
@@ -9,10 +14,19 @@ import {
   buildGhostwriterNoteContextItems,
   normalizeGhostwriterSelectedNoteIds,
 } from "@shared/ghostwriter-note-context.js";
+import {
+  canUseJobDocumentForTextContext,
+  isJobDocumentDocx,
+  isJobDocumentPdf,
+  isJobDocumentTextLike,
+} from "@shared/job-document-classification.js";
 import { settingsRegistry } from "@shared/settings-registry";
-import type { Job, ResumeProfile } from "@shared/types";
+import type { Job, JobDocument, ResumeProfile } from "@shared/types";
+import { stripHtmlTags } from "@shared/utils/string";
+import * as jobDocumentsRepo from "../repositories/job-documents";
 import * as jobsRepo from "../repositories/jobs";
 import * as settingsRepo from "../repositories/settings";
+import { extractDocxText, extractPdfText } from "./document-text-extraction";
 import {
   getWritingLanguageLabel,
   resolveWritingOutputLanguage,
@@ -36,6 +50,7 @@ export type JobChatPromptContext = {
   profileSnapshot: string;
   selectedNotesSnapshot: string;
   selectedEmailsSnapshot: string;
+  selectedDocumentsSnapshot: string;
 };
 
 const MAX_JOB_DESCRIPTION = 4000;
@@ -44,6 +59,7 @@ const MAX_SKILLS = 18;
 const MAX_PROJECTS = 6;
 const MAX_EXPERIENCE = 5;
 const MAX_ITEM_TEXT = 320;
+const MAX_DOCUMENT_READ_BYTES = 2 * 1024 * 1024;
 
 const STOP_SLOP_GHOSTWRITER_PROMPT = `
 Stop Slop revision rules for Ghostwriter prose:
@@ -71,6 +87,12 @@ function compactJoin(parts: Array<string | null | undefined>): string {
   return parts.filter(Boolean).join("\n");
 }
 
+export function canUseJobDocumentForGhostwriterContext(
+  document: Pick<JobDocument, "fileName" | "mediaType">,
+): boolean {
+  return canUseJobDocumentForTextContext(document);
+}
+
 function buildJobSnapshot(job: Job): string {
   const snapshot = {
     event: "job.completed",
@@ -90,11 +112,14 @@ function buildJobSnapshot(job: Job): string {
       tailoredSummary: truncate(job.tailoredSummary, 1200),
       tailoredHeadline: truncate(job.tailoredHeadline, 300),
       tailoredSkills: truncate(job.tailoredSkills, 1200),
-      jobDescription: truncate(job.jobDescription, MAX_JOB_DESCRIPTION),
+      jobDescription: truncate(
+        stripHtmlTags(job.jobDescription ?? ""),
+        MAX_JOB_DESCRIPTION,
+      ),
     },
   };
 
-  return JSON.stringify(snapshot, null, 2);
+  return JSON.stringify(snapshot);
 }
 
 function buildProfileSnapshot(profile: ResumeProfile): string {
@@ -220,13 +245,108 @@ async function buildSelectedEmailsSnapshot(
   ]);
 }
 
+async function readFilePrefix(path: string, maxBytes: number): Promise<Buffer> {
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await file.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await file.close();
+  }
+}
+
+async function extractDocumentText(
+  document: jobDocumentsRepo.JobDocumentWithStorage,
+): Promise<string> {
+  const buffer = await readFilePrefix(
+    document.storagePath,
+    MAX_DOCUMENT_READ_BYTES,
+  );
+
+  if (isJobDocumentPdf(document)) {
+    try {
+      return await extractPdfText(buffer);
+    } catch (error) {
+      logger.warn("Failed to extract Ghostwriter document PDF text", {
+        jobId: document.jobId,
+        documentId: document.id,
+        error: sanitizeUnknown(error),
+      });
+      return "";
+    }
+  }
+
+  if (isJobDocumentDocx(document)) {
+    try {
+      return await extractDocxText(buffer);
+    } catch (error) {
+      logger.warn("Failed to extract Ghostwriter document DOCX text", {
+        jobId: document.jobId,
+        documentId: document.id,
+        error: sanitizeUnknown(error),
+      });
+      return "";
+    }
+  }
+
+  if (isJobDocumentTextLike(document)) {
+    return buffer.toString("utf8").trim();
+  }
+
+  return "";
+}
+
+async function buildSelectedDocumentsSnapshot(
+  jobId: string,
+  selectedDocumentIds: readonly string[],
+): Promise<string> {
+  const selectedDocuments = await listSelectedContextItems({
+    selectedIds: selectedDocumentIds,
+    normalize: normalizeGhostwriterSelectedDocumentIds,
+    listItems: (normalizedDocumentIds) =>
+      jobDocumentsRepo.listJobDocumentsByIds(jobId, normalizedDocumentIds),
+    getId: (document) => document.id,
+  });
+
+  if (selectedDocuments.length === 0) return "";
+
+  const documentsWithContent = await Promise.all(
+    selectedDocuments
+      .filter(canUseJobDocumentForGhostwriterContext)
+      .map(async (document) => ({
+        ...document,
+        content: await extractDocumentText(document),
+      })),
+  );
+  const context = buildGhostwriterDocumentContextItems(documentsWithContent);
+  if (context.items.length === 0) return "";
+
+  return compactJoin([
+    "Selected Job Documents:",
+    ...context.items.map((document, index) =>
+      compactJoin([
+        `Document ${index + 1}: ${document.fileName}`,
+        document.mediaType ? `Type: ${document.mediaType}` : null,
+        `Uploaded: ${document.createdAt}`,
+        document.wasTrimmed
+          ? "Context note: document text trimmed for AI context limits."
+          : null,
+        document.content ? `Content:\n${document.content}` : "Content: [empty]",
+      ]),
+    ),
+  ]);
+}
+
 async function buildSystemPrompt(
   style: WritingStyle,
   profile: ResumeProfile,
+  jobDescription?: string | null,
 ): Promise<string> {
   const resolvedLanguage = resolveWritingOutputLanguage({
     style,
     profile,
+    jobDescription,
   });
   const outputLanguage = getWritingLanguageLabel(resolvedLanguage.language);
   const effectiveConstraints = stripLanguageDirectivesFromConstraints(
@@ -261,6 +381,7 @@ export async function buildJobChatPromptContext(
   jobId: string,
   selectedNoteIds: readonly string[] = [],
   selectedEmailIds: readonly string[] = [],
+  selectedDocumentIds: readonly string[] = [],
 ): Promise<JobChatPromptContext> {
   const job = await jobsRepo.getJobById(jobId);
   if (!job) {
@@ -285,11 +406,13 @@ export async function buildJobChatPromptContext(
     stopSlopEnabled,
     selectedNotesSnapshot,
     selectedEmailsSnapshot,
+    selectedDocumentsSnapshot,
   ] = await Promise.all([
-    buildSystemPrompt(style, profile),
+    buildSystemPrompt(style, profile, job.jobDescription),
     isStopSlopEnabled(),
     buildSelectedNotesSnapshot(jobId, selectedNoteIds),
     buildSelectedEmailsSnapshot(jobId, selectedEmailIds),
+    buildSelectedDocumentsSnapshot(jobId, selectedDocumentIds),
   ]);
   const systemPrompt = stopSlopEnabled
     ? `${baseSystemPrompt}\n\n${STOP_SLOP_GHOSTWRITER_PROMPT}`
@@ -309,10 +432,13 @@ export async function buildJobChatPromptContext(
       profileChars: profileSnapshot.length,
       selectedNotesChars: selectedNotesSnapshot.length,
       selectedEmailsChars: selectedEmailsSnapshot.length,
+      selectedDocumentsChars: selectedDocumentsSnapshot.length,
       selectedNoteCount:
         normalizeGhostwriterSelectedNoteIds(selectedNoteIds).length,
       selectedEmailCount:
         normalizeGhostwriterSelectedEmailIds(selectedEmailIds).length,
+      selectedDocumentCount:
+        normalizeGhostwriterSelectedDocumentIds(selectedDocumentIds).length,
     }),
   });
 
@@ -324,5 +450,6 @@ export async function buildJobChatPromptContext(
     profileSnapshot,
     selectedNotesSnapshot,
     selectedEmailsSnapshot,
+    selectedDocumentsSnapshot,
   };
 }

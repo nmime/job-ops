@@ -3,15 +3,12 @@ import {
   type ApplicationTask,
   type Job,
   type JobNote,
-  type JobOutcome,
   type ResumeProjectCatalogItem,
   STAGE_LABELS,
   type StageEvent,
 } from "@shared/types.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import confetti from "canvas-confetti";
 import {
-  AlertTriangle,
   ArrowLeft,
   ClipboardList,
   DollarSign,
@@ -20,7 +17,6 @@ import {
   MessageSquareText,
   PlusCircle,
   Sparkles,
-  Upload,
 } from "lucide-react";
 import React from "react";
 import {
@@ -42,10 +38,15 @@ import {
   useSkipJobMutation,
   useUpdateJobMutation,
 } from "@/client/hooks/queries/useJobMutations";
+import { useProfile } from "@/client/hooks/useProfile";
 import { useQueryErrorToast } from "@/client/hooks/useQueryErrorToast";
+import { useSettings } from "@/client/hooks/useSettings";
+import { celebrateOffer } from "@/client/lib/celebrate";
 import { showErrorToast } from "@/client/lib/error-toast";
 import { uploadJobPdfFromFile } from "@/client/lib/job-pdf-upload";
 import { getRenderableJobDescription } from "@/client/lib/jobDescription";
+import { logJobStageEvent } from "@/client/lib/logJobStageEvent";
+import { resolveFilenameLanguage } from "@/client/lib/pdf-filename";
 import {
   getPdfActionLabels,
   isPdfRegenerating,
@@ -53,7 +54,7 @@ import {
   PDF_REGENERATING_MESSAGE,
   STALE_PDF_MESSAGE,
 } from "@/client/lib/pdf-freshness";
-import { openJobPdf } from "@/client/lib/private-pdf";
+import { downloadJobPdf, openJobPdf } from "@/client/lib/private-pdf";
 import { queryKeys } from "@/client/lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,7 +62,9 @@ import {
   copyTextToClipboard,
   formatDateTime,
   formatJobForWebhook,
+  formatJobSourceLabel,
   formatTimestamp,
+  safeFilenamePart,
   sourceLabel as sourceLabels,
 } from "@/lib/utils";
 import * as api from "../api";
@@ -72,8 +75,9 @@ import {
   type LogEventFormValues,
   LogEventModal,
 } from "../components/LogEventModal";
-import { TooltipWhenDisabled } from "../components/TooltipWhenDisabled";
+import { getDeleteEventDescription } from "./job/deleteEventDescription";
 import { JobTimeline } from "./job/Timeline";
+import { JobDocumentsPanel } from "./job-page/JobDocumentsPanel";
 import { JobEmailsPanel } from "./job-page/JobEmailsPanel";
 import { JobNotesCard } from "./job-page/JobNotesCard";
 import {
@@ -148,6 +152,9 @@ export const JobPage: React.FC = () => {
   const [catalog, setCatalog] = React.useState<ResumeProjectCatalogItem[]>([]);
   const pendingEventRef = React.useRef<StageEvent | null>(null);
   const uploadPdfInputRef = React.useRef<HTMLInputElement | null>(null);
+  const { settings } = useSettings();
+  const { profile } = useProfile();
+  const filenameLanguage = resolveFilenameLanguage({ settings, profile });
   const openEditDetails = React.useCallback(() => {
     window.setTimeout(() => setIsEditDetailsOpen(true), 0);
   }, []);
@@ -221,7 +228,9 @@ export const JobPage: React.FC = () => {
       ),
     [catalog, selectedProjectIds],
   );
-  const sourceLabel = job ? sourceLabels[job.source] : "";
+  const sourceLabel = job
+    ? (sourceLabels[job.source] ?? formatJobSourceLabel(job.source))
+    : "";
   const jobPageBackTo = React.useMemo(() => {
     const state = location.state as JobPageLocationState | null;
     return isValidJobPageBackTarget(state?.jobPageBackTo)
@@ -295,60 +304,17 @@ export const JobPage: React.FC = () => {
       return;
     }
 
-    let toStage: ApplicationStage | "no_change" = values.stage as
-      | ApplicationStage
-      | "no_change";
-    let outcome: JobOutcome | null = null;
-
-    if (values.stage === "rejected") {
-      toStage = "closed";
-      outcome = "rejected";
-    } else if (values.stage === "withdrawn") {
-      toStage = "closed";
-      outcome = "withdrawn";
-    }
-
     const currentStage = events.at(-1)?.toStage ?? "applied";
-    const effectiveStage =
-      toStage === "no_change" ? (currentStage ?? "applied") : toStage;
 
     try {
-      if (eventId) {
-        await api.updateJobStageEvent(job.id, eventId, {
-          toStage: toStage === "no_change" ? undefined : toStage,
-          occurredAt: toTimestamp(values.date) ?? undefined,
-          metadata: {
-            note: values.notes?.trim() || undefined,
-            eventLabel: values.title.trim() || undefined,
-            reasonCode:
-              values.reasonCode ||
-              (values.stage === "no_change"
-                ? undefined
-                : "job_page_manual_stage"),
-            actor: "user",
-            eventType: values.stage === "no_change" ? "note" : "status_update",
-            externalUrl: values.salary ? `Salary: ${values.salary}` : undefined,
-          },
-          outcome,
-        });
-      } else {
-        const newEvent = await api.transitionJobStage(job.id, {
-          toStage: effectiveStage,
-          occurredAt: toTimestamp(values.date),
-          metadata: {
-            note: values.notes?.trim() || undefined,
-            eventLabel: values.title.trim() || undefined,
-            reasonCode:
-              values.reasonCode ||
-              (values.stage === "no_change"
-                ? undefined
-                : "job_page_manual_stage"),
-            actor: "user",
-            eventType: values.stage === "no_change" ? "note" : "status_update",
-            externalUrl: values.salary ? `Salary: ${values.salary}` : undefined,
-          },
-          outcome,
-        });
+      const { effectiveStage, newEvent } = await logJobStageEvent({
+        jobId: job.id,
+        currentStage,
+        values,
+        eventId,
+      });
+
+      if (newEvent) {
         pendingEventRef.current = newEvent;
       }
 
@@ -358,12 +324,7 @@ export const JobPage: React.FC = () => {
       toast.success(eventId ? "Event updated" : "Event logged");
 
       if (effectiveStage === "offer") {
-        confetti({
-          particleCount: 150,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#10b981", "#34d399", "#6ee7b7", "#ffffff"],
-        });
+        celebrateOffer();
       }
     } catch (error) {
       showErrorToast(error, "Failed to log event");
@@ -530,6 +491,28 @@ export const JobPage: React.FC = () => {
     }
   };
 
+  const handleDownloadPdf = async () => {
+    if (!job || !job.pdfPath || pdfActionsDisabled) return;
+    const filename = `${safeFilenamePart(job.employer, {
+      language: filenameLanguage,
+    })}-${safeFilenamePart(job.title, {
+      language: filenameLanguage,
+    })}-resume.pdf`;
+    await downloadJobPdf(job.id, filename).catch((error) => {
+      showErrorToast(error, "Could not download PDF");
+    });
+  };
+
+  const handleViewJobDescription = () => {
+    if (!job) return;
+    navigate(`${baseJobPath}/documents`, { state: jobPageNavigationState });
+    window.setTimeout(() => {
+      document
+        .getElementById("job-description-panel")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  };
+
   const currentStage = job
     ? (events.at(-1)?.toStage ??
       (job.status === "applied" || job.status === "in_progress"
@@ -537,8 +520,8 @@ export const JobPage: React.FC = () => {
         : null))
     : null;
   const isClosedStage = currentStage === "closed";
-  const canTrackStages = job?.status === "in_progress";
-  const canLogEvents = canTrackStages && !isClosedStage;
+  const isInProgress = job?.status === "in_progress";
+  const canLogEvents = isInProgress && !isClosedStage;
   const jobLink = job ? job.applicationLink || job.jobUrl : null;
   const isBusy = activeAction !== null;
   const isRegeneratingPdf = isPdfRegenerating(job);
@@ -825,76 +808,41 @@ export const JobPage: React.FC = () => {
             )}
 
             {activeMemoryView === "documents" && (
-              <section className="rounded-xl border border-border/50 bg-card/75">
-                <div className="border-b border-border/50 px-4 py-3">
-                  <div className="flex items-center gap-2 text-base font-semibold">
-                    <FileText className="h-4 w-4" />
-                    Documents
-                  </div>
-                </div>
-                <div className="space-y-4 p-4">
-                  <div className="rounded-lg border border-border/60 bg-background/25 p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold">Resume PDF</div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          Generated or uploaded application material for this
-                          job.
-                        </div>
-                      </div>
-                      {isStalePdf && (
-                        <div className="flex basis-full items-start gap-2 rounded-md border border-amber-200/70 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100">
-                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                          <span>{STALE_PDF_MESSAGE}</span>
-                        </div>
-                      )}
-                      {job.pdfPath ? (
-                        <TooltipWhenDisabled
-                          reason={pdfRegeneratingReason}
-                          className="w-full sm:w-auto"
-                        >
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={pdfActionsDisabled}
-                            onClick={() => {
-                              if (pdfActionsDisabled) return;
-                              void openJobPdf(job.id).catch((error) => {
-                                toast.error(
-                                  error instanceof Error
-                                    ? error.message
-                                    : "Could not open PDF",
-                                );
-                              });
-                            }}
-                          >
-                            <FileText className="mr-1.5 h-3.5 w-3.5" />
-                            {pdfLabels.view}
-                          </Button>
-                        </TooltipWhenDisabled>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => uploadPdfInputRef.current?.click()}
-                          disabled={isUploadingPdf}
-                        >
-                          <Upload className="mr-1.5 h-3.5 w-3.5" />
-                          Upload PDF
-                        </Button>
-                      )}
-                    </div>
-                  </div>
+              <div className="space-y-4">
+                <JobDocumentsPanel
+                  job={job}
+                  isStalePdf={isStalePdf}
+                  isUploadingPdf={isUploadingPdf}
+                  pdfActionsDisabled={pdfActionsDisabled}
+                  pdfRegeneratingReason={pdfRegeneratingReason}
+                  pdfViewLabel={pdfLabels.view}
+                  pdfDownloadLabel={pdfLabels.download}
+                  stalePdfMessage={STALE_PDF_MESSAGE}
+                  onUploadPdf={() => uploadPdfInputRef.current?.click()}
+                  onViewPdf={() => {
+                    if (pdfActionsDisabled) return;
+                    void openJobPdf(job.id).catch((error) => {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Could not open PDF",
+                      );
+                    });
+                  }}
+                  onDownloadPdf={() => void handleDownloadPdf()}
+                  onRegeneratePdf={() => void handleRegeneratePdf()}
+                />
 
-                  <JobBriefPane job={job} />
+                <JobBriefPane job={job} />
 
+                <div id="job-description-panel">
                   <JobDescriptionPanel
                     description={job.jobDescription}
                     jobUrl={job.jobUrl}
                     onSave={handleSaveJobDescription}
                   />
                 </div>
-              </section>
+              </div>
             )}
 
             {activeMemoryView === "timeline" && (
@@ -936,20 +884,21 @@ export const JobPage: React.FC = () => {
                   </div>
                 </div>
                 <div className="p-4">
-                  {!canTrackStages && (
+                  {!isInProgress && (
                     <div className="mb-4 rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
                       Move this job to In Progress to track application stages.
                     </div>
                   )}
-                  {canTrackStages && isClosedStage && (
+                  {isInProgress && isClosedStage && (
                     <div className="mb-4 rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
                       This application is closed. Stage logging is disabled.
                     </div>
                   )}
                   <JobTimeline
                     events={events}
-                    onEdit={canLogEvents ? handleEditEvent : undefined}
-                    onDelete={canLogEvents ? confirmDeleteEvent : undefined}
+                    discoveredAt={job.discoveredAt}
+                    onEdit={isInProgress ? handleEditEvent : undefined}
+                    onDelete={isInProgress ? confirmDeleteEvent : undefined}
                   />
                 </div>
               </section>
@@ -991,6 +940,7 @@ export const JobPage: React.FC = () => {
               pdfActionsDisabled={pdfActionsDisabled}
               pdfRegeneratingReason={pdfRegeneratingReason}
               pdfViewLabel={pdfLabels.view}
+              pdfDownloadLabel={pdfLabels.download}
               onStartTailoring={() => navigate(`/jobs/discovered/${job.id}`)}
               onAutoApply={() => void handleAutoApply()}
               autoApplyDisabledReason={autoApplyDisabledReason}
@@ -1008,10 +958,12 @@ export const JobPage: React.FC = () => {
                   );
                 });
               }}
+              onDownloadPdf={() => void handleDownloadPdf()}
               onUploadPdf={() => uploadPdfInputRef.current?.click()}
               onRegeneratePdf={() => void handleRegeneratePdf()}
               onSkip={() => void handleSkip()}
               onOpenEditDetails={openEditDetails}
+              onViewJobDescription={handleViewJobDescription}
               onCopyJobInfo={() => void handleCopyJobInfo()}
               onRescore={() => void handleRescore()}
               onCheckSponsor={() => void handleCheckSponsor()}
@@ -1037,6 +989,7 @@ export const JobPage: React.FC = () => {
           setEventToDelete(null);
         }}
         onConfirm={handleDeleteEvent}
+        description={getDeleteEventDescription(events, eventToDelete)}
       />
 
       <JobDetailsEditDrawer

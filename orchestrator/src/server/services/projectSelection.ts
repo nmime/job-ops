@@ -2,6 +2,7 @@
  * Service for AI-powered project selection for resumes.
  */
 
+import { stripHtmlTags } from "@shared/utils/string";
 import type { JsonSchemaDefinition } from "./llm/types";
 import { createConfiguredLlmService, resolveLlmModel } from "./modelSelection";
 import type { ResumeProjectSelectionItem } from "./resumeProjects";
@@ -29,20 +30,25 @@ export async function pickProjectIdsForJob(args: {
   desiredCount: number;
 }): Promise<string[]> {
   const desiredCount = Math.max(0, Math.floor(args.desiredCount));
-  if (desiredCount === 0) return [];
+  if (desiredCount === 0) {
+    return [];
+  }
 
   const eligibleIds = new Set(args.eligibleProjects.map((p) => p.id));
-  if (eligibleIds.size === 0) return [];
+  if (eligibleIds.size === 0) {
+    return [];
+  }
 
   const model = await resolveLlmModel("projectSelection");
+  const jobDescription = stripHtmlTags(args.jobDescription);
 
   const prompt = buildProjectSelectionPrompt({
-    jobDescription: args.jobDescription,
+    jobDescription,
     projects: args.eligibleProjects,
     desiredCount,
   });
 
-  const llm = await createConfiguredLlmService();
+  const llm = await createConfiguredLlmService("projectSelection");
   const result = await llm.callJson<{ selectedProjectIds: string[] }>({
     model,
     messages: [{ role: "user", content: prompt }],
@@ -50,11 +56,12 @@ export async function pickProjectIdsForJob(args: {
   });
 
   if (!result.success) {
-    return fallbackPickProjectIds(
-      args.jobDescription,
+    const fallback = fallbackPickProjectIds(
+      jobDescription,
       args.eligibleProjects,
       desiredCount,
     );
+    return fallback;
   }
 
   const selectedProjectIds = Array.isArray(result.data?.selectedProjectIds)
@@ -76,11 +83,12 @@ export async function pickProjectIdsForJob(args: {
   }
 
   if (unique.length === 0) {
-    return fallbackPickProjectIds(
-      args.jobDescription,
+    const fallback = fallbackPickProjectIds(
+      jobDescription,
       args.eligibleProjects,
       desiredCount,
     );
+    return fallback;
   }
 
   return unique;
@@ -113,7 +121,7 @@ Job description:
 ${args.jobDescription}
 
 Candidate projects (pick from these IDs only):
-${JSON.stringify(projects, null, 2)}
+${JSON.stringify(projects)}
 
 Respond with JSON only, in this exact shape:
 {

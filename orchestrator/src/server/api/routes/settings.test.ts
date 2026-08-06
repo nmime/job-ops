@@ -51,6 +51,21 @@ vi.mock("@server/services/rxresume", () => ({
   },
 }));
 
+const { listModelsMock } = vi.hoisted(() => ({
+  listModelsMock: vi.fn().mockResolvedValue(["model-a"]),
+}));
+
+vi.mock("@server/services/llm/service", () => ({
+  LlmService: vi.fn().mockImplementation(function MockLlmService(
+    this: { options: unknown; listModels: typeof listModelsMock },
+    options,
+  ) {
+    this.options = options;
+    this.listModels = listModelsMock;
+  }),
+}));
+
+import { LlmService } from "@server/services/llm/service";
 import {
   extractProjectsFromResume,
   getResume,
@@ -95,8 +110,11 @@ describe.sequential("Settings API routes", () => {
     expect(body.data.pdfRenderer.value).toBe("rxresume");
     expect(body.data.pdfRenderer.default).toBe("rxresume");
     expect(body.data.llmApiKeyHint).toBe("secr");
-    expect(body.data.basicAuthPassword).toBeNull();
-    expect(body.data.basicAuthActive).toBe(false);
+    expect(body.data).not.toHaveProperty("basicAuthUser");
+    expect(body.data).not.toHaveProperty("basicAuthPassword");
+    expect(body.data).not.toHaveProperty("basicAuthPasswordHint");
+    expect(body.data).not.toHaveProperty("basicAuthActive");
+    expect(body.data).not.toHaveProperty("onboardingBasicAuthDecision");
     expect(body.data.ghostwriterSystemPromptTemplate.value).toBe(
       getDefaultPromptTemplate("ghostwriterSystemPromptTemplate"),
     );
@@ -108,26 +126,27 @@ describe.sequential("Settings API routes", () => {
     );
   });
 
-  it("does not expose the basic auth password when only the password is configured", async () => {
-    const partialBasicAuth = await startServer({
+  it("does not expose Basic Auth env values through settings", async () => {
+    const legacyBasicAuth = await startServer({
       env: {
-        BASIC_AUTH_PASSWORD: "secret-only",
-        BASIC_AUTH_USER: "",
+        BASIC_AUTH_PASSWORD: "legacy-secret",
+        BASIC_AUTH_USER: "legacy-admin",
         LLM_API_KEY: "secret-key",
         RXRESUME_API_KEY: "resume-api-key",
       },
     });
 
     try {
-      const res = await fetch(`${partialBasicAuth.baseUrl}/api/settings`);
+      const res = await fetch(`${legacyBasicAuth.baseUrl}/api/settings`);
       const body = await res.json();
 
       expect(body.ok).toBe(true);
-      expect(body.data.basicAuthActive).toBe(false);
-      expect(body.data.basicAuthPassword).toBeNull();
-      expect(body.data.basicAuthPasswordHint).toBe("secr");
+      expect(body.data).not.toHaveProperty("basicAuthUser");
+      expect(body.data).not.toHaveProperty("basicAuthPassword");
+      expect(body.data).not.toHaveProperty("basicAuthPasswordHint");
+      expect(body.data).not.toHaveProperty("basicAuthActive");
     } finally {
-      await stopServer(partialBasicAuth);
+      await stopServer(legacyBasicAuth);
     }
   });
 
@@ -150,6 +169,31 @@ describe.sequential("Settings API routes", () => {
       expect(body.data.llmBaseUrl.default).toBe("https://api.openai.com");
     } finally {
       await stopServer(hyphenated);
+    }
+  });
+
+  it("uses GLM env defaults and base URL", async () => {
+    const glmDefaults = await startServer({
+      env: {
+        MODEL: undefined,
+        LLM_API_KEY: "secret-key",
+        LLM_PROVIDER: "glm",
+        RXRESUME_API_KEY: "resume-api-key",
+      },
+    });
+
+    try {
+      const res = await fetch(`${glmDefaults.baseUrl}/api/settings`);
+      const body = await res.json();
+
+      expect(body.ok).toBe(true);
+      expect(body.data.llmProvider.default).toBe("glm");
+      expect(body.data.llmProvider.value).toBe("glm");
+      expect(body.data.llmBaseUrl.default).toBe("https://api.z.ai/api/paas/v4");
+      expect(body.data.model.default).toBe("glm-5.1");
+      expect(body.data.model.value).toBe("glm-5.1");
+    } finally {
+      await stopServer(glmDefaults);
     }
   });
 
@@ -265,10 +309,35 @@ describe.sequential("Settings API routes", () => {
     expect(patchBody.data.rxresumeApiKeyHint).toBe("upda");
     expect(patchBody.data.rxresumeUrl).toBe("https://resume.example.com");
     expect(patchBody.data.llmApiKeyHint).toBe("upda");
-    expect(patchBody.data.basicAuthUser).toBe("admin");
-    expect(patchBody.data.basicAuthPassword).toBe("letmein");
+    expect(patchBody.data).not.toHaveProperty("basicAuthUser");
+    expect(patchBody.data).not.toHaveProperty("basicAuthPassword");
     expect(patchBody.data.ghostwriterSystemPromptTemplate.override).toBe(
       "Custom Ghostwriter {{tone}}",
+    );
+  });
+
+  it("ignores malformed stored purpose API keys when listing models", async () => {
+    const { setSetting } = await import("@server/repositories/settings");
+    await setSetting("llmPurposeApiKeys", JSON.stringify({ tailoring: 123 }));
+
+    const res = await fetch(`${baseUrl}/api/settings/llm-models`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai",
+        purpose: "tailoring",
+      }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.models).toEqual(["model-a"]);
+    expect(LlmService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "secret-key",
+        provider: "openai",
+      }),
     );
   });
 
@@ -374,7 +443,7 @@ describe.sequential("Settings API routes", () => {
     expect(validateCredentials).not.toHaveBeenCalled();
   });
 
-  it("validates basic auth requirements", async () => {
+  it("ignores removed Basic Auth settings fields", async () => {
     const res = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -383,10 +452,12 @@ describe.sequential("Settings API routes", () => {
         basicAuthUser: "",
       }),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.error.message).toContain("Username is required");
+    expect(body.ok).toBe(true);
+    expect(body.data).not.toHaveProperty("basicAuthUser");
+    expect(body.data).not.toHaveProperty("basicAuthPassword");
+    expect(body.data).not.toHaveProperty("basicAuthActive");
   });
 
   it("handles salary penalty settings with validation", async () => {

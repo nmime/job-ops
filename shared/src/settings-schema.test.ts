@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { updateSettingsSchema } from "./settings-schema";
 
 describe("updateSettingsSchema", () => {
+  it("does not expose legacy Basic Auth update fields", () => {
+    expect(
+      updateSettingsSchema.parse({
+        enableBasicAuth: true,
+        basicAuthUser: "admin",
+        basicAuthPassword: "secret",
+        onboardingBasicAuthDecision: "enabled",
+      }),
+    ).toEqual({});
+  });
+
   it("accepts supported PDF renderer values and rejects unsupported ones", () => {
     expect(
       updateSettingsSchema.parse({
@@ -9,6 +20,14 @@ describe("updateSettingsSchema", () => {
       }),
     ).toEqual({
       pdfRenderer: "latex",
+    });
+
+    expect(
+      updateSettingsSchema.parse({
+        pdfRenderer: "typst",
+      }),
+    ).toEqual({
+      pdfRenderer: "typst",
     });
 
     expect(
@@ -31,6 +50,35 @@ describe("updateSettingsSchema", () => {
     expect(result.error.flatten().fieldErrors.pdfRenderer).toBeDefined();
   });
 
+  it("accepts supported Typst theme values and rejects unsupported ones", () => {
+    expect(
+      updateSettingsSchema.parse({
+        typstTheme: "compact",
+      }),
+    ).toEqual({
+      typstTheme: "compact",
+    });
+
+    expect(
+      updateSettingsSchema.parse({
+        typstTheme: null,
+      }),
+    ).toEqual({
+      typstTheme: null,
+    });
+
+    const result = updateSettingsSchema.safeParse({
+      typstTheme: "ornate",
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) {
+      return;
+    }
+
+    expect(result.error.flatten().fieldErrors.typstTheme).toBeDefined();
+  });
+
   it("accepts supported language mode and manual language values", () => {
     expect(
       updateSettingsSchema.parse({
@@ -49,6 +97,16 @@ describe("updateSettingsSchema", () => {
       }),
     ).toEqual({
       chatStyleLanguageMode: null,
+      chatStyleManualLanguage: null,
+    });
+
+    expect(
+      updateSettingsSchema.parse({
+        chatStyleLanguageMode: "match-job-description",
+        chatStyleManualLanguage: null,
+      }),
+    ).toEqual({
+      chatStyleLanguageMode: "match-job-description",
       chatStyleManualLanguage: null,
     });
   });

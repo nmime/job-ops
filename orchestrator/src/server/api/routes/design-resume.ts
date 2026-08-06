@@ -1,6 +1,8 @@
 import { badRequest, conflict, notFound, toAppError } from "@infra/errors";
 import { asyncRoute, fail, ok } from "@infra/http";
 import { logger } from "@infra/logger";
+import { getJobOpsAppConfig } from "@server/config/app-mode";
+import { getRequestId } from "@server/infra/request-context";
 import { enqueueAutoPdfRegenerationForReadyJobs } from "@server/services/auto-pdf-regeneration";
 import {
   deleteDesignResumePicture,
@@ -13,16 +15,22 @@ import {
   uploadDesignResumePicture,
   uploadDesignResumePictureFile,
 } from "@server/services/design-resume";
+import { generateDesignResumeFieldSuggestion } from "@server/services/design-resume/ai-field-suggestion";
 import { importDesignResumeFromFile } from "@server/services/design-resume/import-file";
 import { generateDesignResumePdf } from "@server/services/pdf";
 import { getTenantDesignResumePdfPath } from "@server/services/pdf-storage";
 import { clearProfileCache } from "@server/services/profile";
+import { parseV5ResumeData } from "@server/services/rxresume/schema/v5";
 import { getJobOpsPublicAvailability } from "@server/services/tracer-links";
 import type { DesignResumeJson, DesignResumePatchRequest } from "@shared/types";
 import { type Request, type Response, Router } from "express";
 import { z } from "zod";
 
 export const designResumeRouter = Router();
+
+function elapsedMs(startedAt: number): number {
+  return Date.now() - startedAt;
+}
 
 const jsonPointerSchema = z
   .string()
@@ -69,7 +77,7 @@ async function assertPictureSupportEnabled(req: Request): Promise<void> {
 
   throw conflict(
     availability.reason ??
-      "Design Resume pictures require JobOps to be reachable at a public URL.",
+      "Resume Studio pictures require JobOps to be reachable at a public URL.",
   );
 }
 
@@ -203,10 +211,30 @@ const importFileSchema = z.object({
   dataBase64: z.string().trim().min(1),
 });
 
+export const designResumeAiFieldSuggestionSchema = z.object({
+  document: z.unknown(),
+  field: z.object({
+    path: z.string().trim().min(1).max(500),
+    label: z.string().trim().min(1).max(120),
+    value: z.union([
+      z.string().max(20000),
+      z.array(z.string().max(500)).max(100),
+    ]),
+    valueType: z.enum(["plain_text", "html", "string_list"]),
+    section: z.string().trim().max(120).nullable().optional(),
+    itemLabel: z.string().trim().max(240).nullable().optional(),
+  }),
+  prompt: z.string().trim().min(1).max(3000),
+});
+
 function asDesignResumeJson(value: unknown): DesignResumeJson | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as DesignResumeJson)
     : undefined;
+}
+
+function parseDesignResumeJson(value: unknown): DesignResumeJson {
+  return parseV5ResumeData(value) as DesignResumeJson;
 }
 
 function queueDesignResumeAutoPdfRegeneration(route: string): void {
@@ -232,7 +260,7 @@ designResumeRouter.get(
   asyncRoute(async (_req: Request, res: Response) => {
     const document = await getCurrentDesignResume();
     if (!document) {
-      fail(res, notFound("Design Resume has not been imported yet."));
+      fail(res, notFound("Resume Studio has not been imported yet."));
       return;
     }
     ok(res, document);
@@ -261,11 +289,62 @@ designResumeRouter.post(
 designResumeRouter.post(
   "/import/file",
   asyncRoute(async (req: Request, res: Response) => {
+    const startedAt = Date.now();
+    const requestId = getRequestId();
     const input = importFileSchema.parse(req.body);
+    logger.info("Design resume file import route started", {
+      requestId: requestId ?? null,
+      fileName: input.fileName,
+      mediaType: input.mediaType ?? null,
+    });
     const document = await importDesignResumeFromFile(input);
+    logger.info("Design resume file import route service completed", {
+      requestId: requestId ?? null,
+      fileName: input.fileName,
+      mediaType: input.mediaType ?? null,
+      documentId: document.id,
+      durationMs: elapsedMs(startedAt),
+    });
     clearProfileCache();
+    logger.info("Design resume file import route profile cache cleared", {
+      requestId: requestId ?? null,
+      fileName: input.fileName,
+      mediaType: input.mediaType ?? null,
+      documentId: document.id,
+      durationMs: elapsedMs(startedAt),
+    });
     ok(res, document, 201);
+    logger.info("Design resume file import route response sent", {
+      requestId: requestId ?? null,
+      fileName: input.fileName,
+      mediaType: input.mediaType ?? null,
+      documentId: document.id,
+      durationMs: elapsedMs(startedAt),
+    });
     queueDesignResumeAutoPdfRegeneration("POST /api/design-resume/import/file");
+    logger.info("Design resume file import auto-PDF regeneration queued", {
+      requestId: requestId ?? null,
+      fileName: input.fileName,
+      mediaType: input.mediaType ?? null,
+      documentId: document.id,
+      durationMs: elapsedMs(startedAt),
+    });
+  }),
+);
+
+designResumeRouter.post(
+  "/ai/field-suggestion",
+  asyncRoute(async (req: Request, res: Response) => {
+    const input = designResumeAiFieldSuggestionSchema.parse(req.body);
+    const document = parseDesignResumeJson(input.document);
+    ok(
+      res,
+      await generateDesignResumeFieldSuggestion({
+        document,
+        field: input.field,
+        prompt: input.prompt,
+      }),
+    );
   }),
 );
 
@@ -343,7 +422,7 @@ designResumeRouter.get(
     }
 
     const { asset, content } = await readDesignResumeAssetContent(assetId, {
-      bypassTenantScope: true,
+      bypassTenantScope: getJobOpsAppConfig().appMode !== "hosted",
     });
     res.setHeader("Content-Type", asset.mimeType);
     res.setHeader("Cache-Control", "private, max-age=60");
@@ -377,7 +456,7 @@ designResumeRouter.get(
     res.setHeader("Cache-Control", "no-store");
     res.sendFile(pdfPath, (error) => {
       if (error) {
-        fail(res, notFound("Design Resume PDF not found"));
+        fail(res, notFound("Resume Studio PDF not found"));
       }
     });
   }),

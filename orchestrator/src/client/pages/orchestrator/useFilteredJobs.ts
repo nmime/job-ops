@@ -1,14 +1,19 @@
-import type { JobListItem, JobSource } from "@shared/types";
+import type { JobListItem } from "@shared/types";
 import { useMemo } from "react";
 import type {
   DateFilterDimension,
-  FilterTab,
   JobDateFilter,
-  JobSort,
-  SalaryFilter,
+  JobFilters,
   SponsorFilter,
 } from "./constants";
-import { compareJobs, getJobDateValue, parseSalaryBounds } from "./utils";
+import {
+  compareJobs,
+  getJobDateValue,
+  matchesEmploymentType,
+  matchesLocation,
+  matchesPostedWithin,
+  parseSalaryBounds,
+} from "./utils";
 
 const getSponsorCategory = (score: number | null): SponsorFilter => {
   if (score == null) return "unknown";
@@ -17,27 +22,26 @@ const getSponsorCategory = (score: number | null): SponsorFilter => {
   return "not_found";
 };
 
-const dateSortPriorityOrder: DateFilterDimension[] = [
-  "ready",
-  "applied",
-  "closed",
-  "discovered",
-];
+export const useFilteredJobs = (jobs: JobListItem[], filters: JobFilters) => {
+  const {
+    activeTab,
+    dateFilter,
+    sourceFilter,
+    sponsorFilter,
+    salaryFilter,
+    postedWithinDays,
+    employmentTypes,
+    location,
+    sort,
+  } = filters;
 
-export const useFilteredJobs = (
-  jobs: JobListItem[],
-  activeTab: FilterTab,
-  dateFilter: JobDateFilter,
-  sourceFilter: JobSource | "all",
-  sponsorFilter: SponsorFilter,
-  salaryFilter: SalaryFilter,
-  sort: JobSort,
-) =>
-  useMemo(() => {
+  return useMemo(() => {
     let filtered = [...jobs];
 
     if (activeTab === "ready") {
-      filtered = filtered.filter((job) => job.status === "ready");
+      filtered = filtered.filter(
+        (job) => job.status === "ready" || job.status === "processing",
+      );
     } else if (activeTab === "discovered") {
       filtered = filtered.filter(
         (job) => job.status === "discovered" || job.status === "processing",
@@ -61,6 +65,23 @@ export const useFilteredJobs = (
 
     if (sourceFilter !== "all") {
       filtered = filtered.filter((job) => job.source === sourceFilter);
+    }
+
+    if (postedWithinDays != null) {
+      const now = Date.now();
+      filtered = filtered.filter((job) =>
+        matchesPostedWithin(job, postedWithinDays, now),
+      );
+    }
+
+    if (employmentTypes.length > 0) {
+      filtered = filtered.filter((job) =>
+        matchesEmploymentType(job, employmentTypes),
+      );
+    }
+
+    if (location.trim()) {
+      filtered = filtered.filter((job) => matchesLocation(job, location));
     }
 
     if (sponsorFilter !== "all") {
@@ -107,12 +128,7 @@ export const useFilteredJobs = (
       });
     }
 
-    const effectiveSort =
-      sort.key === "date"
-        ? { ...sort, datePriority: getDatePriority(dateFilter.dimensions) }
-        : sort;
-
-    return [...filtered].sort((a, b) => compareJobs(a, b, effectiveSort));
+    return [...filtered].sort((a, b) => compareJobs(a, b, sort));
   }, [
     jobs,
     activeTab,
@@ -120,8 +136,12 @@ export const useFilteredJobs = (
     sourceFilter,
     sponsorFilter,
     salaryFilter,
+    postedWithinDays,
+    employmentTypes,
+    location,
     sort,
   ]);
+};
 
 const matchesDateDimension = (
   job: JobListItem,
@@ -137,13 +157,6 @@ const matchesDateDimension = (
   if (filter.startDate && localDate < filter.startDate) return false;
   if (filter.endDate && localDate > filter.endDate) return false;
   return true;
-};
-
-const getDatePriority = (dimensions: DateFilterDimension[]) => {
-  const enabled = dateSortPriorityOrder.filter((dimension) =>
-    dimensions.includes(dimension),
-  );
-  return enabled.length > 0 ? enabled : dateSortPriorityOrder;
 };
 
 const toLocalDateKey = (value: number): string | null => {

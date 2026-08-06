@@ -42,6 +42,9 @@ export const manifest: ExtractorManifest = {
   id: "startupjobs",
   displayName: "startup.jobs",
   providesSources: ["startupjobs"],
+  locationCapabilities: {
+    startupjobs: { supportedCountryKeys: null },
+  },
   async run(context) {
     if (context.shouldCancel?.()) {
       return { success: true, jobs: [] };
@@ -52,14 +55,23 @@ export const manifest: ExtractorManifest = {
       : context.settings.jobspyResultsWanted
         ? Number.parseInt(context.settings.jobspyResultsWanted, 10)
         : Number.NaN;
-    const maxJobsPerTerm = Number.isFinite(parsedMaxJobsPerTerm)
+    const configuredMaxJobsPerTerm = Number.isFinite(parsedMaxJobsPerTerm)
       ? Math.max(1, parsedMaxJobsPerTerm)
       : 50;
+    const locationCount = Math.max(
+      1,
+      context.sourceLocationPlan?.requestedCities.length ?? 0,
+    );
+    const maxJobsPerTerm = Math.max(
+      1,
+      Math.ceil(configuredMaxJobsPerTerm / locationCount),
+    );
 
     const result = await runStartupJobs({
       selectedCountry: context.selectedCountry,
       searchTerms: context.searchTerms,
       locations: resolveSearchCities({
+        list: context.sourceLocationPlan?.requestedCities,
         single:
           context.settings.searchCities ?? context.settings.jobspyLocation,
       }),

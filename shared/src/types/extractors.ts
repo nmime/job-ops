@@ -1,5 +1,9 @@
 import type { CreateJobInput } from "./jobs";
-import type { LocationIntent, SourceLocationPlan } from "./location";
+import type {
+  LocationIntent,
+  LocationSourceCapabilitiesInput,
+  SourceLocationPlan,
+} from "./location";
 
 export interface ExtractorProgressEvent {
   phase?: "list" | "job";
@@ -19,6 +23,11 @@ export interface ExtractorCapabilities {
   locationEvidence?: boolean;
 }
 
+export type ExtractorSourceLocationCapabilities = Omit<
+  LocationSourceCapabilitiesInput,
+  "source"
+>;
+
 export interface ExtractorRuntimeContext {
   source: string;
   selectedSources: string[];
@@ -36,6 +45,7 @@ export interface ExtractorRunResult {
   success: boolean;
   jobs: CreateJobInput[];
   error?: string;
+  sourceErrors?: string[];
   /** When set, the extractor failed because a Cloudflare challenge couldn't be
    *  solved headless. The value is the URL that needs a human to solve it in a
    *  headed browser. The pipeline should pause and prompt the user. */
@@ -48,5 +58,8 @@ export interface ExtractorManifest {
   providesSources: readonly string[];
   requiredEnvVars?: readonly string[];
   capabilities?: ExtractorCapabilities;
+  locationCapabilities?: Partial<
+    Record<string, ExtractorSourceLocationCapabilities>
+  >;
   run: (context: ExtractorRuntimeContext) => Promise<ExtractorRunResult>;
 }

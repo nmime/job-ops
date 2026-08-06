@@ -50,7 +50,7 @@ describe("DesignResumeListSection", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "This will remove Apollo from your Design Resume. You can add it again later, but this change will be saved.",
+        "This will remove Apollo from your Resume Studio. You can add it again later, but this change will be saved.",
       ),
     ).toBeInTheDocument();
     expect(onUpdateItems).not.toHaveBeenCalled();
@@ -76,5 +76,37 @@ describe("DesignResumeListSection", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     expect(onUpdateItems).toHaveBeenCalledWith([projects[0]]);
+  });
+
+  it("shows max project selection controls for project sections", () => {
+    const onMaxProjectsChange = vi.fn();
+    render(
+      <Accordion type="multiple" defaultValue={["projects"]}>
+        <DesignResumeListSection
+          definition={projectsDefinition}
+          items={projects}
+          onAdd={vi.fn()}
+          onEdit={vi.fn()}
+          onUpdateItems={vi.fn()}
+          projectPolicy={{
+            getMode: () => "ai-selectable",
+            onModeChange: vi.fn(),
+            maxProjects: 2,
+            minProjects: 0,
+            maxProjectsTotal: 2,
+            onMaxProjectsChange,
+          }}
+        />
+      </Accordion>,
+    );
+
+    const maxProjectsInput = screen.getByLabelText(
+      "Maximum projects in Tailored Resumes",
+    );
+    expect(maxProjectsInput).toHaveValue(2);
+
+    fireEvent.change(maxProjectsInput, { target: { value: "1" } });
+
+    expect(onMaxProjectsChange).toHaveBeenCalledWith(1);
   });
 });

@@ -296,11 +296,16 @@ describe("settingsRegistry helpers", () => {
       expect(settingsRegistry.chatStyleLanguageMode.parse("match-resume")).toBe(
         "match-resume",
       );
+      expect(
+        settingsRegistry.chatStyleLanguageMode.parse("match-job-description"),
+      ).toBe("match-job-description");
       expect(settingsRegistry.chatStyleLanguageMode.parse("auto")).toBeNull();
       expect(settingsRegistry.chatStyleLanguageMode.parse("")).toBeNull();
       expect(
-        settingsRegistry.chatStyleLanguageMode.serialize("match-resume"),
-      ).toBe("match-resume");
+        settingsRegistry.chatStyleLanguageMode.serialize(
+          "match-job-description",
+        ),
+      ).toBe("match-job-description");
       expect(settingsRegistry.chatStyleLanguageMode.serialize(null)).toBeNull();
 
       expect(settingsRegistry.chatStyleManualLanguage.parse("english")).toBe(
@@ -341,18 +346,125 @@ describe("settingsRegistry helpers", () => {
       );
     });
 
+    it("accepts claude_cli including hyphenated alias", () => {
+      expect(settingsRegistry.llmProvider.parse("claude_cli")).toBe(
+        "claude_cli",
+      );
+      expect(settingsRegistry.llmProvider.parse("claude-cli")).toBe(
+        "claude_cli",
+      );
+    });
+
+    it("accepts GLM provider aliases", () => {
+      expect(settingsRegistry.llmProvider.parse("glm")).toBe("glm");
+      expect(settingsRegistry.llmProvider.parse("zhipu-ai")).toBe("glm");
+      expect(settingsRegistry.llmProvider.parse("bigmodel")).toBe("glm");
+    });
+
+    it("accepts the Claude alias for Anthropic", () => {
+      expect(settingsRegistry.llmProvider.parse("claude")).toBe("anthropic");
+    });
+
     it("uses provider-specific default models", () => {
       expect(getDefaultModelForProvider("openai")).toBe("gpt-5.4-mini");
+      expect(getDefaultModelForProvider("anthropic")).toBe("claude-sonnet-4-6");
+      expect(getDefaultModelForProvider("glm")).toBe("glm-5.1");
       expect(getDefaultModelForProvider("gemini")).toBe(
         "google/gemini-3-flash-preview",
       );
       expect(getDefaultModelForProvider("gemini_cli")).toBe(
         "google/gemini-3-flash-preview",
       );
-      expect(getDefaultModelForProvider("codex")).toBe("");
+      expect(getDefaultModelForProvider("claude_cli")).toBe("claude-sonnet-5");
+      expect(getDefaultModelForProvider("codex")).toBe("gpt-5.4-mini");
+      expect(getDefaultModelForProvider("ollama")).toBe("");
       expect(getDefaultModelForProvider("openrouter")).toBe(
         "google/gemini-3-flash-preview",
       );
+    });
+  });
+
+  describe("LLM purpose override parsing", () => {
+    it("normalizes structured purpose overrides and drops empty purpose entries", () => {
+      const raw = JSON.stringify({
+        scoring: { model: "  llama3.2  " },
+        tailoring: {
+          provider: "openai-compatible",
+          baseUrl: "https://api.openai.com",
+          model: "gpt-5.4-mini",
+        },
+        projectSelection: {},
+      });
+
+      expect(settingsRegistry.llmPurposeOverrides.parse(raw)).toEqual({
+        scoring: { model: "llama3.2" },
+        tailoring: {
+          provider: "openai_compatible",
+          baseUrl: "https://api.openai.com",
+          model: "gpt-5.4-mini",
+        },
+      });
+    });
+
+    it("returns null for malformed stored purpose overrides", () => {
+      expect(
+        settingsRegistry.llmPurposeOverrides.parse(
+          JSON.stringify({ tailoring: { baseUrl: 123 } }),
+        ),
+      ).toBeNull();
+      expect(
+        settingsRegistry.llmPurposeOverrides.parse(
+          JSON.stringify({ tailoring: { provider: "unknown" } }),
+        ),
+      ).toBeNull();
+    });
+
+    it("normalizes whitespace-only purpose override base URLs as empty", () => {
+      expect(
+        settingsRegistry.llmPurposeOverrides.parse(
+          JSON.stringify({
+            scoring: { baseUrl: "   ", model: "  llama3.2  " },
+            tailoring: { baseUrl: "\t\n" },
+          }),
+        ),
+      ).toEqual({ scoring: { model: "llama3.2" } });
+    });
+
+    it("returns null for malformed stored purpose API keys", () => {
+      expect(
+        settingsRegistry.llmPurposeApiKeys.parse(
+          JSON.stringify({ tailoring: 123 }),
+        ),
+      ).toBeNull();
+      expect(
+        settingsRegistry.llmPurposeApiKeys.parse(
+          JSON.stringify({ tailoring: "sk-test", extra: "sk-extra" }),
+        ),
+      ).toBeNull();
+    });
+
+    it("normalizes purpose API keys and serializes empty keys as null", () => {
+      expect(
+        settingsRegistry.llmPurposeApiKeys.parse(
+          JSON.stringify({ tailoring: "  sk-test  ", scoring: "" }),
+        ),
+      ).toEqual({ tailoring: "sk-test" });
+      expect(settingsRegistry.llmPurposeApiKeys.serialize({})).toBeNull();
+      expect(
+        settingsRegistry.llmPurposeApiKeys.serialize({
+          tailoring: "",
+          scoring: null,
+        }),
+      ).toBeNull();
+    });
+
+    it("serializes empty purpose overrides as null", () => {
+      expect(settingsRegistry.llmPurposeOverrides.serialize({})).toBeNull();
+      expect(
+        settingsRegistry.llmPurposeOverrides.serialize({
+          tailoring: { model: "gpt-5.4-mini" },
+        }),
+      ).toBe(JSON.stringify({ tailoring: { model: "gpt-5.4-mini" } }));
     });
   });
 });

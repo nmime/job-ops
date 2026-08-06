@@ -1,7 +1,8 @@
 import * as api from "@client/api";
+import * as privatePdf from "@client/lib/private-pdf";
 import { renderWithQueryClient } from "@client/test/renderWithQueryClient";
-import { createJob } from "@shared/testing/factories.js";
-import type { Job } from "@shared/types.js";
+import { createAppSettings, createJob } from "@shared/testing/factories.js";
+import type { AppSettings, Job } from "@shared/types.js";
 import {
   act,
   fireEvent,
@@ -17,7 +18,7 @@ const render = (ui: Parameters<typeof renderWithQueryClient>[0]) =>
   renderWithQueryClient(ui);
 
 const mockSettings = {
-  settings: null,
+  settings: null as AppSettings | null,
   error: null,
   isLoading: false,
   showSponsorInfo: true,
@@ -61,11 +62,14 @@ vi.mock("@client/components", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@client/components")>();
   return {
     ...actual,
-    JobHeader: ({ jobCTA }: { jobCTA?: React.ReactNode }) => (
-      <div data-testid="job-header">{jobCTA}</div>
+    JobHeader: ({ job, jobCTA }: { job: Job; jobCTA?: React.ReactNode }) => (
+      <div data-testid="job-header">
+        <span>{job.title}</span>
+        <span>{job.employer}</span>
+        {jobCTA}
+      </div>
     ),
     JobBriefPane: () => <div data-testid="job-brief-pane" />,
-    FitAssessment: () => <div data-testid="fit-assessment" />,
     TailoredSummary: () => <div data-testid="tailored-summary" />,
   };
 });
@@ -140,6 +144,11 @@ vi.mock("@client/api", () => ({
   getResumeProjectsCatalog: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock("@client/lib/private-pdf", () => ({
+  downloadJobPdf: vi.fn().mockResolvedValue(undefined),
+  openJobPdf: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
@@ -148,10 +157,26 @@ vi.mock("sonner", () => ({
   },
 }));
 
-const renderJobDetailPanel = async (
-  props: React.ComponentProps<typeof JobDetailPanel>,
-) => {
-  const rendered = render(<JobDetailPanel {...props} />);
+type JobDetailPanelTestProps = Omit<
+  React.ComponentProps<typeof JobDetailPanel>,
+  "selectedJobListItem" | "selectedJobLoadState" | "onRetrySelectedJob"
+> &
+  Partial<
+    Pick<
+      React.ComponentProps<typeof JobDetailPanel>,
+      "selectedJobListItem" | "selectedJobLoadState" | "onRetrySelectedJob"
+    >
+  >;
+
+const renderJobDetailPanel = async (props: JobDetailPanelTestProps) => {
+  const rendered = render(
+    <JobDetailPanel
+      selectedJobListItem={props.selectedJob}
+      selectedJobLoadState="idle"
+      onRetrySelectedJob={vi.fn()}
+      {...props}
+    />,
+  );
   await act(async () => {
     await Promise.resolve();
   });
@@ -163,7 +188,72 @@ const getApplyPanel = () => screen.getByRole("tabpanel", { name: /apply/i });
 describe("JobDetailPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSettings.settings = null;
     mockSettings.renderMarkdownInJobDescriptions = true;
+    vi.mocked(api.getProfile).mockResolvedValue({});
+  });
+
+  it("shows the selected job summary and safe links while full details load", async () => {
+    const summary = createJob({
+      id: "job-2",
+      title: "Platform Engineer",
+      employer: "Example Ltd",
+      status: "discovered",
+      applicationLink: "https://example.com/apply/job-2",
+    });
+
+    await renderJobDetailPanel({
+      activeTab: "discovered",
+      activeJobs: [summary],
+      selectedJob: null,
+      selectedJobListItem: summary,
+      selectedJobLoadState: "loading",
+      onSelectJobId: vi.fn(),
+      onJobUpdated: vi.fn().mockResolvedValue(undefined),
+    });
+
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+    expect(screen.getByText("Example Ltd")).toBeInTheDocument();
+    expect(screen.getByTestId("job-detail-skeleton")).toBeInTheDocument();
+    expect(screen.getByText("Loading full job details…")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /open job listing/i }),
+    ).toHaveAttribute("href", "https://example.com/apply/job-2");
+    expect(screen.getByRole("tab", { name: /brief/i })).toBeDisabled();
+    expect(screen.queryByText("Start Tailoring")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /more actions/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the summary and offers retry when detail loading fails", async () => {
+    const onRetrySelectedJob = vi.fn();
+    const summary = createJob({
+      id: "job-2",
+      title: "Platform Engineer",
+      employer: "Example Ltd",
+      status: "discovered",
+    });
+
+    await renderJobDetailPanel({
+      activeTab: "discovered",
+      activeJobs: [summary],
+      selectedJob: null,
+      selectedJobListItem: summary,
+      selectedJobLoadState: "error",
+      onSelectJobId: vi.fn(),
+      onJobUpdated: vi.fn().mockResolvedValue(undefined),
+      onRetrySelectedJob,
+    });
+
+    expect(screen.getByText("Platform Engineer")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Couldn't load job details",
+    );
+    expect(screen.queryByTestId("job-detail-skeleton")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetrySelectedJob).toHaveBeenCalledTimes(1);
   });
 
   it("renders discovered jobs in the unified inspector", async () => {
@@ -249,6 +339,49 @@ describe("JobDetailPanel", () => {
 
     expect(openListing).not.toHaveClass("bg-emerald-600");
     expect(markApplied).toHaveClass("bg-emerald-600");
+  });
+
+  it("downloads PDFs with language-aware German transliteration", async () => {
+    mockSettings.settings = createAppSettings({
+      chatStyleLanguageMode: {
+        value: "manual",
+        default: "manual",
+        override: null,
+      },
+      chatStyleManualLanguage: {
+        value: "german",
+        default: "english",
+        override: null,
+      },
+    });
+    vi.mocked(api.getProfile).mockResolvedValue({
+      basics: {
+        name: "Müller",
+      },
+    });
+    const job = createJob({
+      id: "job-1",
+      employer: "Büro Straße",
+      pdfPath: "data/pdfs/job-1.pdf",
+      status: "ready",
+    });
+
+    await renderJobDetailPanel({
+      activeTab: "ready",
+      activeJobs: [job],
+      selectedJob: job,
+      onSelectJobId: vi.fn(),
+      onJobUpdated: vi.fn().mockResolvedValue(undefined),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /download pdf/i }));
+
+    await waitFor(() =>
+      expect(privatePdf.downloadJobPdf).toHaveBeenCalledWith(
+        "job-1",
+        "Mueller_Buero_Strasse.pdf",
+      ),
+    );
   });
 
   it("disables application-kit PDF actions while regeneration is active", async () => {
@@ -438,7 +571,12 @@ describe("JobDetailPanel", () => {
       onJobUpdated: vi.fn().mockResolvedValue(undefined),
     });
 
-    expect(screen.getByText("Hello world")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, node) =>
+          node?.tagName === "P" && node.textContent === "Hello world",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders markdown in the brief job description when enabled", async () => {

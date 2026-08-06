@@ -5,16 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const stepState = vi.hoisted(() => {
   let resolveDiscover:
-    | ((value: { discoveredJobs: []; sourceErrors: [] }) => void)
+    | ((value: {
+        discoveredJobs: [];
+        sourceErrors: [];
+        pendingChallenges: [];
+      }) => void)
     | null = null;
   return {
     setResolver: (
-      fn: (value: { discoveredJobs: []; sourceErrors: [] }) => void,
+      fn: (value: {
+        discoveredJobs: [];
+        sourceErrors: [];
+        pendingChallenges: [];
+      }) => void,
     ) => {
       resolveDiscover = fn;
     },
     resolveDiscover: () =>
-      resolveDiscover?.({ discoveredJobs: [], sourceErrors: [] }),
+      resolveDiscover?.({
+        discoveredJobs: [],
+        sourceErrors: [],
+        pendingChallenges: [],
+      }),
   };
 });
 
@@ -35,11 +47,19 @@ vi.mock("./steps", () => ({
   loadProfileStep: vi.fn(async () => ({})),
   discoverJobsStep: vi.fn(
     () =>
-      new Promise<{ discoveredJobs: []; sourceErrors: [] }>((resolve) => {
+      new Promise<{
+        discoveredJobs: [];
+        sourceErrors: [];
+        pendingChallenges: [];
+      }>((resolve) => {
         stepState.setResolver(resolve);
       }),
   ),
-  importJobsStep: vi.fn(async () => ({ created: 0, skipped: 0 })),
+  importJobsStep: vi.fn(async () => ({
+    created: 0,
+    skipped: 0,
+    fuzzyMerged: 0,
+  })),
   scoreJobsStep: vi.fn(async () => ({ unprocessedJobs: [], scoredJobs: [] })),
   selectJobsStep: vi.fn(() => []),
   processJobsStep: vi.fn(async () => ({ processedCount: 0 })),

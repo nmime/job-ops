@@ -37,6 +37,9 @@ export const manifest: ExtractorManifest = {
   id: "golangjobs",
   displayName: "Golang Jobs",
   providesSources: ["golangjobs"],
+  locationCapabilities: {
+    golangjobs: { supportedCountryKeys: null },
+  },
   async run(context) {
     if (context.shouldCancel?.()) {
       return { success: true, jobs: [] };
@@ -53,6 +56,7 @@ export const manifest: ExtractorManifest = {
       selectedCountry: context.selectedCountry,
       searchTerms: context.searchTerms,
       locations: resolveSearchCities({
+        list: context.sourceLocationPlan?.requestedCities,
         single:
           context.settings.searchCities ?? context.settings.jobspyLocation,
       }),

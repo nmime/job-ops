@@ -1,3 +1,7 @@
+import {
+  GLASSDOOR_SUPPORTED_COUNTRY_KEYS,
+  JOBSPY_SUPPORTED_COUNTRY_KEYS,
+} from "@shared/location-support.js";
 import type {
   ExtractorManifest,
   ExtractorRuntimeContext,
@@ -17,21 +21,41 @@ export const manifest: ExtractorManifest = {
   displayName: "JobSpy",
   providesSources: ["indeed", "linkedin", "glassdoor"],
   capabilities: { locationEvidence: true },
+  locationCapabilities: {
+    indeed: { supportedCountryKeys: JOBSPY_SUPPORTED_COUNTRY_KEYS },
+    linkedin: { supportedCountryKeys: JOBSPY_SUPPORTED_COUNTRY_KEYS },
+    glassdoor: {
+      supportedCountryKeys: GLASSDOOR_SUPPORTED_COUNTRY_KEYS,
+      requiresCityLocations: true,
+    },
+  },
   async run(context: ExtractorRuntimeContext) {
     if (context.shouldCancel?.()) {
       return { success: true, jobs: [] };
     }
 
     const sites = context.selectedSources.filter(isJobSpySite);
+    const locations = context.sourceLocationPlan?.requestedCities;
+    const configuredResultsWanted = context.settings.jobspyResultsWanted
+      ? parseInt(context.settings.jobspyResultsWanted, 10)
+      : undefined;
+    const resultsWanted =
+      configuredResultsWanted && context.locationIntent?.proximity
+        ? Math.max(
+            1,
+            Math.ceil(
+              configuredResultsWanted / Math.max(1, locations?.length ?? 0),
+            ),
+          )
+        : configuredResultsWanted;
 
     const result = await runJobSpy({
       sites,
       searchTerms: context.searchTerms,
+      locations,
       location:
         context.settings.searchCities ?? context.settings.jobspyLocation,
-      resultsWanted: context.settings.jobspyResultsWanted
-        ? parseInt(context.settings.jobspyResultsWanted, 10)
-        : undefined,
+      resultsWanted,
       countryIndeed: context.settings.jobspyCountryIndeed,
       workplaceTypes: context.settings.workplaceTypes
         ? JSON.parse(context.settings.workplaceTypes)
@@ -46,6 +70,15 @@ export const manifest: ExtractorManifest = {
             termsTotal: event.termTotal,
             currentUrl: event.searchTerm,
             detail: `JobSpy: term ${event.termIndex}/${event.termTotal} (${event.searchTerm})`,
+          });
+          return;
+        }
+
+        if (event.type === "source_error") {
+          context.onProgress?.({
+            phase: "list",
+            currentUrl: event.searchTerm,
+            detail: `JobSpy: ${event.source} failed for ${event.searchTerm}`,
           });
           return;
         }
@@ -71,6 +104,7 @@ export const manifest: ExtractorManifest = {
     return {
       success: true,
       jobs: result.jobs,
+      sourceErrors: result.sourceErrors,
     };
   },
 };

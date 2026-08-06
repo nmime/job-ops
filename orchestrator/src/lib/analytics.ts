@@ -1,30 +1,55 @@
 import type { ApplicationStage } from "@shared/types";
+import {
+  type AnalyticsPayload,
+  withAnalyticsMetadata,
+} from "@/lib/analytics-metadata";
 
 declare const __APP_VERSION__: string;
 
 type UmamiTracker = {
   track: (event: string, data?: Record<string, unknown>) => void;
+  identify?: (id: string) => void;
+};
+
+type OpenPanelTracker = {
+  q?: unknown[][];
+  (
+    command:
+      | "init"
+      | "track"
+      | "identify"
+      | "setGlobalProperties"
+      | "increment"
+      | "decrement"
+      | "clear",
+    ...args: unknown[]
+  ): void;
 };
 
 declare global {
   interface Window {
+    __JOBOPS_ANALYTICS_DISABLED__?: boolean;
     umami?: UmamiTracker;
+    op?: OpenPanelTracker;
   }
 }
 
 export function trackEvent(event: string, data?: Record<string, unknown>) {
   if (typeof window === "undefined") return;
-  const analyticsUserId = getAnalyticsUserId();
-  const appVersion = getAnalyticsAppVersion();
-  const payload =
-    analyticsUserId === null && appVersion === null
-      ? data
-      : {
-          ...(data ?? {}),
-          ...(analyticsUserId ? { analytics_user_id: analyticsUserId } : {}),
-          ...(appVersion ? { app_version: appVersion } : {}),
-        };
+  if (window.__JOBOPS_ANALYTICS_DISABLED__ === true) return;
+  const payload = withAnalyticsMetadata(data as AnalyticsPayload | undefined, {
+    analyticsUserId: getEventAnalyticsUserId(),
+    appVersion: getAnalyticsAppVersion(),
+  });
   window.umami?.track(event, payload);
+  const openPanel = window.op;
+  if (typeof openPanel === "function") {
+    if (payload) {
+      openPanel("track", event, payload);
+    } else {
+      openPanel("track", event);
+    }
+  }
 }
 
 type ProductEventMap = {
@@ -47,7 +72,7 @@ type ProductEventMap = {
     had_error_message: boolean;
   };
   jobs_manual_import_completed: {
-    manual_import_source: "pasted_description" | "fetched_url";
+    manual_import_source: string;
     manual_import_source_host?: string;
   };
   jobs_bulk_action_started: {
@@ -73,6 +98,14 @@ type ProductEventMap = {
     status_lock: string;
     result_group: string;
     query_length_bucket: string;
+  };
+  jobs_sort_changed: {
+    sort_key: string;
+    sort_direction: "asc" | "desc";
+    previous_sort_key: string;
+    previous_sort_direction: "asc" | "desc";
+    tab: string;
+    filtered_count_bucket: string;
   };
   tracking_inbox_connect_started: {
     provider: string;
@@ -140,11 +173,221 @@ type ProductEventMap = {
     min_score?: number;
     country?: string;
   };
+  resume_studio_import_completed: {
+    source: "file" | "rxresume";
+    file_type?: "pdf" | "docx" | "unknown";
+    result: "success" | "error";
+    was_reimport: boolean;
+    section_count_bucket: string;
+    item_count_bucket: string;
+  };
+  resume_studio_activation_completed: {
+    source: "file" | "rxresume";
+  };
+  resume_studio_section_edited: {
+    section: string;
+    action: "add" | "edit" | "delete" | "reorder" | "hide" | "unhide";
+    item_count_bucket: string;
+    device_layout: "mobile" | "desktop";
+  };
+  resume_studio_ai_field_suggestion_completed: {
+    section: string;
+    field_type: "plain_text" | "html" | "string_list";
+    result: "generated" | "applied" | "auto_applied" | "error";
+    was_empty: boolean;
+    prompt_length_bucket: string;
+  };
+  resume_studio_pdf_preview_completed: {
+    renderer: string;
+    theme: string;
+    result: "success" | "error";
+    latency_bucket: string;
+  };
+  resume_studio_pdf_downloaded: {
+    renderer: string;
+    theme: string;
+    after_edit: boolean;
+    result: "success" | "error";
+  };
+  resume_studio_export_completed: {
+    result: "success" | "error";
+  };
+  resume_studio_project_policy_changed: {
+    from_mode: "manual" | "ai-selectable" | "must-include";
+    to_mode: "manual" | "ai-selectable" | "must-include";
+    project_count_bucket: string;
+  };
+  watchlist_sources_saved: {
+    source_count: number;
+    catalog_count: number;
+    custom_count: number;
+  };
+  watchlist_source_add_method_selected: {
+    method: "catalog" | "custom_url";
+    catalog_source_id?: string;
+    source_type?: string;
+    source_url?: string;
+  };
+  watchlist_check_completed: {
+    source_count: number;
+    jobs_count: number;
+    new_jobs_count: number;
+  };
+  watchlist_new_jobs_detected: {
+    source_count: number;
+    new_jobs_count: number;
+  };
+  watchlist_job_moved_to_workspace: {
+    source_type: string;
+    catalog_source_id?: string;
+    source_url: string;
+  };
+  watchlist_job_ignored: {
+    source_type: string;
+    catalog_source_id?: string;
+    source_url: string;
+  };
+  watchlist_source_search_no_results: {
+    search_text: string;
+    search_length_bucket: string;
+  };
+  watchlist_url_validation_failed: {
+    source_type: string;
+    source_url: string;
+    error_message: string;
+  };
+  watchlist_source_removed: {
+    source_type: string;
+    catalog_source_id?: string;
+    source_url: string;
+  };
+  watchlist_no_jobs_returned: {
+    source_count: number;
+  };
+  watchlist_custom_url_saved: {
+    source_type: string;
+    source_url: string;
+    normalized_source_key: string;
+    host: string;
+  };
+  onboarding_started: {
+    entry_state: "account_required" | "launch";
+    next_step: "account" | "profile" | "model" | "resume" | "none";
+    has_session: boolean;
+    demo_mode: boolean;
+  };
+  onboarding_step_viewed: {
+    step: "profile" | "model" | "resume";
+    step_index: number;
+    requirement_status:
+      | "ready"
+      | "needs_action"
+      | "invalid"
+      | "checking_unavailable"
+      | "missing";
+  };
+  onboarding_account_create_submitted: {
+    username_length_bucket: string;
+  };
+  onboarding_account_create_completed: {
+    result: "success" | "error";
+    error_category?: string;
+    credential_length_bucket: string;
+  };
+  onboarding_profile_save_submitted: {
+    has_country: boolean;
+    city_count: number;
+    workplace_type_count: number;
+    requires_visa_sponsorship: boolean;
+  };
+  onboarding_profile_save_completed: {
+    result: "success" | "error";
+    error_category?: string;
+    http_status_bucket?: string;
+  };
+  onboarding_model_verify_submitted: {
+    provider: string;
+    endpoint_mode: "default" | "custom" | "blank";
+    has_key_input: boolean;
+    has_model_input: boolean;
+  };
+  onboarding_model_verify_completed: {
+    result: "success" | "error";
+    provider: string;
+    http_status_bucket?: string;
+    error_category?: string;
+  };
+  onboarding_resume_mode_selected: {
+    mode: "upload" | "rxresume";
+    had_existing_resume: boolean;
+  };
+  onboarding_resume_upload_submitted: {
+    file_type: "pdf" | "docx" | "json" | "unknown";
+    file_size_bucket: string;
+    was_reimport: boolean;
+  };
+  onboarding_resume_upload_completed: {
+    result: "success" | "error";
+    file_type: "pdf" | "docx" | "json" | "unknown";
+    duration_bucket: string;
+    section_count_bucket?: string;
+    error_category?: string;
+  };
+  onboarding_rxresume_verify_submitted: {
+    self_hosted: boolean;
+    has_key_input: boolean;
+    endpoint_mode: "default" | "custom" | "blank";
+  };
+  onboarding_rxresume_verify_completed: {
+    result: "success" | "error";
+    self_hosted: boolean;
+    http_status_bucket?: string;
+    error_category?: string;
+  };
+  onboarding_rxresume_template_selected: {
+    had_previous_template: boolean;
+    selection_result: "selected" | "cleared";
+  };
+  onboarding_status_checked: {
+    complete: boolean;
+    next_step: "profile" | "model" | "resume" | "none";
+    profile_status:
+      | "ready"
+      | "needs_action"
+      | "invalid"
+      | "checking_unavailable"
+      | "missing";
+    model_status:
+      | "ready"
+      | "needs_action"
+      | "invalid"
+      | "checking_unavailable"
+      | "missing";
+    resume_status:
+      | "ready"
+      | "needs_action"
+      | "invalid"
+      | "checking_unavailable"
+      | "missing";
+  };
+  onboarding_resume_confirm_completed: {
+    result: "success" | "error";
+    source: "local" | "rxresume";
+    error_category?: string;
+    http_status_bucket?: string;
+  };
+  onboarding_resume_confirm_submitted: {
+    source: "local" | "rxresume";
+  };
+  onboarding_completed: {
+    duration_bucket: string;
+    completed_steps: number;
+  };
 };
 
 type ProductEventName = keyof ProductEventMap;
 type Primitive = string | number | boolean | null;
-type SanitizedPayload = Record<string, Primitive>;
+type SanitizedPayload = AnalyticsPayload;
 
 function generateAnalyticsUserId() {
   if (
@@ -184,6 +427,10 @@ function getAnalyticsUserId(): string | null {
   } catch {
     return null;
   }
+}
+
+function getEventAnalyticsUserId(): string | null {
+  return cachedDistinctId ?? getAnalyticsUserId();
 }
 
 function getAnalyticsAppVersion(): string | null {
@@ -226,11 +473,13 @@ export function getAnalyticsRequestHeaders(): Record<string, string> {
 }
 
 const DEDUPE_WINDOW_MS = 3_000;
+const UMAMI_DISTINCT_ID_MAX_LENGTH = 50;
 const ANALYTICS_USER_ID_STORAGE_KEY = "jobops.analytics.user_id.v1";
 const ANALYTICS_SESSION_ID_STORAGE_KEY = "jobops.analytics.session_id.v1";
 const recentEventCache = new Map<string, number>();
 let cachedAnalyticsUserId: string | null = null;
 let cachedAnalyticsSessionId: string | null = null;
+let cachedDistinctId: string | null = null;
 const DISALLOWED_KEY_PARTS = [
   "query",
   "url",
@@ -301,6 +550,50 @@ export function trackProductEvent<T extends ProductEventName>(
   trackEvent(event, sanitized);
 }
 
+function normalizeDistinctId(id: string | null | undefined): string | null {
+  const trimmed = id?.trim() ?? "";
+  if (!trimmed) return null;
+  return trimmed.slice(0, UMAMI_DISTINCT_ID_MAX_LENGTH);
+}
+
+export function identifyAnalyticsUser(
+  distinctId: string | null | undefined,
+): void {
+  if (typeof window === "undefined") return;
+  const umamiIdentify = window.umami?.identify;
+  const openPanel = window.op;
+  const hasOpenPanel = typeof openPanel === "function";
+  const hasUmami = typeof umamiIdentify === "function";
+  if (!hasOpenPanel && !hasUmami) return;
+
+  const normalized =
+    normalizeDistinctId(distinctId) ??
+    normalizeDistinctId(getAnalyticsUserId()) ??
+    null;
+  if (!normalized || normalized === cachedDistinctId) return;
+
+  if (hasUmami) {
+    umamiIdentify(normalized);
+  }
+  if (hasOpenPanel) {
+    openPanel("identify", { profileId: normalized });
+    const appVersion = getAnalyticsAppVersion();
+    openPanel("setGlobalProperties", {
+      analytics_user_id: normalized,
+      ...(appVersion ? { app_version: appVersion } : {}),
+    });
+  }
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(ANALYTICS_USER_ID_STORAGE_KEY, normalized);
+      cachedAnalyticsUserId = normalized;
+    } catch {
+      // Ignore storage failures; identify is best-effort.
+    }
+  }
+  cachedDistinctId = normalized;
+}
+
 export function bucketCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
   if (value === 1) return "1";
@@ -334,8 +627,32 @@ export function bucketQueryLength(value: string | number): string {
   return "101_plus";
 }
 
+export function bucketDurationMs(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return "unknown";
+  if (value < 1_000) return "lt_1s";
+  if (value < 5_000) return "1_5s";
+  if (value < 15_000) return "5_15s";
+  if (value < 30_000) return "15_30s";
+  if (value < 60_000) return "30_60s";
+  if (value < 120_000) return "1_2m";
+  if (value < 300_000) return "2_5m";
+  if (value < 600_000) return "5_10m";
+  return "10m_plus";
+}
+
+export function bucketFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0";
+  if (bytes < 100_000) return "lt_100kb";
+  if (bytes < 500_000) return "100_500kb";
+  if (bytes < 1_000_000) return "500kb_1mb";
+  if (bytes < 5_000_000) return "1_5mb";
+  if (bytes < 10_000_000) return "5_10mb";
+  return "10mb_plus";
+}
+
 export function __resetAnalyticsTestState() {
   recentEventCache.clear();
   cachedAnalyticsUserId = null;
   cachedAnalyticsSessionId = null;
+  cachedDistinctId = null;
 }

@@ -6,6 +6,7 @@
  */
 
 export * from "./types/api";
+export * from "./types/app";
 export * from "./types/chat";
 export * from "./types/design-resume";
 export * from "./types/design-resume-jake";
@@ -15,4 +16,5 @@ export * from "./types/location";
 export * from "./types/pipeline";
 export * from "./types/post-application";
 export * from "./types/settings";
+export * from "./types/usage";
 export * from "./types/visa-sponsors";

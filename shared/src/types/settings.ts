@@ -1,7 +1,14 @@
+import {
+  TYPST_THEME_LABELS,
+  TYPST_THEME_VALUES,
+} from "../generated/typst-themes";
 import type {
+  LocationInputMode,
   LocationMatchStrictness,
   LocationSearchScope,
 } from "../location-preferences";
+
+export { TYPST_THEME_LABELS, TYPST_THEME_VALUES };
 
 export interface ResumeProjectCatalogItem {
   id: string;
@@ -17,16 +24,56 @@ export interface ResumeProjectsSettings {
   aiSelectableProjectIds: string[];
 }
 
-export const PDF_RENDERER_VALUES = ["rxresume", "latex"] as const;
+export const LLM_PROVIDER_VALUES = [
+  "openrouter",
+  "requesty",
+  "lmstudio",
+  "ollama",
+  "openai",
+  "anthropic",
+  "openai_compatible",
+  "glm",
+  "gemini",
+  "gemini_cli",
+  "claude_cli",
+  "codex",
+] as const;
+export type LlmProviderId = (typeof LLM_PROVIDER_VALUES)[number];
+
+export const LLM_PURPOSE_VALUES = [
+  "scoring",
+  "tailoring",
+  "projectSelection",
+] as const;
+export type LlmPurpose = (typeof LLM_PURPOSE_VALUES)[number];
+
+export type LlmPurposeOverride = {
+  provider?: LlmProviderId | null;
+  baseUrl?: string | null;
+  model?: string | null;
+};
+
+export type LlmPurposeOverrides = Partial<
+  Record<LlmPurpose, LlmPurposeOverride>
+>;
+
+export type LlmPurposeApiKeys = Partial<Record<LlmPurpose, string | null>>;
+export type LlmPurposeApiKeyHints = Partial<Record<LlmPurpose, string | null>>;
+
+export const PDF_RENDERER_VALUES = ["rxresume", "latex", "typst"] as const;
 export type PdfRenderer = (typeof PDF_RENDERER_VALUES)[number];
 export const PDF_RENDERER_LABELS: Record<PdfRenderer, string> = {
   rxresume: "RxResume export",
   latex: "Local LaTeX (Jake template)",
+  typst: "Local Typst",
 };
+
+export type TypstTheme = (typeof TYPST_THEME_VALUES)[number];
 
 export const CHAT_STYLE_LANGUAGE_MODE_VALUES = [
   "manual",
   "match-resume",
+  "match-job-description",
 ] as const;
 
 export type ChatStyleLanguageMode =
@@ -147,6 +194,39 @@ export interface SearchTermsSuggestionResponse {
   source: "ai" | "fallback";
 }
 
+export type OnboardingRequirementId = "profile" | "model" | "resume";
+
+export type OnboardingRequirementStatus =
+  | "ready"
+  | "needs_action"
+  | "invalid"
+  | "checking_unavailable";
+
+export type OnboardingRequirementPrimaryAction =
+  | "connect_model"
+  | "save_profile"
+  | "confirm_resume"
+  | "upload_resume"
+  | "connect_rxresume"
+  | "select_rxresume_template"
+  | "recheck"
+  | "none";
+
+export type OnboardingRequirement = {
+  id: OnboardingRequirementId;
+  status: OnboardingRequirementStatus;
+  title: string;
+  message: string;
+  primaryAction: OnboardingRequirementPrimaryAction;
+  details?: Record<string, unknown>;
+};
+
+export type OnboardingStatusResponse = {
+  complete: boolean;
+  nextRequirementId: OnboardingRequirementId | null;
+  requirements: OnboardingRequirement[];
+};
+
 export interface DemoInfoResponse {
   demoMode: boolean;
   resetCadenceHours: number;
@@ -164,6 +244,7 @@ export interface AppSettings {
   model: Resolved<string>;
   llmProvider: Resolved<string>;
   llmBaseUrl: Resolved<string>;
+  llmPurposeOverrides: Resolved<LlmPurposeOverrides>;
   pipelineWebhookUrl: Resolved<string>;
   jobCompleteWebhookUrl: Resolved<string>;
   resumeProjects: Resolved<ResumeProjectsSettings>;
@@ -173,6 +254,7 @@ export interface AppSettings {
   jobopsFullAutoEnabled: Resolved<boolean>;
   jobopsFullAutoBrowserSubmitEnabled: Resolved<boolean>;
   jobopsFullAutoCaptchaEnabled: Resolved<boolean>;
+  typstTheme: Resolved<TypstTheme>;
   ukvisajobsMaxJobs: Resolved<number>;
   adzunaMaxJobsPerTerm: Resolved<number>;
   gradcrackerMaxJobsPerTerm: Resolved<number>;
@@ -183,6 +265,10 @@ export interface AppSettings {
   jobindexMaxJobsPerTerm: Resolved<number>;
   searchTerms: Resolved<string[]>;
   workplaceTypes: Resolved<Array<"remote" | "hybrid" | "onsite">>;
+  onboardingProfileCompleted: Resolved<boolean>;
+  onboardingLlmCompleted: Resolved<boolean>;
+  onboardingResumeConfirmedSource: Resolved<string>;
+  onboardingLegacyMigrationPending: Resolved<boolean>;
   blockedCompanyKeywords: Resolved<string[]>;
   scoringInstructions: Resolved<string>;
   ghostwriterSystemPromptTemplate: Resolved<string>;
@@ -190,12 +276,17 @@ export interface AppSettings {
   tailoringPromptTemplate: Resolved<string>;
   scoringPromptTemplate: Resolved<string>;
   searchCities: Resolved<string>;
+  locationSearchMode: Resolved<LocationInputMode>;
+  locationLatitude: Resolved<number | null>;
+  locationLongitude: Resolved<number | null>;
+  locationRadiusMiles: Resolved<number>;
   locationSearchScope: Resolved<LocationSearchScope>;
   locationMatchStrictness: Resolved<LocationMatchStrictness>;
   jobspyResultsWanted: Resolved<number>;
   jobspyCountryIndeed: Resolved<string>;
   showSponsorInfo: Resolved<boolean>;
   renderMarkdownInJobDescriptions: Resolved<boolean>;
+  autoTailorOnManualImport: Resolved<boolean>;
   chatStyleTone: Resolved<string>;
   chatStyleFormality: Resolved<string>;
   chatStyleConstraints: Resolved<string>;
@@ -218,15 +309,13 @@ export interface AppSettings {
 
   // Simple strings:
   rxresumeBaseResumeId: string | null;
-  onboardingBasicAuthDecision: "enabled" | "skipped" | null;
   rxresumeUrl: string | null;
   ukvisajobsEmail: string | null;
   adzunaAppId: string | null;
-  basicAuthUser: string | null;
-  basicAuthPassword: string | null;
 
   // Secret hints:
   llmApiKeyHint: string | null;
+  llmPurposeApiKeyHints: LlmPurposeApiKeyHints;
   rxresumeApiKeyHint: string | null;
   ukvisajobsPasswordHint: string | null;
   adzunaAppKeyHint: string | null;
@@ -236,6 +325,5 @@ export interface AppSettings {
   webhookSecretHint: string | null;
 
   // Computed:
-  basicAuthActive: boolean;
   profileProjects: ResumeProjectCatalogItem[];
 }

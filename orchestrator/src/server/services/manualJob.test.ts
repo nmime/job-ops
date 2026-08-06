@@ -2,10 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as settingsRepo from "../repositories/settings";
 import { inferManualJobDetails } from "./manualJob";
 
-vi.mock("../repositories/settings", () => ({
+const settingsMocks = vi.hoisted(() => ({
   getSetting: vi.fn(),
   getAllSettings: vi.fn().mockResolvedValue({}),
+  getEffectiveSettings: vi.fn(),
 }));
+
+vi.mock("../repositories/settings", () => settingsMocks);
+vi.mock("@server/repositories/settings", () => settingsMocks);
+vi.mock("@server/services/settings", () => ({
+  getEffectiveSettings: settingsMocks.getEffectiveSettings,
+}));
+
+function effectiveSettings(raw: Record<string, unknown>) {
+  return {
+    model: { value: raw.model ?? "gpt-4o-mini" },
+    llmProvider: { value: raw.llmProvider ?? "openrouter" },
+    llmBaseUrl: { value: raw.llmBaseUrl ?? null },
+    llmPurposeOverrides: { value: {} },
+    modelTailoring: { value: null },
+  };
+}
 
 const originalEnv = process.env;
 const originalFetch = global.fetch;
@@ -20,6 +37,9 @@ describe("manual job inference", () => {
       llmProvider: "openrouter",
       llmApiKey: "test-key",
     });
+    settingsMocks.getEffectiveSettings.mockImplementation(async () =>
+      effectiveSettings(await settingsMocks.getAllSettings()),
+    );
   });
 
   afterEach(() => {
@@ -32,7 +52,9 @@ describe("manual job inference", () => {
     delete process.env.OPENROUTER_API_KEY;
     vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({});
 
-    const result = await inferManualJobDetails("JD text");
+    const result = await inferManualJobDetails(
+      "<p>JD <strong>text</strong></p>",
+    );
 
     expect(result.job).toEqual({});
     expect(result.warning).toContain("LLM API key not set");
@@ -62,6 +84,11 @@ describe("manual job inference", () => {
       employer: "Acme",
       salary: "100k",
     });
+    const body = JSON.parse(
+      vi.mocked(global.fetch).mock.calls[0]?.[1]?.body as string,
+    );
+    expect(body.messages[0].content).toContain("JD text");
+    expect(body.messages[0].content).not.toContain("<strong>");
   });
 
   it("returns a warning when the API response fails", async () => {

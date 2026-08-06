@@ -210,6 +210,9 @@ describe("API client auth flow", () => {
       api.runPipeline({
         topN: 12,
         minSuitabilityScore: 55,
+        runBudget: 150,
+        searchTerms: ["backend engineer"],
+        scoringInstructions: "Prefer backend API roles above GBP 60k.",
         country: "united kingdom",
         cityLocations: ["London"],
         workplaceTypes: ["remote", "hybrid"],
@@ -229,6 +232,9 @@ describe("API client auth flow", () => {
         body: JSON.stringify({
           topN: 12,
           minSuitabilityScore: 55,
+          runBudget: 150,
+          searchTerms: ["backend engineer"],
+          scoringInstructions: "Prefer backend API roles above GBP 60k.",
           country: "united kingdom",
           cityLocations: ["London"],
           workplaceTypes: ["remote", "hybrid"],

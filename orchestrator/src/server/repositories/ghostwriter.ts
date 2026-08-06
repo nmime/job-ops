@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizeGhostwriterSelectedDocumentIds } from "@shared/ghostwriter-document-context.js";
 import { normalizeGhostwriterSelectedEmailIds } from "@shared/ghostwriter-email-context.js";
 import { normalizeGhostwriterSelectedNoteIds } from "@shared/ghostwriter-note-context.js";
 import type {
@@ -12,9 +13,24 @@ import type {
 } from "@shared/types";
 import { and, desc, eq } from "drizzle-orm";
 import { db, schema } from "../db";
-import { getActiveTenantId } from "../tenancy/context";
+import {
+  getPrivateDataScope,
+  privateDataScopeFilter,
+} from "../tenancy/private-scope";
 
 const { jobChatMessages, jobChatRuns, jobChatThreads } = schema;
+
+function threadsScopeFilter() {
+  return privateDataScopeFilter(jobChatThreads);
+}
+
+function messagesScopeFilter() {
+  return privateDataScopeFilter(jobChatMessages);
+}
+
+function runsScopeFilter() {
+  return privateDataScopeFilter(jobChatRuns);
+}
 
 function parseSelectedContextIds(
   value: string | null,
@@ -38,6 +54,13 @@ function parseSelectedNoteIds(value: string | null): string[] {
 
 function parseSelectedEmailIds(value: string | null): string[] {
   return parseSelectedContextIds(value, normalizeGhostwriterSelectedEmailIds);
+}
+
+function parseSelectedDocumentIds(value: string | null): string[] {
+  return parseSelectedContextIds(
+    value,
+    normalizeGhostwriterSelectedDocumentIds,
+  );
 }
 
 function parseImageAttachments(value: string | null): JobChatImageAttachment[] {
@@ -88,6 +111,7 @@ function mapThread(row: typeof jobChatThreads.$inferSelect): JobChatThread {
     activeRootMessageId: row.activeRootMessageId,
     selectedNoteIds: parseSelectedNoteIds(row.selectedNoteIds),
     selectedEmailIds: parseSelectedEmailIds(row.selectedEmailIds),
+    selectedDocumentIds: parseSelectedDocumentIds(row.selectedDocumentIds),
   };
 }
 
@@ -132,16 +156,10 @@ function mapRun(row: typeof jobChatRuns.$inferSelect): JobChatRun {
 export async function listThreadsForJob(
   jobId: string,
 ): Promise<JobChatThread[]> {
-  const tenantId = getActiveTenantId();
   const rows = await db
     .select()
     .from(jobChatThreads)
-    .where(
-      and(
-        eq(jobChatThreads.tenantId, tenantId),
-        eq(jobChatThreads.jobId, jobId),
-      ),
-    )
+    .where(and(threadsScopeFilter(), eq(jobChatThreads.jobId, jobId)))
     .orderBy(desc(jobChatThreads.updatedAt));
 
   return rows.map(mapThread);
@@ -164,16 +182,10 @@ export async function getOrCreateThreadForJob(input: {
 export async function getThreadById(
   threadId: string,
 ): Promise<JobChatThread | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatThreads)
-    .where(
-      and(
-        eq(jobChatThreads.tenantId, tenantId),
-        eq(jobChatThreads.id, threadId),
-      ),
-    );
+    .where(and(threadsScopeFilter(), eq(jobChatThreads.id, threadId)));
   return row ? mapThread(row) : null;
 }
 
@@ -181,13 +193,12 @@ export async function getThreadForJob(
   jobId: string,
   threadId: string,
 ): Promise<JobChatThread | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatThreads)
     .where(
       and(
-        eq(jobChatThreads.tenantId, tenantId),
+        threadsScopeFilter(),
         eq(jobChatThreads.id, threadId),
         eq(jobChatThreads.jobId, jobId),
       ),
@@ -201,11 +212,12 @@ export async function createThread(input: {
 }): Promise<JobChatThread> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
+  const scope = getPrivateDataScope();
 
   await db.insert(jobChatThreads).values({
     id,
-    tenantId,
+    tenantId: scope.tenantId,
+    userId: scope.userId,
     jobId: input.jobId,
     title: input.title ?? null,
     createdAt: now,
@@ -213,6 +225,7 @@ export async function createThread(input: {
     lastMessageAt: null,
     selectedNoteIds: "[]",
     selectedEmailIds: "[]",
+    selectedDocumentIds: "[]",
   });
 
   const thread = await getThreadById(id);
@@ -228,7 +241,6 @@ export async function updateThreadSelectedNoteIds(input: {
   selectedNoteIds: string[];
 }): Promise<JobChatThread | null> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
 
   await db
     .update(jobChatThreads)
@@ -240,7 +252,7 @@ export async function updateThreadSelectedNoteIds(input: {
     })
     .where(
       and(
-        eq(jobChatThreads.tenantId, tenantId),
+        threadsScopeFilter(),
         eq(jobChatThreads.id, input.threadId),
         eq(jobChatThreads.jobId, input.jobId),
       ),
@@ -254,9 +266,9 @@ export async function updateThreadContext(input: {
   threadId: string;
   selectedNoteIds?: string[];
   selectedEmailIds?: string[];
+  selectedDocumentIds?: string[];
 }): Promise<JobChatThread | null> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
 
   await db
     .update(jobChatThreads)
@@ -275,11 +287,20 @@ export async function updateThreadContext(input: {
             ),
           }
         : {}),
+      ...(input.selectedDocumentIds !== undefined
+        ? {
+            selectedDocumentIds: JSON.stringify(
+              normalizeGhostwriterSelectedDocumentIds(
+                input.selectedDocumentIds,
+              ),
+            ),
+          }
+        : {}),
       updatedAt: now,
     })
     .where(
       and(
-        eq(jobChatThreads.tenantId, tenantId),
+        threadsScopeFilter(),
         eq(jobChatThreads.id, input.threadId),
         eq(jobChatThreads.jobId, input.jobId),
       ),
@@ -293,19 +314,13 @@ export async function touchThread(
   lastMessageAt?: string,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
   await db
     .update(jobChatThreads)
     .set({
       updatedAt: now,
       ...(lastMessageAt !== undefined ? { lastMessageAt } : {}),
     })
-    .where(
-      and(
-        eq(jobChatThreads.tenantId, tenantId),
-        eq(jobChatThreads.id, threadId),
-      ),
-    );
+    .where(and(threadsScopeFilter(), eq(jobChatThreads.id, threadId)));
 }
 
 export async function listMessagesForThread(
@@ -314,17 +329,11 @@ export async function listMessagesForThread(
 ): Promise<JobChatMessage[]> {
   const limit = options?.limit ?? 200;
   const offset = options?.offset ?? 0;
-  const tenantId = getActiveTenantId();
 
   const rows = await db
     .select()
     .from(jobChatMessages)
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.threadId, threadId),
-      ),
-    )
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.threadId, threadId)))
     .orderBy(jobChatMessages.createdAt)
     .limit(limit)
     .offset(offset);
@@ -335,16 +344,10 @@ export async function listMessagesForThread(
 export async function getMessageById(
   messageId: string,
 ): Promise<JobChatMessage | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatMessages)
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.id, messageId),
-      ),
-    );
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.id, messageId)));
   return row ? mapMessage(row) : null;
 }
 
@@ -363,11 +366,12 @@ export async function createMessage(input: {
 }): Promise<JobChatMessage> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
+  const scope = getPrivateDataScope();
 
   await db.insert(jobChatMessages).values({
     id,
-    tenantId,
+    tenantId: scope.tenantId,
+    userId: scope.userId,
     threadId: input.threadId,
     jobId: input.jobId,
     role: input.role,
@@ -402,7 +406,6 @@ export async function updateMessage(
   },
 ): Promise<JobChatMessage | null> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
 
   await db
     .update(jobChatMessages)
@@ -413,12 +416,7 @@ export async function updateMessage(
       ...(input.tokensOut !== undefined ? { tokensOut: input.tokensOut } : {}),
       updatedAt: now,
     })
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.id, messageId),
-      ),
-    );
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.id, messageId)));
 
   const message = await getMessageById(messageId);
   if (message) {
@@ -430,14 +428,13 @@ export async function updateMessage(
 export async function getLatestAssistantMessage(
   threadId: string,
 ): Promise<JobChatMessage | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatMessages)
     .where(
       and(
         eq(jobChatMessages.threadId, threadId),
-        eq(jobChatMessages.tenantId, tenantId),
+        messagesScopeFilter(),
         eq(jobChatMessages.role, "assistant"),
       ),
     )
@@ -457,11 +454,12 @@ export async function createRun(input: {
   const id = randomUUID();
   const startedAt = Date.now();
   const now = new Date(startedAt).toISOString();
-  const tenantId = getActiveTenantId();
+  const scope = getPrivateDataScope();
 
   await db.insert(jobChatRuns).values({
     id,
-    tenantId,
+    tenantId: scope.tenantId,
+    userId: scope.userId,
     threadId: input.threadId,
     jobId: input.jobId,
     status: "running",
@@ -484,25 +482,23 @@ export async function createRun(input: {
 }
 
 export async function getRunById(runId: string): Promise<JobChatRun | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatRuns)
-    .where(and(eq(jobChatRuns.tenantId, tenantId), eq(jobChatRuns.id, runId)));
+    .where(and(runsScopeFilter(), eq(jobChatRuns.id, runId)));
   return row ? mapRun(row) : null;
 }
 
 export async function getActiveRunForThread(
   threadId: string,
 ): Promise<JobChatRun | null> {
-  const tenantId = getActiveTenantId();
   const [row] = await db
     .select()
     .from(jobChatRuns)
     .where(
       and(
         eq(jobChatRuns.threadId, threadId),
-        eq(jobChatRuns.tenantId, tenantId),
+        runsScopeFilter(),
         eq(jobChatRuns.status, "running"),
       ),
     )
@@ -522,7 +518,6 @@ export async function completeRun(
 ): Promise<JobChatRun | null> {
   const nowEpoch = Date.now();
   const nowIso = new Date(nowEpoch).toISOString();
-  const tenantId = getActiveTenantId();
 
   await db
     .update(jobChatRuns)
@@ -533,7 +528,7 @@ export async function completeRun(
       errorMessage: input.errorMessage ?? null,
       updatedAt: nowIso,
     })
-    .where(and(eq(jobChatRuns.tenantId, tenantId), eq(jobChatRuns.id, runId)));
+    .where(and(runsScopeFilter(), eq(jobChatRuns.id, runId)));
 
   return getRunById(runId);
 }
@@ -541,15 +536,9 @@ export async function completeRun(
 export async function deleteAllMessagesForThread(
   threadId: string,
 ): Promise<number> {
-  const tenantId = getActiveTenantId();
   const result = await db
     .delete(jobChatMessages)
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.threadId, threadId),
-      ),
-    );
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.threadId, threadId)));
 
   return result.changes;
 }
@@ -557,15 +546,9 @@ export async function deleteAllMessagesForThread(
 export async function deleteAllRunsForThread(
   threadId: string,
 ): Promise<number> {
-  const tenantId = getActiveTenantId();
   const result = await db
     .delete(jobChatRuns)
-    .where(
-      and(
-        eq(jobChatRuns.tenantId, tenantId),
-        eq(jobChatRuns.threadId, threadId),
-      ),
-    );
+    .where(and(runsScopeFilter(), eq(jobChatRuns.threadId, threadId)));
 
   return result.changes;
 }
@@ -578,16 +561,10 @@ export async function setActiveRoot(
   messageId: string,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
   await db
     .update(jobChatThreads)
     .set({ activeRootMessageId: messageId, updatedAt: now })
-    .where(
-      and(
-        eq(jobChatThreads.tenantId, tenantId),
-        eq(jobChatThreads.id, threadId),
-      ),
-    );
+    .where(and(threadsScopeFilter(), eq(jobChatThreads.id, threadId)));
 }
 
 /**
@@ -598,16 +575,10 @@ export async function setActiveChild(
   activeChildId: string,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const tenantId = getActiveTenantId();
   await db
     .update(jobChatMessages)
     .set({ activeChildId, updatedAt: now })
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.id, messageId),
-      ),
-    );
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.id, messageId)));
 }
 
 /**
@@ -616,13 +587,12 @@ export async function setActiveChild(
 export async function getChildrenOfMessage(
   parentMessageId: string,
 ): Promise<JobChatMessage[]> {
-  const tenantId = getActiveTenantId();
   const rows = await db
     .select()
     .from(jobChatMessages)
     .where(
       and(
-        eq(jobChatMessages.tenantId, tenantId),
+        messagesScopeFilter(),
         eq(jobChatMessages.parentMessageId, parentMessageId),
       ),
     )
@@ -648,6 +618,7 @@ export async function getSiblingsOf(
       .from(jobChatMessages)
       .where(
         and(
+          messagesScopeFilter(),
           eq(jobChatMessages.threadId, message.threadId),
           eq(jobChatMessages.role, message.role),
         ),
@@ -691,17 +662,11 @@ export async function getSiblingsOf(
 export async function getActivePathFromRoot(
   threadId: string,
 ): Promise<JobChatMessage[]> {
-  const tenantId = getActiveTenantId();
   // Load all messages for this thread into memory (fine for typical sizes)
   const allRows = await db
     .select()
     .from(jobChatMessages)
-    .where(
-      and(
-        eq(jobChatMessages.tenantId, tenantId),
-        eq(jobChatMessages.threadId, threadId),
-      ),
-    )
+    .where(and(messagesScopeFilter(), eq(jobChatMessages.threadId, threadId)))
     .orderBy(jobChatMessages.createdAt);
   const all = allRows.map(mapMessage);
 
@@ -786,7 +751,6 @@ export async function completeRunIfRunning(
 ): Promise<JobChatRun | null> {
   const nowEpoch = Date.now();
   const nowIso = new Date(nowEpoch).toISOString();
-  const tenantId = getActiveTenantId();
 
   await db
     .update(jobChatRuns)
@@ -799,7 +763,7 @@ export async function completeRunIfRunning(
     })
     .where(
       and(
-        eq(jobChatRuns.tenantId, tenantId),
+        runsScopeFilter(),
         eq(jobChatRuns.id, runId),
         eq(jobChatRuns.status, "running"),
       ),

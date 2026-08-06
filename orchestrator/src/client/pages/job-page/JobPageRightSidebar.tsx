@@ -3,6 +3,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Copy,
+  Download,
   Edit2,
   ExternalLink,
   FileText,
@@ -41,6 +42,7 @@ type JobPageRightSidebarProps = {
   pdfActionsDisabled: boolean;
   pdfRegeneratingReason: string | null;
   pdfViewLabel: string;
+  pdfDownloadLabel: string;
   onStartTailoring: () => void;
   onAutoApply: () => void;
   autoApplyDisabledReason: string | null;
@@ -49,10 +51,12 @@ type JobPageRightSidebarProps = {
   onOpenLogEvent: () => void;
   onEditTailoring: () => void;
   onViewPdf: () => void;
+  onDownloadPdf: () => void;
   onUploadPdf: () => void;
   onRegeneratePdf: () => void;
   onSkip: () => void;
   onOpenEditDetails: () => void;
+  onViewJobDescription: () => void;
   onCopyJobInfo: () => void;
   onRescore: () => void;
   onCheckSponsor: () => void;
@@ -72,6 +76,7 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
   pdfActionsDisabled,
   pdfRegeneratingReason,
   pdfViewLabel,
+  pdfDownloadLabel,
   onStartTailoring,
   onAutoApply,
   autoApplyDisabledReason,
@@ -80,10 +85,12 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
   onOpenLogEvent,
   onEditTailoring,
   onViewPdf,
+  onDownloadPdf,
   onUploadPdf,
   onRegeneratePdf,
   onSkip,
   onOpenEditDetails,
+  onViewJobDescription,
   onCopyJobInfo,
   onRescore,
   onCheckSponsor,
@@ -265,6 +272,10 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
               <Edit2 className="mr-2 h-4 w-4" />
               Edit details
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onViewJobDescription}>
+              <Edit2 className="mr-2 h-4 w-4" />
+              View job description
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onCopyJobInfo}>
               <Copy className="mr-2 h-4 w-4" />
               Copy job info
@@ -276,6 +287,33 @@ export const JobPageRightSidebar: React.FC<JobPageRightSidebarProps> = ({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onUploadPdf} disabled={isUploadingPdf}>
+              <Upload className="mr-2 h-4 w-4" />
+              {isUploadingPdf
+                ? "Uploading PDF..."
+                : job.pdfPath
+                  ? "Replace PDF"
+                  : "Upload PDF"}
+            </DropdownMenuItem>
+            {job.pdfPath && (
+              <>
+                <DropdownMenuItem
+                  onSelect={onViewPdf}
+                  disabled={pdfActionsDisabled}
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  {pdfViewLabel}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={onDownloadPdf}
+                  disabled={pdfActionsDisabled}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  {pdfDownloadLabel}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onSelect={onCheckSponsor}>
               Check sponsorship status
             </DropdownMenuItem>

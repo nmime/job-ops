@@ -21,8 +21,10 @@ export const geminiStrategy = createProviderStrategy({
 
     if (mode === "json_schema") {
       body.generationConfig = {
+        // Gemini JSON Schema structured outputs support nullable type arrays here.
+        // https://ai.google.dev/gemini-api/docs/structured-output#json_schemas
         responseMimeType: "application/json",
-        responseSchema: toGeminiResponseSchema(jsonSchema.schema),
+        responseSchema: toGeminiJsonSchema(jsonSchema.schema),
       };
     } else if (mode === "json_object") {
       body.generationConfig = {
@@ -62,9 +64,9 @@ export const geminiStrategy = createProviderStrategy({
   },
 });
 
-function toGeminiResponseSchema(schema: unknown): unknown {
+function toGeminiJsonSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) {
-    return schema.map((item) => toGeminiResponseSchema(item));
+    return schema.map((item) => toGeminiJsonSchema(item));
   }
   if (!schema || typeof schema !== "object") {
     return schema;
@@ -72,10 +74,20 @@ function toGeminiResponseSchema(schema: unknown): unknown {
 
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(schema)) {
-    // Gemini's responseSchema rejects JSON Schema's additionalProperties.
-    // Fix as part of #202.
-    if (key === "additionalProperties") continue;
-    out[key] = toGeminiResponseSchema(value);
+    if (key === "additionalProperties") {
+      continue;
+    }
+    out[key] = toGeminiJsonSchema(value);
+  }
+
+  const properties = out.properties;
+  if (
+    properties &&
+    typeof properties === "object" &&
+    !Array.isArray(properties) &&
+    !Object.hasOwn(out, "propertyOrdering")
+  ) {
+    out.propertyOrdering = Object.keys(properties);
   }
   return out;
 }

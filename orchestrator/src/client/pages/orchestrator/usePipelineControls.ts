@@ -5,7 +5,13 @@ import {
   createLocationIntent,
   planLocationSources,
 } from "@shared/location-intelligence.js";
-import type { AppSettings, JobSource } from "@shared/types.js";
+import {
+  type AppSettings,
+  type JobSource,
+  type LocationInputMode,
+  type LocationProximity,
+  normalizePipelineRunBudget,
+} from "@shared/types.js";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { showErrorToast } from "@/client/lib/error-toast";
@@ -22,6 +28,7 @@ type UsePipelineControlsArgs = {
   setIsPipelineRunning: (value: boolean) => void;
   pipelineTerminalEvent: { status: string; errorMessage: string | null } | null;
   pipelineSources: JobSource[];
+  watchlistSelectedSourceIds?: string[];
   loadJobs: () => Promise<void>;
   navigateWithContext: (
     newTab: string,
@@ -51,6 +58,7 @@ export function usePipelineControls(
     setIsPipelineRunning,
     pipelineTerminalEvent,
     pipelineSources,
+    watchlistSelectedSourceIds,
     loadJobs,
     navigateWithContext,
   } = args;
@@ -71,7 +79,7 @@ export function usePipelineControls(
         status: "cancelled",
         had_error_message: false,
       });
-      toast.message("Pipeline cancelled");
+      toast.message("Search cancelled");
       return;
     }
 
@@ -80,7 +88,7 @@ export function usePipelineControls(
         status: "failed",
         had_error_message: Boolean(pipelineTerminalEvent.errorMessage),
       });
-      toast.error(pipelineTerminalEvent.errorMessage || "Pipeline failed");
+      toast.error(pipelineTerminalEvent.errorMessage || "Search failed");
       return;
     }
 
@@ -88,7 +96,7 @@ export function usePipelineControls(
       status: "completed",
       had_error_message: false,
     });
-    toast.success("Pipeline completed");
+    toast.success("Search completed");
   }, [pipelineTerminalEvent, setIsPipelineRunning]);
 
   const openRunMode = useCallback((mode: RunMode) => {
@@ -103,11 +111,15 @@ export function usePipelineControls(
       sources: JobSource[];
       runBudget: number;
       searchTerms: string[];
+      scoringInstructions: string;
       country: string;
       cityLocations: string[];
+      locationMode: LocationInputMode;
+      proximity: LocationProximity | null;
       workplaceTypes: Array<"remote" | "hybrid" | "onsite">;
       searchScope: AutomaticRunValues["searchScope"];
       matchStrictness: AutomaticRunValues["matchStrictness"];
+      watchlistSelectedSourceIds?: string[];
     }) => {
       try {
         setIsPipelineRunning(true);
@@ -116,19 +128,24 @@ export function usePipelineControls(
           topN: config.topN,
           minSuitabilityScore: config.minSuitabilityScore,
           sources: config.sources,
+          runBudget: config.runBudget,
+          searchTerms: config.searchTerms,
+          scoringInstructions: config.scoringInstructions,
           country: config.country,
           cityLocations: config.cityLocations,
+          proximity: config.locationMode === "radius" ? config.proximity : null,
           workplaceTypes: config.workplaceTypes,
           searchScope: config.searchScope,
           matchStrictness: config.matchStrictness,
+          watchlistSelectedSourceIds: config.watchlistSelectedSourceIds,
         });
-        toast.message("Pipeline started", {
+        toast.message("Search started", {
           description: `Sources: ${config.sources.join(", ")}. This may take a few minutes.`,
         });
       } catch (error) {
         setIsPipelineRunning(false);
         setIsCancelling(false);
-        showErrorToast(error, "Failed to start pipeline");
+        showErrorToast(error, "Failed to start search");
       }
     },
     [setIsPipelineRunning],
@@ -146,18 +163,26 @@ export function usePipelineControls(
       toast.message(result.message);
     } catch (error) {
       setIsCancelling(false);
-      showErrorToast(error, "Failed to cancel pipeline");
+      showErrorToast(error, "Failed to cancel search");
     }
   }, [isCancelling, isPipelineRunning]);
 
   const handleSaveAndRunAutomatic = useCallback(
     async (values: AutomaticRunValues) => {
+      const normalizedValues = {
+        ...values,
+        runBudget: normalizePipelineRunBudget(values.runBudget),
+      };
       const locationIntent = createLocationIntent({
-        selectedCountry: values.country,
-        cityLocations: values.cityLocations,
-        workplaceTypes: values.workplaceTypes,
-        searchScope: values.searchScope,
-        matchStrictness: values.matchStrictness,
+        selectedCountry: normalizedValues.country,
+        cityLocations: normalizedValues.cityLocations,
+        proximity:
+          normalizedValues.locationMode === "radius"
+            ? normalizedValues.proximity
+            : null,
+        workplaceTypes: normalizedValues.workplaceTypes,
+        searchScope: normalizedValues.searchScope,
+        matchStrictness: normalizedValues.matchStrictness,
       });
       const sourcePlan = planLocationSources({
         intent: locationIntent,
@@ -182,38 +207,54 @@ export function usePipelineControls(
       }
 
       const limits = deriveExtractorLimits({
-        budget: values.runBudget,
-        searchTerms: values.searchTerms,
+        budget: normalizedValues.runBudget,
+        searchTerms: normalizedValues.searchTerms,
         sources: compatibleSources,
       });
-      const searchCities = serializeCityLocationsSetting(values.cityLocations);
-      await api.updateSettings({
-        searchTerms: values.searchTerms,
-        workplaceTypes: values.workplaceTypes,
-        locationSearchScope: values.searchScope,
-        locationMatchStrictness: values.matchStrictness,
-        jobspyResultsWanted: limits.jobspyResultsWanted,
-        gradcrackerMaxJobsPerTerm: limits.gradcrackerMaxJobsPerTerm,
-        ukvisajobsMaxJobs: limits.ukvisajobsMaxJobs,
-        adzunaMaxJobsPerTerm: limits.adzunaMaxJobsPerTerm,
-        startupjobsMaxJobsPerTerm: limits.startupjobsMaxJobsPerTerm,
-        workingnomadsMaxJobsPerTerm: limits.workingnomadsMaxJobsPerTerm,
-        jobindexMaxJobsPerTerm: limits.jobindexMaxJobsPerTerm,
-        seekMaxJobsPerTerm: limits.seekMaxJobsPerTerm,
-        naukriMaxJobsPerTerm: limits.naukriMaxJobsPerTerm,
-        jobspyCountryIndeed: values.country,
-        searchCities,
-      });
-      await refreshSettings();
-      await startPipelineRun({
-        ...values,
-        sources: compatibleSources,
-        topN: values.topN,
-        minSuitabilityScore: values.minSuitabilityScore,
-      });
-      setIsRunModeModalOpen(false);
+      try {
+        const searchCities = serializeCityLocationsSetting(
+          normalizedValues.cityLocations,
+        );
+        await api.updateSettings({
+          searchTerms: normalizedValues.searchTerms,
+          workplaceTypes: normalizedValues.workplaceTypes,
+          locationSearchScope: normalizedValues.searchScope,
+          locationMatchStrictness: normalizedValues.matchStrictness,
+          locationSearchMode: normalizedValues.locationMode,
+          locationLatitude: normalizedValues.proximity?.latitude ?? null,
+          locationLongitude: normalizedValues.proximity?.longitude ?? null,
+          locationRadiusMiles: normalizedValues.proximity?.radiusMiles ?? 50,
+          jobspyResultsWanted: limits.jobspyResultsWanted,
+          gradcrackerMaxJobsPerTerm: limits.gradcrackerMaxJobsPerTerm,
+          ukvisajobsMaxJobs: limits.ukvisajobsMaxJobs,
+          adzunaMaxJobsPerTerm: limits.adzunaMaxJobsPerTerm,
+          startupjobsMaxJobsPerTerm: limits.startupjobsMaxJobsPerTerm,
+          jobindexMaxJobsPerTerm: limits.jobindexMaxJobsPerTerm,
+          seekMaxJobsPerTerm: limits.seekMaxJobsPerTerm,
+          naukriMaxJobsPerTerm: limits.naukriMaxJobsPerTerm,
+          jobspyCountryIndeed: normalizedValues.country,
+          searchCities,
+        });
+        await refreshSettings();
+        await startPipelineRun({
+          ...normalizedValues,
+          sources: compatibleSources,
+          topN: values.topN,
+          minSuitabilityScore: values.minSuitabilityScore,
+          watchlistSelectedSourceIds:
+            values.watchlistSelectedSourceIds ?? watchlistSelectedSourceIds,
+        });
+        setIsRunModeModalOpen(false);
+      } catch (error) {
+        showErrorToast(error, "Failed to start search");
+      }
     },
-    [pipelineSources, refreshSettings, startPipelineRun],
+    [
+      pipelineSources,
+      refreshSettings,
+      startPipelineRun,
+      watchlistSelectedSourceIds,
+    ],
   );
 
   const handleManualImported = useCallback(

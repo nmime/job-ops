@@ -87,6 +87,8 @@ Optional background automation is available for self-hosters: `JOBOPS_BACKGROUND
 | UK Visa Jobs | Sponsorship (UK) |
 | Golang Jobs | Go developers |
 | Seek | Australia/NZ (via Apify) |
+| WUZZUF | Egypt (Job Board) |
+| Khamsat | Egypt (Freelance) |
 
 Custom extractors can be added via TypeScript. See the [extractor docs](https://jobops.dakheera47.com/docs/extractors/overview).
 
@@ -109,6 +111,8 @@ JobOps works with the model provider you already use:
 
 - Codex (local app-server in Docker, authenticated with `codex login`)
 - OpenAI
+- Claude (Anthropic)
+- GLM / Zhipu AI
 - Google Gemini
 - OpenRouter
 - Any OpenAI-compatible endpoint (Ollama, LM Studio, etc.)
@@ -132,6 +136,12 @@ Don't want to self-host? JobOps Cloud gives you your own hosted instance with no
 
 </div>
 
+Hosted instances may enforce per-user monthly quotas for expensive actions
+such as searches, AI tailoring, Ghostwriter generations, and PDF exports. When a
+hosted quota is exhausted, the action is blocked with a clear API error; local
+self-hosted/default mode is unaffected unless hosted quotas are explicitly
+enabled.
+
 Self-hosted will always be free and open source.
 
 ---
@@ -154,6 +164,14 @@ Contributions are welcome. Whether it's code, docs, or new extractors, start wit
 <a href="https://github.com/DaKheera47/job-ops/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=DaKheera47/job-ops" />
 </a>
+
+---
+
+## Special Thanks
+
+Open-source tools and communities that make JobOps possible:
+
+- [jobspy](https://github.com/Bunsly/JobSpy) — Python-based multi-source job scraping library powering the jobspy extractor
 
 ---
 

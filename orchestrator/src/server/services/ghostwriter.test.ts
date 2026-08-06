@@ -27,7 +27,11 @@ const mocks = vi.hoisted(() => ({
     updateThreadContext: vi.fn(),
   },
   jobsRepo: {
+    getJobById: vi.fn(),
     listJobNotesByIds: vi.fn(),
+  },
+  jobDocumentsRepo: {
+    listJobDocumentsByIds: vi.fn(),
   },
   jobEmails: {
     listJobPostApplicationEmailsByIds: vi.fn(),
@@ -36,6 +40,11 @@ const mocks = vi.hoisted(() => ({
     getAllSettings: vi.fn(),
   },
   resolveLlmRuntimeSettings: vi.fn(),
+  hostedUsage: {
+    reserveHostedUsage: vi.fn(),
+    settleHostedUsageReservation: vi.fn(),
+    refundHostedUsageReservation: vi.fn(),
+  },
 }));
 
 vi.mock("@infra/logger", () => ({
@@ -53,6 +62,7 @@ vi.mock("@infra/request-context", () => ({
 
 vi.mock("./ghostwriter-context", () => ({
   buildJobChatPromptContext: mocks.buildJobChatPromptContext,
+  canUseJobDocumentForGhostwriterContext: vi.fn(() => true),
 }));
 
 vi.mock("../repositories/settings", () => ({
@@ -82,7 +92,12 @@ vi.mock("../repositories/ghostwriter", () => ({
 }));
 
 vi.mock("../repositories/jobs", () => ({
+  getJobById: mocks.jobsRepo.getJobById,
   listJobNotesByIds: mocks.jobsRepo.listJobNotesByIds,
+}));
+
+vi.mock("../repositories/job-documents", () => ({
+  listJobDocumentsByIds: mocks.jobDocumentsRepo.listJobDocumentsByIds,
 }));
 
 vi.mock("./post-application/job-emails", () => ({
@@ -92,6 +107,12 @@ vi.mock("./post-application/job-emails", () => ({
 
 vi.mock("./modelSelection", () => ({
   resolveLlmRuntimeSettings: mocks.resolveLlmRuntimeSettings,
+}));
+
+vi.mock("./hosted-usage", () => ({
+  reserveHostedUsage: mocks.hostedUsage.reserveHostedUsage,
+  settleHostedUsageReservation: mocks.hostedUsage.settleHostedUsageReservation,
+  refundHostedUsageReservation: mocks.hostedUsage.refundHostedUsageReservation,
 }));
 
 vi.mock("./llm/service", () => ({
@@ -118,6 +139,7 @@ const thread = {
   activeRootMessageId: "user-1",
   selectedNoteIds: [],
   selectedEmailIds: [],
+  selectedDocumentIds: [],
 };
 
 const baseUserMessage: JobChatMessage = {
@@ -168,6 +190,12 @@ describe("ghostwriter service", () => {
       baseUrl: null,
       apiKey: "test-key",
     });
+    mocks.hostedUsage.reserveHostedUsage.mockResolvedValue({
+      allowance: { quotasEnabled: true },
+      reservation: { id: "usage-reservation-1", reservedUnits: 1 },
+    });
+    mocks.hostedUsage.settleHostedUsageReservation.mockResolvedValue({});
+    mocks.hostedUsage.refundHostedUsageReservation.mockResolvedValue({});
     mocks.buildJobChatPromptContext.mockResolvedValue({
       job: { id: "job-1" },
       style: {
@@ -181,9 +209,12 @@ describe("ghostwriter service", () => {
       profileSnapshot: "profile snapshot",
       selectedNotesSnapshot: "",
       selectedEmailsSnapshot: "",
+      selectedDocumentsSnapshot: "",
     });
 
     mocks.jobsRepo.listJobNotesByIds.mockResolvedValue([]);
+    mocks.jobsRepo.getJobById.mockResolvedValue({ id: "job-1" });
+    mocks.jobDocumentsRepo.listJobDocumentsByIds.mockResolvedValue([]);
     mocks.jobEmails.listJobPostApplicationEmailsByIds.mockResolvedValue([]);
     mocks.repo.getOrCreateThreadForJob.mockResolvedValue(thread);
     mocks.repo.getThreadForJob.mockResolvedValue(thread);
@@ -308,6 +339,32 @@ describe("ghostwriter service", () => {
           message.role !== "system" && message.role !== "user",
       ),
     ).toEqual([{ role: "assistant", content: "Draft response" }]);
+    expect(mocks.hostedUsage.reserveHostedUsage).toHaveBeenCalledWith({
+      action: "ghostwriter",
+    });
+    expect(mocks.hostedUsage.settleHostedUsageReservation).toHaveBeenCalledWith(
+      {
+        reservationId: "usage-reservation-1",
+        usedUnits: 1,
+      },
+    );
+  });
+
+  it("does not persist a user message when Ghostwriter quota is exhausted", async () => {
+    mocks.hostedUsage.reserveHostedUsage.mockRejectedValueOnce(
+      new Error("Monthly usage quota exceeded"),
+    );
+
+    await expect(
+      sendMessageForJob({
+        jobId: "job-1",
+        content: "Tell me about this role",
+      }),
+    ).rejects.toThrow("Monthly usage quota exceeded");
+
+    expect(mocks.repo.createMessage).not.toHaveBeenCalled();
+    expect(mocks.repo.setActiveChild).not.toHaveBeenCalled();
+    expect(mocks.repo.setActiveRoot).not.toHaveBeenCalled();
   });
 
   it("saves selected notes before building prompt context", async () => {
@@ -354,6 +411,7 @@ describe("ghostwriter service", () => {
       profileSnapshot: "profile snapshot",
       selectedNotesSnapshot: "Selected Job Notes:\nNote 1: Recruiter call",
       selectedEmailsSnapshot: "",
+      selectedDocumentsSnapshot: "",
     });
     mocks.repo.createMessage
       .mockResolvedValueOnce(baseUserMessage)
@@ -375,10 +433,12 @@ describe("ghostwriter service", () => {
       threadId: "thread-1",
       selectedNoteIds: ["note-1"],
       selectedEmailIds: undefined,
+      selectedDocumentIds: undefined,
     });
     expect(mocks.buildJobChatPromptContext).toHaveBeenCalledWith(
       "job-1",
       ["note-1"],
+      [],
       [],
     );
     expect(mocks.llmCallJson.mock.calls[0][0].messages).toContainEqual({
@@ -459,6 +519,7 @@ describe("ghostwriter service", () => {
       profileSnapshot: "profile snapshot",
       selectedNotesSnapshot: "",
       selectedEmailsSnapshot: "Selected Job Emails:\nEmail 1: Interview update",
+      selectedDocumentsSnapshot: "",
     });
     mocks.repo.createMessage
       .mockResolvedValueOnce(baseUserMessage)
@@ -480,11 +541,13 @@ describe("ghostwriter service", () => {
       threadId: "thread-1",
       selectedNoteIds: undefined,
       selectedEmailIds: ["email-1"],
+      selectedDocumentIds: undefined,
     });
     expect(mocks.buildJobChatPromptContext).toHaveBeenCalledWith(
       "job-1",
       [],
       ["email-1"],
+      [],
     );
     expect(mocks.llmCallJson.mock.calls[0][0].messages).toContainEqual({
       role: "system",
@@ -492,7 +555,97 @@ describe("ghostwriter service", () => {
     });
   });
 
-  it("passes screenshot attachments as image input when the model supports them", async () => {
+  it("saves selected documents before building prompt context", async () => {
+    const assistantPartial: JobChatMessage = {
+      ...baseAssistantMessage,
+      id: "assistant-with-documents",
+      content: "",
+      status: "partial",
+    };
+    const assistantComplete: JobChatMessage = {
+      ...assistantPartial,
+      content: "Document-aware reply.",
+      status: "complete",
+    };
+    const threadWithDocuments = {
+      ...thread,
+      selectedDocumentIds: ["doc-1"],
+    };
+
+    mocks.jobDocumentsRepo.listJobDocumentsByIds.mockResolvedValue([
+      {
+        id: "doc-1",
+        jobId: "job-1",
+        fileName: "take-home.md",
+        mediaType: "text/markdown",
+        byteSize: 120,
+        storagePath: "/tmp/take-home.md",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    mocks.repo.updateThreadContext.mockResolvedValue(threadWithDocuments);
+    mocks.repo.getThreadForJob
+      .mockResolvedValueOnce(thread)
+      .mockResolvedValueOnce(threadWithDocuments);
+    mocks.buildJobChatPromptContext.mockResolvedValue({
+      job: { id: "job-1" },
+      style: {
+        tone: "professional",
+        formality: "medium",
+        constraints: "",
+        doNotUse: "",
+      },
+      systemPrompt: "system prompt",
+      jobSnapshot: '{"job":"snapshot"}',
+      profileSnapshot: "profile snapshot",
+      selectedNotesSnapshot: "",
+      selectedEmailsSnapshot: "",
+      selectedDocumentsSnapshot:
+        "Selected Job Documents:\nDocument 1: take-home.md",
+    });
+    mocks.repo.createMessage
+      .mockResolvedValueOnce(baseUserMessage)
+      .mockResolvedValueOnce(assistantPartial);
+    mocks.repo.updateMessage.mockResolvedValue(assistantComplete);
+    mocks.repo.getMessageById.mockResolvedValue(assistantComplete);
+
+    await sendMessageForJob({
+      jobId: "job-1",
+      content: "Use the document",
+      selectedDocumentIds: ["doc-1"],
+    });
+
+    expect(mocks.jobDocumentsRepo.listJobDocumentsByIds).toHaveBeenCalledWith(
+      "job-1",
+      ["doc-1"],
+    );
+    expect(mocks.repo.updateThreadContext).toHaveBeenCalledWith({
+      jobId: "job-1",
+      threadId: "thread-1",
+      selectedNoteIds: undefined,
+      selectedEmailIds: undefined,
+      selectedDocumentIds: ["doc-1"],
+    });
+    expect(mocks.buildJobChatPromptContext).toHaveBeenCalledWith(
+      "job-1",
+      [],
+      [],
+      ["doc-1"],
+    );
+    expect(mocks.llmCallJson.mock.calls[0][0].messages).toContainEqual({
+      role: "system",
+      content: "Selected Job Documents:\nDocument 1: take-home.md",
+    });
+  });
+
+  it("passes screenshot attachments as image input to Claude CLI", async () => {
+    mocks.resolveLlmRuntimeSettings.mockResolvedValue({
+      model: "sonnet",
+      provider: "claude_cli",
+      baseUrl: null,
+      apiKey: null,
+    });
     const assistantPartial: JobChatMessage = {
       ...baseAssistantMessage,
       id: "assistant-with-image",
@@ -550,6 +703,11 @@ describe("ghostwriter service", () => {
         name: "form.png",
       },
     ]);
+    expect(
+      mocks.llmCallJson.mock.calls[0][0].jsonSchema.schema.properties.response,
+    ).toMatchObject({
+      description: expect.stringContaining("Do not serialize JSON"),
+    });
   });
 
   it("rejects screenshots before running when the selected model is text-only", async () => {
@@ -718,6 +876,22 @@ describe("ghostwriter service", () => {
     });
   });
 
+  it("rejects too many selected documents", async () => {
+    await expect(
+      sendMessageForJob({
+        jobId: "job-1",
+        content: "Use these",
+        selectedDocumentIds: Array.from(
+          { length: 6 },
+          (_, index) => `doc-${index}`,
+        ),
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      status: 400,
+    });
+  });
+
   it("rejects empty message content", async () => {
     await expect(
       sendMessage({
@@ -729,6 +903,53 @@ describe("ghostwriter service", () => {
       code: "INVALID_REQUEST",
       status: 400,
     });
+  });
+
+  it("rejects LLM responses with invalid JSON shape", async () => {
+    const assistantPartial: JobChatMessage = {
+      ...baseAssistantMessage,
+      id: "assistant-1",
+      content: "",
+      status: "partial",
+    };
+    const assistantFailed: JobChatMessage = {
+      ...baseAssistantMessage,
+      id: "assistant-1",
+      content: "",
+      status: "failed",
+    };
+
+    mocks.repo.createMessage
+      .mockResolvedValueOnce(baseUserMessage)
+      .mockResolvedValueOnce(assistantPartial);
+    mocks.repo.updateMessage.mockResolvedValue(assistantFailed);
+    mocks.repo.getMessageById.mockResolvedValue(assistantFailed);
+
+    mocks.llmCallJson.mockResolvedValue({
+      success: true,
+      data: { coverLetter: "Dear hiring committee..." },
+    });
+
+    await expect(
+      sendMessageForJob({
+        jobId: "job-1",
+        content: "Tell me about this role",
+      }),
+    ).rejects.toMatchObject({
+      code: "UPSTREAM_ERROR",
+      message:
+        "LLM response structure was invalid: missing 'response' property",
+    });
+
+    expect(mocks.repo.completeRun).toHaveBeenCalledWith("run-1", {
+      status: "failed",
+      errorCode: "UPSTREAM_ERROR",
+      errorMessage:
+        "LLM response structure was invalid: missing 'response' property",
+    });
+    expect(mocks.hostedUsage.refundHostedUsageReservation).toHaveBeenCalledWith(
+      "usage-reservation-1",
+    );
   });
 
   it("cancels a running generation during streaming", async () => {
@@ -804,6 +1025,12 @@ describe("ghostwriter service", () => {
     expect(onCancelled).toHaveBeenCalled();
     expect(onCompleted).not.toHaveBeenCalled();
     expect(result.assistantMessage?.status).toBe("cancelled");
+    expect(mocks.hostedUsage.settleHostedUsageReservation).toHaveBeenCalledWith(
+      {
+        reservationId: "usage-reservation-1",
+        usedUnits: 0,
+      },
+    );
   });
 
   it("regenerates any assistant message, not just the latest", async () => {

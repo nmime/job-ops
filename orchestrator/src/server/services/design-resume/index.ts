@@ -19,6 +19,7 @@ import {
   safeParseV5ResumeData,
 } from "@server/services/rxresume/schema/v5";
 import { getActiveTenantId } from "@server/tenancy/context";
+import { getPrivateDataScope } from "@server/tenancy/private-scope";
 import type {
   DesignResumeAsset,
   DesignResumeDocument,
@@ -36,11 +37,25 @@ const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_PICTURE_FETCH_REDIRECTS = 3;
 const LEGACY_REIMPORT_MESSAGE =
-  "Stored Design Resume is no longer compatible. Re-import from Reactive Resume v5 to continue.";
+  "Stored Resume Studio document is no longer compatible. Re-import from Reactive Resume v5 to continue.";
 const INVALID_V5_PREFIX =
-  "Design Resume must be a valid Reactive Resume v5 document.";
+  "Resume Studio must be a valid Reactive Resume v5 document.";
+
+function getDesignResumeAssetDir(): string {
+  const scope = getPrivateDataScope();
+  if (scope.enforceUserIsolation && scope.userId) {
+    return join(DESIGN_RESUME_ASSET_DIR, scope.tenantId, "users", scope.userId);
+  }
+  return DESIGN_RESUME_ASSET_DIR;
+}
 
 function buildTenantScopedDesignResumeDocumentId(): string {
+  const scope = getPrivateDataScope();
+  if (scope.enforceUserIsolation && scope.userId) {
+    return [DESIGN_RESUME_DEFAULT_ID, scope.tenantId, scope.userId]
+      .map((part) => part.replace(/[^a-zA-Z0-9_-]/g, "_"))
+      .join("_");
+  }
   return `${DESIGN_RESUME_DEFAULT_ID}_${getActiveTenantId()}`;
 }
 
@@ -68,6 +83,43 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+export function ensureImportedProjectIds(
+  resumeJson: DesignResumeJson,
+): DesignResumeJson {
+  const sections = asRecord(resumeJson.sections);
+  const projects = asRecord(sections?.projects);
+  const items = asArray(projects?.items);
+  if (!sections || !projects || items.length === 0) return resumeJson;
+
+  let changed = false;
+  const nextItems = items.map((item) => {
+    const record = asRecord(item);
+    if (!record) return item;
+
+    const id = toText(record.id).trim();
+    if (id) return item;
+
+    changed = true;
+    return {
+      ...record,
+      id: createId(),
+    };
+  });
+
+  if (!changed) return resumeJson;
+
+  return {
+    ...resumeJson,
+    sections: {
+      ...sections,
+      projects: {
+        ...projects,
+        items: nextItems,
+      },
+    } as DesignResumeJson["sections"],
+  };
 }
 
 function formatValidationMessage(prefix: string, error: unknown): string {
@@ -123,7 +175,7 @@ export function isLegacyDesignResumeError(error: unknown): boolean {
 function buildDocumentTitle(document: DesignResumeJson): string {
   const basics = asRecord(document.basics);
   const name = toText(basics?.name).trim();
-  return name ? `${name} Resume` : "Design Resume";
+  return name ? `${name} Resume` : "Resume Studio";
 }
 
 function contentUrlForAsset(assetId: string): string {
@@ -250,18 +302,18 @@ function parsePublicPictureUrl(value: string): URL {
   try {
     parsed = new URL(value);
   } catch {
-    throw badRequest("Design Resume pictures must use a valid absolute URL.");
+    throw badRequest("Resume Studio pictures must use a valid absolute URL.");
   }
 
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw badRequest("Design Resume pictures must use HTTP or HTTPS URLs.");
+    throw badRequest("Resume Studio pictures must use HTTP or HTTPS URLs.");
   }
   if (parsed.username || parsed.password) {
-    throw badRequest("Design Resume picture URLs cannot include credentials.");
+    throw badRequest("Resume Studio picture URLs cannot include credentials.");
   }
   if (isLocalOrPrivateHostname(parsed.hostname)) {
     throw badRequest(
-      "Design Resume picture URLs must point to a publicly reachable host.",
+      "Resume Studio picture URLs must point to a publicly reachable host.",
     );
   }
 
@@ -286,12 +338,13 @@ async function storeDesignResumePictureAsset(input: {
   data: Buffer;
   updatedAt: string;
 }) {
-  await ensureStorageDirs();
+  const assetDir = getDesignResumeAssetDir();
+  await ensureStorageDirs(assetDir);
   assertImageByteSize(input.data.byteLength);
 
   const assetId = createId();
   const storagePath = join(
-    DESIGN_RESUME_ASSET_DIR,
+    assetDir,
     `${assetId}${extensionForMimeType(input.mimeType)}`,
   );
 
@@ -389,23 +442,69 @@ function toDesignResumeAsset(
   };
 }
 
+type DesignResumeDocumentRow = NonNullable<
+  Awaited<ReturnType<typeof designResumeRepo.getLatestDesignResumeDocument>>
+>;
+
+async function persistMissingProjectIdRepair(
+  row: DesignResumeDocumentRow,
+  resumeJson: DesignResumeJson,
+): Promise<DesignResumeDocumentRow> {
+  const nextRevision = row.revision + 1;
+  const updatedAt = new Date().toISOString();
+  const saved = await designResumeRepo.upsertDesignResumeDocument({
+    id: row.id,
+    title: buildDocumentTitle(resumeJson),
+    resumeJson,
+    revision: nextRevision,
+    sourceResumeId: row.sourceResumeId ?? null,
+    sourceMode: row.sourceMode ?? null,
+    importedAt: row.importedAt ?? null,
+    updatedAt,
+  });
+
+  logger.info("Repaired missing Resume Studio project IDs", {
+    documentId: row.id,
+    previousRevision: row.revision,
+    nextRevision,
+  });
+
+  return (
+    saved ?? {
+      ...row,
+      title: buildDocumentTitle(resumeJson),
+      resumeJson,
+      revision: nextRevision,
+      updatedAt,
+    }
+  );
+}
+
 async function hydrateDocument(
   row: Awaited<
     ReturnType<typeof designResumeRepo.getLatestDesignResumeDocument>
   >,
 ): Promise<DesignResumeDocument | null> {
   if (!row) return null;
-  const assets = await designResumeRepo.listDesignResumeAssets(row.id);
+  const validatedResumeJson = validateStoredDesignResumeDocument(
+    row.resumeJson ?? {},
+  );
+  const resumeJson = ensureImportedProjectIds(validatedResumeJson);
+  const documentRow =
+    resumeJson === validatedResumeJson
+      ? row
+      : await persistMissingProjectIdRepair(row, resumeJson);
+  const assets = await designResumeRepo.listDesignResumeAssets(documentRow.id);
   return {
-    id: row.id,
-    title: row.title,
-    resumeJson: validateStoredDesignResumeDocument(row.resumeJson ?? {}),
-    revision: row.revision,
-    sourceResumeId: row.sourceResumeId ?? null,
-    sourceMode: (row.sourceMode as "v4" | "v5" | null) ?? null,
-    importedAt: row.importedAt ?? null,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    id: documentRow.id,
+    title: documentRow.title,
+    resumeJson,
+    revision: documentRow.revision,
+    sourceResumeId: documentRow.sourceResumeId ?? null,
+    sourceMode: (documentRow.sourceMode as "v4" | "v5" | null) ?? null,
+    importedAt: documentRow.importedAt ?? null,
+    createdAt: documentRow.createdAt,
+    updatedAt: documentRow.updatedAt,
     assets: assets.map(toDesignResumeAsset),
   };
 }
@@ -595,9 +694,11 @@ function isMissingDesignResumeTableError(error: unknown): boolean {
   );
 }
 
-async function ensureStorageDirs(): Promise<void> {
-  if (!existsSync(DESIGN_RESUME_ASSET_DIR)) {
-    await mkdir(DESIGN_RESUME_ASSET_DIR, { recursive: true });
+async function ensureStorageDirs(
+  assetDir = DESIGN_RESUME_ASSET_DIR,
+): Promise<void> {
+  if (!existsSync(assetDir)) {
+    await mkdir(assetDir, { recursive: true });
   }
 }
 
@@ -679,7 +780,7 @@ export async function getCurrentDesignResumeOrNullOnLegacy(): Promise<DesignResu
 export async function requireCurrentDesignResume(): Promise<DesignResumeDocument> {
   const document = await getCurrentDesignResume();
   if (!document) {
-    throw notFound("Design Resume has not been imported yet.");
+    throw notFound("Resume Studio has not been imported yet.");
   }
   return document;
 }
@@ -717,12 +818,14 @@ export async function importDesignResumeFromReactiveResume(): Promise<DesignResu
     throw badRequest("Reactive Resume base resume is empty or invalid.");
   }
 
-  const validated = withReactiveResumePictureUrl(
-    validateIncomingDesignResumeDocument(upstreamResume.data),
+  const validated = validateIncomingDesignResumeDocument(upstreamResume.data);
+  const withResolvedPictureUrls = withReactiveResumePictureUrl(
+    validated,
     await resolveReactiveResumePublicBaseUrl(),
   );
+  const withProjectIds = ensureImportedProjectIds(withResolvedPictureUrls);
   const imported = await replaceCurrentDesignResumeDocument({
-    resumeJson: validated,
+    resumeJson: withProjectIds,
     sourceResumeId: resumeId,
     sourceMode: "v5",
     importedAt: new Date().toISOString(),
@@ -785,7 +888,7 @@ export async function updateCurrentDesignResume(
 ): Promise<DesignResumeDocument> {
   const current = await requireCurrentDesignResume();
   if (current.revision !== input.baseRevision) {
-    throw conflict("Design Resume has changed. Refresh and try again.");
+    throw conflict("Resume Studio has changed. Refresh and try again.");
   }
 
   let nextDocument: DesignResumeJson;
@@ -804,7 +907,7 @@ export async function updateCurrentDesignResume(
     nextDocument = validatePatchedDocument(nextDocumentRecord);
   } else {
     throw badRequest(
-      "Design Resume update requires a document or patch operations.",
+      "Resume Studio update requires a document or patch operations.",
     );
   }
 
@@ -1010,7 +1113,7 @@ export async function readDesignResumeAssetContent(
     ? await designResumeRepo.getDesignResumeAssetByIdAnyTenant(assetId)
     : await designResumeRepo.getDesignResumeAssetById(assetId);
   if (!row) {
-    throw notFound("Design Resume asset not found.");
+    throw notFound("Resume Studio asset not found.");
   }
 
   const content = await readFile(row.storagePath);
@@ -1141,7 +1244,7 @@ export async function getDesignResumeProjectProfile(): Promise<ResumeProfile | n
 
 export async function statDesignResumeAssetFile(assetId: string) {
   const asset = await designResumeRepo.getDesignResumeAssetById(assetId);
-  if (!asset) throw notFound("Design Resume asset not found.");
+  if (!asset) throw notFound("Resume Studio asset not found.");
   const info = await stat(asset.storagePath);
   return { asset: toDesignResumeAsset(asset), info };
 }

@@ -1,12 +1,15 @@
 import type { UpdateSettingsInput } from "@shared/settings-schema";
 import type {
   AppSettings,
+  DesignResumeAiFieldSuggestionRequest,
+  DesignResumeAiFieldSuggestionResponse,
   DesignResumeDocument,
   DesignResumeExportResponse,
   DesignResumeJson,
   DesignResumePatchRequest,
   DesignResumePdfResponse,
   DesignResumeStatusResponse,
+  OnboardingStatusResponse,
   ProfileStatusResponse,
   ResumeProfile,
   ResumeProjectCatalogItem,
@@ -119,6 +122,12 @@ export async function deleteDesignResumePicture(input?: {
   });
 }
 
+export async function getDesignResumeAssetContentBlob(
+  assetUrl: string,
+): Promise<Blob> {
+  return fetchBlobApi(normalizeApiPath(assetUrl), { cache: "no-store" });
+}
+
 export async function exportDesignResume(): Promise<DesignResumeExportResponse> {
   return fetchApi<DesignResumeExportResponse>("/design-resume/export");
 }
@@ -127,6 +136,20 @@ export async function generateDesignResumePdf(): Promise<DesignResumePdfResponse
   return fetchApi<DesignResumePdfResponse>("/design-resume/generate-pdf", {
     method: "POST",
   });
+}
+
+export async function generateDesignResumeFieldSuggestion(
+  input: DesignResumeAiFieldSuggestionRequest & { signal?: AbortSignal },
+): Promise<DesignResumeAiFieldSuggestionResponse> {
+  const { signal, ...body } = input;
+  return fetchApi<DesignResumeAiFieldSuggestionResponse>(
+    "/design-resume/ai/field-suggestion",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    },
+  );
 }
 
 export async function getDesignResumePdfBlob(pdfUrl?: string): Promise<Blob> {
@@ -157,10 +180,62 @@ export async function validateLlm(input: {
   });
 }
 
+export async function getOnboardingStatus(): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/status");
+}
+
+export async function saveOnboardingModel(input: {
+  provider?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  model?: string | null;
+}): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/actions/model", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function saveOnboardingProfile(input: {
+  country?: string | null;
+  cities: string[];
+  workplaceTypes: Array<"remote" | "hybrid" | "onsite">;
+  requiresVisaSponsorship: boolean;
+}): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/actions/profile", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function confirmOnboardingResume(
+  source: string,
+): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>(
+    "/onboarding/actions/resume/confirm",
+    {
+      method: "POST",
+      body: JSON.stringify({ source }),
+    },
+  );
+}
+
+export async function saveOnboardingRxResume(input: {
+  apiKey?: string | null;
+  baseUrl?: string | null;
+  rxresumeBaseResumeId?: string | null;
+}): Promise<OnboardingStatusResponse> {
+  return fetchApi<OnboardingStatusResponse>("/onboarding/actions/rxresume", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getLlmModels(input?: {
   provider?: string;
   baseUrl?: string;
   apiKey?: string;
+  purpose?: string;
 }): Promise<string[]> {
   const data = await fetchApi<{ models: string[] }>("/settings/llm-models", {
     method: "POST",

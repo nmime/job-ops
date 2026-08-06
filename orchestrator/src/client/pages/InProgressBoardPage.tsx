@@ -1,3 +1,7 @@
+import {
+  type LogEventFormValues,
+  LogEventModal,
+} from "@client/components/LogEventModal";
 import { PageHeader, PageMain } from "@client/components/layout";
 import {
   APPLICATION_STAGES,
@@ -7,12 +11,15 @@ import {
   type StageEvent,
 } from "@shared/types.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDownAZ, Columns3, ExternalLink, Plus } from "lucide-react";
+import { ArrowDownAZ, Columns3, Plus } from "lucide-react";
 import React from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { invalidateJobData } from "@/client/hooks/queries/invalidate";
 import { useQueryErrorToast } from "@/client/hooks/useQueryErrorToast";
+import { celebrateOffer } from "@/client/lib/celebrate";
 import { showErrorToast } from "@/client/lib/error-toast";
+import { logJobStageEvent } from "@/client/lib/logJobStageEvent";
 import { queryKeys } from "@/client/lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,8 +30,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn, formatTimestamp } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import * as api from "../api";
+import { InProgressBoardCard } from "./InProgressBoardCard";
 
 type BoardCard = {
   job: JobListItem;
@@ -98,6 +106,10 @@ export const InProgressBoardPage: React.FC = () => {
   const [sortMode, setSortMode] = React.useState<
     "updated" | "title" | "company"
   >("updated");
+  const [logEventTarget, setLogEventTarget] = React.useState<{
+    job: JobListItem;
+    stage: ApplicationStage;
+  } | null>(null);
 
   const boardQuery = useQuery({
     queryKey: queryKeys.jobs.inProgressBoard(),
@@ -212,6 +224,9 @@ export const InProgressBoardPage: React.FC = () => {
         await queryClient.invalidateQueries({
           queryKey: queryKeys.jobs.inProgressBoard(),
         });
+        if (toStage === "offer") {
+          celebrateOffer();
+        }
       } catch (error) {
         queryClient.setQueryData(
           queryKeys.jobs.inProgressBoard(),
@@ -225,6 +240,34 @@ export const InProgressBoardPage: React.FC = () => {
       }
     },
     [dragging, queryClient, transitionMutation],
+  );
+
+  const handleBoardLogEvent = React.useCallback(
+    async (values: LogEventFormValues) => {
+      if (!logEventTarget) return;
+
+      const { job, stage: currentStage } = logEventTarget;
+
+      try {
+        const { effectiveStage } = await logJobStageEvent({
+          jobId: job.id,
+          currentStage,
+          values,
+          manualStageReasonCode: "in_progress_board_menu",
+        });
+
+        await invalidateJobData(queryClient, job.id);
+        setLogEventTarget(null);
+        toast.success("Event logged");
+
+        if (effectiveStage === "offer") {
+          celebrateOffer();
+        }
+      } catch (error) {
+        showErrorToast(error, "Failed to log event");
+      }
+    },
+    [logEventTarget, queryClient],
   );
 
   return (
@@ -312,19 +355,35 @@ export const InProgressBoardPage: React.FC = () => {
                       </Badge>
                     </header>
 
-                    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5">
+                    <div
+                      className={cn(
+                        "min-h-0 flex-1 space-y-2 p-2.5 [scrollbar-gutter:stable]",
+                        dragging ? "overflow-hidden" : "overflow-y-auto",
+                      )}
+                    >
                       {laneCards.length === 0 ? (
                         <div className="rounded-md border border-dashed border-border/35 bg-background/20 px-2.5 py-2 text-[11px] text-muted-foreground/80">
                           Drop a card here or log a stage.
                         </div>
                       ) : (
                         laneCards.map(({ job, latestEventAt, stage }) => (
-                          <Link
+                          <InProgressBoardCard
                             key={job.id}
-                            to={`/job/${job.id}`}
-                            state={jobPageLinkState}
-                            draggable={movingJobId !== job.id}
+                            job={job}
+                            stage={stage}
+                            latestEventAt={latestEventAt}
+                            jobPageLinkState={jobPageLinkState}
+                            isMoving={movingJobId === job.id}
+                            cardClassName={getCardLeftAccentClass(stage)}
                             onDragStart={(event) => {
+                              if (
+                                (event.target as HTMLElement).closest(
+                                  "[data-board-card-menu]",
+                                )
+                              ) {
+                                event.preventDefault();
+                                return;
+                              }
                               setDragging({ jobId: job.id, fromStage: stage });
                               event.dataTransfer.effectAllowed = "move";
                             }}
@@ -332,46 +391,8 @@ export const InProgressBoardPage: React.FC = () => {
                               setDragging(null);
                               setDropTargetStage(null);
                             }}
-                            className={cn(
-                              "block rounded-lg border border-border/60 bg-background/95 p-3 shadow-[0_8px_20px_-18px_rgba(0,0,0,1)] transition-colors",
-                              "hover:border-border hover:bg-background hover:shadow-[0_12px_24px_-16px_rgba(0,0,0,1)]",
-                              getCardLeftAccentClass(stage),
-                              movingJobId === job.id && "opacity-70",
-                            )}
-                          >
-                            <div className="mb-2 flex items-start justify-between gap-2">
-                              <div className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">
-                                {job.title}
-                              </div>
-                              <ExternalLink className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
-                            </div>
-                            <div className="text-xs text-muted-foreground/90">
-                              {job.employer}
-                            </div>
-                            {stage === "closed" && (
-                              <div className="mt-2 flex items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="border-border/60 bg-muted/30 text-foreground/80"
-                                >
-                                  Closed
-                                </Badge>
-                                {job.outcome ? (
-                                  <Badge
-                                    variant="outline"
-                                    className="capitalize"
-                                  >
-                                    {job.outcome.replaceAll("_", " ")}
-                                  </Badge>
-                                ) : null}
-                              </div>
-                            )}
-                            <div className="mt-2 text-[11px] text-muted-foreground/70">
-                              {latestEventAt != null
-                                ? `Updated ${formatTimestamp(latestEventAt)}`
-                                : "No stage events yet"}
-                            </div>
-                          </Link>
+                            onLogEvent={() => setLogEventTarget({ job, stage })}
+                          />
                         ))
                       )}
                     </div>
@@ -382,6 +403,14 @@ export const InProgressBoardPage: React.FC = () => {
           </div>
         )}
       </PageMain>
+
+      <LogEventModal
+        isOpen={logEventTarget != null}
+        onClose={() => setLogEventTarget(null)}
+        onLog={handleBoardLogEvent}
+        jobTitle={logEventTarget?.job.title}
+        employer={logEventTarget?.job.employer}
+      />
     </>
   );
 };

@@ -640,10 +640,40 @@ describe.sequential("Jobs API routes", () => {
     expect(res.status).toBe(201);
     expect(body.ok).toBe(true);
     expect(body.data.pdfPath).toBe(storedPath);
+    expect(body.data.status).toBe("ready");
+    expect(body.data.readyAt).toBeTruthy();
     expect(typeof body.meta.requestId).toBe("string");
     await expect(readFile(storedPath, "utf8")).resolves.toContain(
       "Uploaded resume",
     );
+  });
+
+  it("does not regress job status when uploading a PDF for an applied job", async () => {
+    const { createJob, updateJob } = await import("@server/repositories/jobs");
+    const job = await createJob({
+      source: "manual",
+      title: "Replace PDF Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/replace-pdf",
+      jobDescription: "Test description",
+    });
+    await updateJob(job.id, { status: "applied" });
+
+    const pdfContent = Buffer.from("%PDF-1.7\nReplacement resume\n");
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "replacement-resume.pdf",
+        mediaType: "application/pdf",
+        dataBase64: pdfContent.toString("base64"),
+      }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe("applied");
   });
 
   it("rejects uploaded files that are not valid PDFs", async () => {
@@ -672,6 +702,219 @@ describe.sequential("Jobs API routes", () => {
     expect(body.error.code).toBe("INVALID_REQUEST");
     expect(body.error.message).toMatch(/valid pdf/i);
     expect(typeof body.meta.requestId).toBe("string");
+  });
+
+  it("uploads, lists, serves, and deletes arbitrary job documents", async () => {
+    const { createJob } = await import("@server/repositories/jobs");
+    const job = await createJob({
+      source: "manual",
+      title: "Document Upload Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/document-upload",
+      jobDescription: "Document upload description",
+    });
+    const documentContent = Buffer.from("cover letter draft");
+
+    const uploadRes = await fetch(`${baseUrl}/api/jobs/${job.id}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "cover-letter.txt",
+        mediaType: "text/plain",
+        dataBase64: documentContent.toString("base64"),
+      }),
+    });
+    const uploadBody = await uploadRes.json();
+
+    expect(uploadRes.status).toBe(201);
+    expect(uploadBody.ok).toBe(true);
+    expect(uploadBody.data).toMatchObject({
+      jobId: job.id,
+      fileName: "cover-letter.txt",
+      mediaType: "text/plain",
+      byteSize: documentContent.byteLength,
+    });
+    expect(uploadBody.data).not.toHaveProperty("storagePath");
+    expect(typeof uploadBody.meta.requestId).toBe("string");
+
+    const listRes = await fetch(`${baseUrl}/api/jobs/${job.id}/documents`);
+    const listBody = await listRes.json();
+    expect(listRes.status).toBe(200);
+    expect(listBody.ok).toBe(true);
+    expect(listBody.data).toHaveLength(1);
+    expect(listBody.data[0].id).toBe(uploadBody.data.id);
+
+    const contentRes = await fetch(
+      `${baseUrl}/api/jobs/${job.id}/documents/${uploadBody.data.id}/content`,
+    );
+    const content = Buffer.from(await contentRes.arrayBuffer()).toString(
+      "utf8",
+    );
+    expect(contentRes.status).toBe(200);
+    expect(contentRes.headers.get("cache-control")).toBe("no-store");
+    expect(contentRes.headers.get("content-disposition")).toBe("inline");
+    expect(contentRes.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(content).toBe("cover letter draft");
+
+    const deleteRes = await fetch(
+      `${baseUrl}/api/jobs/${job.id}/documents/${uploadBody.data.id}`,
+      { method: "DELETE" },
+    );
+    const deleteBody = await deleteRes.json();
+    expect(deleteRes.status).toBe(200);
+    expect(deleteBody.ok).toBe(true);
+
+    const emptyListRes = await fetch(`${baseUrl}/api/jobs/${job.id}/documents`);
+    const emptyListBody = await emptyListRes.json();
+    expect(emptyListBody.data).toEqual([]);
+  });
+
+  it("serves unsafe uploaded document types as attachments", async () => {
+    const { createJob } = await import("@server/repositories/jobs");
+    const job = await createJob({
+      source: "manual",
+      title: "Unsafe Document Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/unsafe-document",
+      jobDescription: "Unsafe document description",
+    });
+
+    const uploadRes = await fetch(`${baseUrl}/api/jobs/${job.id}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "payload's (test)!*.html",
+        mediaType: "text/html",
+        dataBase64: Buffer.from("<script>alert(1)</script>").toString("base64"),
+      }),
+    });
+    const uploadBody = await uploadRes.json();
+
+    const contentRes = await fetch(
+      `${baseUrl}/api/jobs/${job.id}/documents/${uploadBody.data.id}/content`,
+    );
+
+    expect(contentRes.status).toBe(200);
+    expect(contentRes.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(contentRes.headers.get("content-type")).toMatch(
+      /^application\/octet-stream/,
+    );
+    expect(contentRes.headers.get("content-disposition")).toContain(
+      "attachment",
+    );
+    expect(contentRes.headers.get("content-disposition")).toContain(
+      "filename*=UTF-8''payload%27s%20%28test%29%21%2A.html",
+    );
+  });
+
+  it("returns a JSON error when a stored job document file is missing", async () => {
+    const { createJob } = await import("@server/repositories/jobs");
+    const { createJobDocument } = await import(
+      "@server/repositories/job-documents"
+    );
+    const job = await createJob({
+      source: "manual",
+      title: "Missing Document File Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/missing-document-file",
+      jobDescription: "Missing document file description",
+    });
+    const document = await createJobDocument({
+      jobId: job.id,
+      fileName: "missing.html",
+      mediaType: "text/html",
+      byteSize: 100,
+      storagePath: "/definitely/missing/job-document.html",
+    });
+
+    const res = await fetch(
+      `${baseUrl}/api/jobs/${job.id}/documents/${document.id}/content`,
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("NOT_FOUND");
+    expect(res.headers.get("content-disposition")).toBeNull();
+    expect(res.headers.get("cache-control")).toBeNull();
+    expect(res.headers.get("x-content-type-options")).toBeNull();
+    expect(res.headers.get("content-type")).toMatch(/^application\/json/);
+  });
+
+  it("rejects uploaded job documents with invalid base64", async () => {
+    const { createJob } = await import("@server/repositories/jobs");
+    const job = await createJob({
+      source: "manual",
+      title: "Bad Document Upload Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/bad-document-upload",
+      jobDescription: "Bad document upload description",
+    });
+
+    const res = await fetch(`${baseUrl}/api/jobs/${job.id}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "notes.txt",
+        mediaType: "text/plain",
+        dataBase64: "not-valid-base64!!!",
+      }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("INVALID_REQUEST");
+    expect(body.error.message).toMatch(/valid base64/i);
+    expect(typeof body.meta.requestId).toBe("string");
+  });
+
+  it("keeps job documents scoped to their owning job", async () => {
+    const { createJob } = await import("@server/repositories/jobs");
+    const firstJob = await createJob({
+      source: "manual",
+      title: "First Document Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/first-document-role",
+      jobDescription: "First document description",
+    });
+    const secondJob = await createJob({
+      source: "manual",
+      title: "Second Document Role",
+      employer: "Acme",
+      jobUrl: "https://example.com/job/second-document-role",
+      jobDescription: "Second document description",
+    });
+
+    const uploadRes = await fetch(
+      `${baseUrl}/api/jobs/${firstJob.id}/documents`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: "first.txt",
+          mediaType: "text/plain",
+          dataBase64: Buffer.from("first").toString("base64"),
+        }),
+      },
+    );
+    const uploadBody = await uploadRes.json();
+
+    const crossJobContentRes = await fetch(
+      `${baseUrl}/api/jobs/${secondJob.id}/documents/${uploadBody.data.id}/content`,
+    );
+    const crossJobDeleteRes = await fetch(
+      `${baseUrl}/api/jobs/${secondJob.id}/documents/${uploadBody.data.id}`,
+      { method: "DELETE" },
+    );
+    const secondListRes = await fetch(
+      `${baseUrl}/api/jobs/${secondJob.id}/documents`,
+    );
+    const secondListBody = await secondListRes.json();
+
+    expect(crossJobContentRes.status).toBe(404);
+    expect(crossJobDeleteRes.status).toBe(404);
+    expect(secondListBody.data).toEqual([]);
   });
 
   it("serves legacy job PDFs when pdfPath is not set", async () => {
@@ -1186,6 +1429,7 @@ describe.sequential("Jobs API routes", () => {
     vi.mocked(scoreJobSuitability).mockResolvedValue({
       score: 81,
       reason: "Updated fit from action rescore",
+      jobBrief: null,
     });
 
     const discovered = await createJob({
@@ -1336,7 +1580,7 @@ describe.sequential("Jobs API routes", () => {
 
   it("validates job action payloads", async () => {
     const tooManyIds = Array.from(
-      { length: 101 },
+      { length: 501 },
       (_, index) => `job-${index}`,
     );
     const res = await fetch(`${baseUrl}/api/jobs/actions`, {
@@ -1454,7 +1698,6 @@ describe.sequential("Jobs API routes", () => {
 
   it("rescoring a job updates the suitability fields", async () => {
     const { createJob } = await import("@server/repositories/jobs");
-    const { generateJobBrief } = await import("@server/services/job-brief");
     const { scoreJobSuitability } = await import("@server/services/scorer");
     const { getProfile } = await import("@server/services/profile");
 
@@ -1462,10 +1705,9 @@ describe.sequential("Jobs API routes", () => {
     vi.mocked(scoreJobSuitability).mockResolvedValue({
       score: 77,
       reason: "Updated fit",
+      jobBrief:
+        '{"role_summary":"Build tools","they_want":[],"specifics":[],"company_offers":[],"practical_details":[],"missing_or_unclear":[],"repeated_signals":[]}',
     });
-    vi.mocked(generateJobBrief).mockResolvedValue(
-      '{"role_summary":"Build tools","they_want":[],"specifics":[],"company_offers":[],"practical_details":[],"missing_or_unclear":[],"repeated_signals":[]}',
-    );
 
     const job = await createJob({
       source: "manual",

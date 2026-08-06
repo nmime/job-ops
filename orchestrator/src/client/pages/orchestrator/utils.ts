@@ -1,5 +1,11 @@
+import { getPostingDateSortValue } from "@client/lib/job-posting-age";
 import type { AppSettings, JobListItem, JobSource } from "@shared/types";
-import type { DateFilterDimension, FilterTab, JobSort } from "./constants";
+import type {
+  DateFilterDimension,
+  EmploymentType,
+  FilterTab,
+  JobSort,
+} from "./constants";
 import {
   DEFAULT_PIPELINE_SOURCES,
   orderedFilterSources,
@@ -109,9 +115,9 @@ export const compareJobs = (a: JobListItem, b: JobListItem, sort: JobSort) => {
       value = compareNumber(aDate, bDate);
       break;
     }
-    case "date": {
-      const aDate = getSortDateValue(a, sort);
-      const bDate = getSortDateValue(b, sort);
+    case "datePosted": {
+      const aDate = getPostingDateSortValue(a.datePosted);
+      const bDate = getPostingDateSortValue(b.datePosted);
       if (aDate == null && bDate == null) {
         value = 0;
         break;
@@ -145,15 +151,6 @@ export const getJobDateValue = (
   }
 };
 
-const getSortDateValue = (job: JobListItem, sort: JobSort): number | null => {
-  for (const dimension of sort.datePriority ?? []) {
-    const value = getJobDateValue(job, dimension);
-    if (value != null) return value;
-  }
-
-  return dateValue(job.discoveredAt);
-};
-
 export const jobMatchesQuery = (job: JobListItem, query: string) => {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return true;
@@ -170,6 +167,90 @@ export const jobMatchesQuery = (job: JobListItem, query: string) => {
     .join(" ")
     .toLowerCase();
   return haystack.includes(normalized);
+};
+
+/**
+ * Lowercase a string and collapse anything that is not alphanumeric into a
+ * single space, so messy free-text values (e.g. "London, UK") tokenize
+ * consistently for matching.
+ */
+const normalizeText = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+/**
+ * Map a free-text employment-type string (e.g. "Full-time", "fulltime",
+ * "Contract / Temp") onto canonical {@link EmploymentType} buckets. A single
+ * string may yield multiple types, so the result is a set.
+ */
+export const extractEmploymentTypes = (
+  raw: string | null | undefined,
+): Set<EmploymentType> => {
+  const types = new Set<EmploymentType>();
+  if (!raw) return types;
+
+  const value = raw.toLowerCase();
+  if (/intern|placement|trainee|graduate scheme/.test(value)) {
+    types.add("internship");
+  }
+  if (/part[\s_-]?time/.test(value)) types.add("part_time");
+  if (/contract|freelance|fixed[\s_-]?term/.test(value)) {
+    types.add("contract");
+  }
+  if (/temp|seasonal/.test(value)) types.add("temporary");
+  if (/full[\s_-]?time|permanent|\bperm\b/.test(value)) {
+    types.add("full_time");
+  }
+  return types;
+};
+
+/**
+ * True when the job matches at least one of the selected employment types.
+ * When the job has no recognizable type it is excluded while the filter is
+ * active (an unknown type cannot be confirmed to match the user's choice).
+ */
+export const matchesEmploymentType = (
+  job: JobListItem,
+  selected: EmploymentType[],
+): boolean => {
+  if (selected.length === 0) return true;
+  const jobTypes = extractEmploymentTypes(job.jobType);
+  if (jobTypes.size === 0) return false;
+  return selected.some((type) => jobTypes.has(type));
+};
+
+/**
+ * True when every token of the location query appears in the job's location
+ * (order-independent), so "london uk" matches "London, UK". Jobs with no
+ * location are excluded while the filter is active.
+ */
+export const matchesLocation = (job: JobListItem, query: string): boolean => {
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) return true;
+  const haystack = normalizeText(job.location ?? "");
+  if (!haystack) return false;
+  return normalizedQuery.split(" ").every((token) => haystack.includes(token));
+};
+
+/**
+ * True when the job was posted within the last `days` days. `datePosted` is
+ * free text (ISO date or relative phrase like "3 days ago"), so it is coerced
+ * via {@link getPostingDateSortValue}. Jobs with an unparseable/missing posting
+ * date are excluded while the filter is active.
+ */
+export const matchesPostedWithin = (
+  job: JobListItem,
+  days: number | null,
+  now: number,
+): boolean => {
+  if (days == null) return true;
+  const posted = getPostingDateSortValue(job.datePosted, new Date(now));
+  if (posted == null) return false;
+  return posted >= now - days * 86_400_000;
 };
 
 export const getJobCounts = (

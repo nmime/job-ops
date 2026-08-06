@@ -1,230 +1,113 @@
 import { asyncRoute, ok, okWithMeta } from "@infra/http";
-import { logger } from "@infra/logger";
 import { isDemoMode } from "@server/config/demo";
-import { getSetting } from "@server/repositories/settings";
-import { getDesignResumeStatus } from "@server/services/design-resume";
-import { getOriginalEnvValue } from "@server/services/envSettings";
-import { LlmService } from "@server/services/llm/service";
 import { suggestOnboardingSearchTerms } from "@server/services/onboarding-search-terms";
 import {
-  getResume,
-  RxResumeAuthConfigError,
-  validateResumeSchema,
-  validateCredentials as validateRxResumeCredentials,
-} from "@server/services/rxresume";
-import { getConfiguredRxResumeBaseResumeId } from "@server/services/rxresume/baseResumeId";
+  confirmOnboardingResumeAction,
+  getOnboardingStatus,
+  saveOnboardingModelAction,
+  saveOnboardingProfileAction,
+  saveOnboardingRxResumeAction,
+  validateLlm,
+  validateResumeConfig,
+  validateRxresume,
+} from "@server/services/onboarding-status";
 import { type Request, type Response, Router } from "express";
+import { z } from "zod";
 
 export const onboardingRouter = Router();
 
-type ValidationResponse = {
-  valid: boolean;
-  message: string | null;
-  status?: number | null;
-};
+const modelActionSchema = z.object({
+  provider: z.string().trim().min(1).max(100).optional().nullable(),
+  baseUrl: z.string().trim().max(2000).optional().nullable(),
+  apiKey: z.string().trim().max(2000).optional().nullable(),
+  model: z.string().trim().max(200).optional().nullable(),
+});
 
-function getDefaultValidationBaseUrl(
-  provider: string | undefined,
-): string | undefined {
-  if (provider === "lmstudio") return "http://localhost:1234";
-  if (provider === "ollama") return "http://localhost:11434";
-  if (provider === "openai_compatible") return "https://api.openai.com";
-  return undefined;
-}
+const rxresumeActionSchema = z.object({
+  apiKey: z.string().trim().max(2000).optional().nullable(),
+  baseUrl: z.string().trim().max(2000).optional().nullable(),
+  rxresumeBaseResumeId: z.string().trim().max(200).optional().nullable(),
+});
 
-async function validateLlm(options: {
-  apiKey?: string | null;
-  provider?: string | null;
-  baseUrl?: string | null;
-}): Promise<ValidationResponse> {
-  const [storedApiKey, storedProvider, storedBaseUrl] = await Promise.all([
-    getSetting("llmApiKey"),
-    getSetting("llmProvider"),
-    getSetting("llmBaseUrl"),
-  ]);
+const profileActionSchema = z.object({
+  country: z.string().trim().max(100).optional().nullable(),
+  cities: z.array(z.string().trim().min(1).max(120)).max(20),
+  workplaceTypes: z
+    .array(z.enum(["remote", "hybrid", "onsite"]))
+    .min(1)
+    .max(3),
+  requiresVisaSponsorship: z.boolean(),
+});
 
-  const normalizedProvider = normalizeLlmProviderValue(
-    options.provider?.trim() || storedProvider?.trim() || undefined,
-  );
-  const shouldUseBaseUrl =
-    normalizedProvider === "lmstudio" ||
-    normalizedProvider === "ollama" ||
-    normalizedProvider === "openai_compatible";
-  const hasExplicitBaseUrlOverride =
-    options.baseUrl !== undefined && options.baseUrl !== null;
-  const resolvedBaseUrl = shouldUseBaseUrl
-    ? hasExplicitBaseUrlOverride
-      ? options.baseUrl?.trim() ||
-        getOriginalEnvValue("LLM_BASE_URL")?.trim() ||
-        getDefaultValidationBaseUrl(normalizedProvider)
-      : storedBaseUrl?.trim() ||
-        getOriginalEnvValue("LLM_BASE_URL")?.trim() ||
-        undefined
-    : undefined;
-  const resolvedApiKey =
-    options.apiKey?.trim() ||
-    storedApiKey?.trim() ||
-    getOriginalEnvValue("LLM_API_KEY")?.trim() ||
-    null;
+const resumeConfirmActionSchema = z.object({
+  source: z.string().trim().min(1).max(300),
+});
 
-  logger.debug("LLM onboarding validation resolved config", {
-    provider: normalizedProvider ?? null,
-    usesBaseUrl: shouldUseBaseUrl,
-    hasBaseUrl: Boolean(resolvedBaseUrl),
-    hasApiKey: Boolean(resolvedApiKey),
-  });
+onboardingRouter.get(
+  "/status",
+  asyncRoute(async (_req: Request, res: Response) => {
+    const data = await getOnboardingStatus();
+    ok(res, data);
+  }),
+);
 
-  const llm = new LlmService({
-    apiKey: resolvedApiKey,
-    provider: normalizedProvider,
-    baseUrl: resolvedBaseUrl,
-  });
-  return llm.validateCredentials();
-}
+onboardingRouter.post(
+  "/actions/profile",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (isDemoMode()) {
+      return okWithMeta(res, await getOnboardingStatus(), { simulated: true });
+    }
+    const data = await saveOnboardingProfileAction(
+      profileActionSchema.parse(req.body ?? {}),
+    );
+    ok(res, data);
+  }),
+);
 
-function normalizeLlmProviderValue(
-  provider: string | undefined,
-): string | undefined {
-  if (!provider) return undefined;
-  return provider.toLowerCase().replace(/-/g, "_");
-}
-
-/**
- * Validate that a base resume is configured and accessible via Reactive Resume.
- */
-async function validateResumeConfig(): Promise<ValidationResponse> {
-  try {
-    const localStatus = await getDesignResumeStatus();
-    if (localStatus.exists) {
-      return { valid: true, message: null };
+onboardingRouter.post(
+  "/actions/model",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (isDemoMode()) {
+      return okWithMeta(res, await getOnboardingStatus(), { simulated: true });
     }
 
-    // Check if rxresumeBaseResumeId is configured
-    const { resumeId: rxresumeBaseResumeId } =
-      await getConfiguredRxResumeBaseResumeId();
+    const input = modelActionSchema.parse(req.body ?? {});
+    const data = await saveOnboardingModelAction(input);
+    ok(res, data);
+  }),
+);
 
-    if (!rxresumeBaseResumeId) {
-      return {
-        valid: false,
-        message:
-          "No local resume is ready yet. Upload a PDF or DOCX resume, or connect Reactive Resume and select a template resume.",
-      };
+onboardingRouter.post(
+  "/actions/resume/confirm",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (isDemoMode()) {
+      return okWithMeta(res, await getOnboardingStatus(), { simulated: true });
+    }
+    const data = await confirmOnboardingResumeAction(
+      resumeConfirmActionSchema.parse(req.body ?? {}),
+    );
+    ok(res, data);
+  }),
+);
+
+onboardingRouter.post(
+  "/actions/rxresume",
+  asyncRoute(async (req: Request, res: Response) => {
+    if (isDemoMode()) {
+      return okWithMeta(res, await getOnboardingStatus(), { simulated: true });
     }
 
-    // Verify the resume is accessible and valid
-    try {
-      const resume = await getResume(rxresumeBaseResumeId);
-
-      if (!resume.data || typeof resume.data !== "object") {
-        return {
-          valid: false,
-          message: "Selected resume is empty or invalid.",
-        };
-      }
-
-      const validated = await validateResumeSchema(resume.data);
-      if (!validated.ok) {
-        return { valid: false, message: validated.message };
-      }
-
-      return { valid: true, message: null };
-    } catch (error) {
-      if (error instanceof RxResumeAuthConfigError) {
-        return {
-          valid: false,
-          message: error.message,
-        };
-      }
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Failed to fetch resume from RxResume.";
-      return { valid: false, message };
-    }
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Resume validation failed.";
-    return { valid: false, message };
-  }
-}
-
-async function validateRxresume(options?: {
-  apiKey?: string | null;
-  baseUrl?: string | null;
-}): Promise<ValidationResponse> {
-  const requestApiKey = options?.apiKey?.trim() ?? "";
-  const hasExplicitV5Input = options?.apiKey !== undefined;
-
-  const storedBaseUrl = await getSetting("rxresumeUrl");
-  const resolvedBaseUrl =
-    options?.baseUrl !== undefined && options?.baseUrl !== null
-      ? options.baseUrl.trim() ||
-        getOriginalEnvValue("RXRESUME_URL")?.trim() ||
-        "https://rxresu.me"
-      : storedBaseUrl?.trim() ||
-        getOriginalEnvValue("RXRESUME_URL")?.trim() ||
-        "https://rxresu.me";
-
-  if (hasExplicitV5Input && !requestApiKey) {
-    return {
-      valid: false,
-      status: 400,
-      message: "Reactive Resume v5 API key is not configured.",
-    };
-  }
-
-  const result = await validateRxResumeCredentials({
-    v5: {
-      apiKey: options?.apiKey ?? undefined,
-      baseUrl: options?.baseUrl ?? undefined,
-    },
-  });
-
-  if (result.ok) return { valid: true, message: null, status: null };
-
-  const normalizedMessage = result.message.toLowerCase();
-  if (result.status === 400 && normalizedMessage.includes("not configured")) {
-    return {
-      valid: false,
-      status: 400,
-      message: result.message,
-    };
-  }
-
-  if (
-    result.status === 401 ||
-    normalizedMessage.includes("invalidcredentials")
-  ) {
-    return {
-      valid: false,
-      status: result.status,
-      message:
-        "Reactive Resume v5 API key is invalid. Update the API key and try again.",
-    };
-  }
-
-  if (result.status === 0 || result.status >= 500) {
-    return {
-      valid: false,
-      status: result.status,
-      message: `JobOps could not verify Reactive Resume because the instance at ${resolvedBaseUrl} is unavailable right now.`,
-    };
-  }
-
-  if (result.status >= 400 && result.status < 500) {
-    return {
-      valid: false,
-      status: result.status,
-      message: `Reactive Resume returned HTTP ${result.status} from ${resolvedBaseUrl}. Check the configured URL.`,
-    };
-  }
-
-  return {
-    valid: false,
-    message: result.message,
-    status: result.status,
-  };
-}
+    const input = rxresumeActionSchema.parse(req.body ?? {});
+    const data = await saveOnboardingRxResumeAction({
+      ...input,
+      hasRxresumeBaseResumeId: Object.hasOwn(
+        req.body ?? {},
+        "rxresumeBaseResumeId",
+      ),
+    });
+    ok(res, data);
+  }),
+);
 
 onboardingRouter.post(
   "/validate/openrouter",

@@ -131,7 +131,17 @@ export interface JobNote {
   updatedAt: string;
 }
 
-export type JobSource = ExtractorSourceId;
+export interface JobDocument {
+  id: string;
+  jobId: string;
+  fileName: string;
+  mediaType: string | null;
+  byteSize: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type JobSource = ExtractorSourceId | (string & {});
 
 export type JobPdfSource = "generated" | "uploaded";
 export type JobPdfFreshness =
@@ -247,6 +257,7 @@ export type JobListItem = Pick<
   Job,
   | "id"
   | "source"
+  | "sourceJobId"
   | "title"
   | "employer"
   | "jobUrl"
@@ -321,6 +332,8 @@ export interface CreateJobInput {
 }
 
 export interface ManualJobDraft {
+  source?: JobSource;
+  sourceJobId?: string;
   title?: string;
   employer?: string;
   jobUrl?: string;
@@ -347,20 +360,207 @@ export interface ManualJobFetchResponse {
   url: string;
 }
 
+export interface WatchlistJobState {
+  source: JobSource;
+  sourceJobId: string;
+  state: "ignored" | "moved_to_workspace";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WatchlistJobStatesResponse {
+  states: WatchlistJobState[];
+}
+
+export interface WatchlistCheck {
+  source: JobSource;
+  sourceJobIds: string[];
+}
+
+export interface WatchlistCheckInput {
+  checks: WatchlistCheck[];
+}
+
+export interface WatchlistCheckJobDelta {
+  source: JobSource;
+  sourceJobId: string;
+  isNewSinceLastCheck: boolean;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface WatchlistCheckResponse {
+  previousLastCheckedAt: string | null;
+  checkedAt: string;
+  jobs: WatchlistCheckJobDelta[];
+}
+
+export type WatchedSourceType = "workday" | (string & {});
+
+export interface WatchlistSource {
+  id: string;
+  label: string;
+  careersUrl: string;
+  cxsJobsUrl: string | null;
+  sourceType: WatchedSourceType;
+}
+
+export interface WatchlistSelectedSource {
+  id: string;
+  catalogSourceId: string | null;
+  label: string;
+  careersUrl: string;
+  cxsJobsUrl: string | null;
+  sourceType: WatchedSourceType;
+  isCustom: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WatchlistSourcesResponse {
+  catalogSources: WatchlistSource[];
+  selectedSources: WatchlistSelectedSource[];
+  availableSourceTypes: WatchlistSourceTypeDescriptor[];
+}
+
+export interface WatchlistSourceTypeDescriptor {
+  sourceType: WatchedSourceType;
+  label: string;
+  catalogLabel: string;
+  customSourceOptionLabel: string;
+  customSourceSearchText: string;
+  customSourceInputLabel: string;
+  customSourcePlaceholder: string;
+  customSourceHelpText: string;
+  emptyCatalogText: string;
+  fetchingLabel: string;
+  invalidUrlMessage: string;
+  supportsCustomSource: boolean;
+  supportsBranding: boolean;
+}
+
+export type WatchlistRowState = "new" | "ignored" | "moved_to_workspace";
+
+export interface WatchlistWorkspaceJobReference {
+  id: string;
+  status: JobStatus;
+}
+
+export interface WatchlistJobResult {
+  jobRef: string;
+  source: JobSource;
+  sourceJobId: string;
+  sourceType: WatchedSourceType;
+  title: string;
+  employer: string;
+  jobUrl: string;
+  applicationLink: string | null;
+  location: string | null;
+  postedAt: string | null;
+  rowState: WatchlistRowState;
+  isNewSinceLastCheck: boolean;
+  workspaceJob: WatchlistWorkspaceJobReference | null;
+}
+
+export type WatchlistSourceResult =
+  | {
+      status: "success";
+      source: WatchlistSelectedSource;
+      jobs: WatchlistJobResult[];
+      total: number;
+      fetched: number;
+    }
+  | {
+      status: "error";
+      source: WatchlistSelectedSource;
+      error: string;
+    };
+
+export interface WatchlistResultsResponse {
+  checkedAt: string | null;
+  previousLastCheckedAt: string | null;
+  sources: WatchlistSourceResult[];
+}
+
+export interface WatchlistImportDraftInput {
+  selectedSourceId: string;
+  jobRef: string;
+}
+
+export interface WatchlistImportDraftResponse {
+  draft: ManualJobDraft;
+  source: string | null;
+  sourceHost: string | null;
+  sourceType: WatchedSourceType;
+  catalogSourceId: string | null;
+  careersUrl: string;
+}
+
+export interface WatchlistJobDetailsInput {
+  selectedSourceId: string;
+  jobRef: string;
+}
+
+export interface WatchlistJobDetailsResponse {
+  jobRef: string;
+  jobUrl: string;
+  descriptionHtml: string;
+}
+
+export interface WatchlistSourceBrandingInput {
+  selectedSourceId?: string | null;
+  sourceType: WatchedSourceType;
+  careersUrl: string;
+}
+
+export interface WatchlistSourceBrandingResponse {
+  careersUrl: string;
+  logoUrl: string;
+  mimeType: string;
+  imageDataUrl: string;
+}
+
+export interface UpdateWatchlistSelectionsInput {
+  selections: Array<{
+    catalogSourceId?: string | null;
+    sourceType: WatchedSourceType;
+    label?: string | null;
+    careersUrl: string;
+  }>;
+}
+
 export interface UpdateJobInput {
   title?: string;
   employer?: string;
   jobUrl?: string;
   applicationLink?: string | null;
+  disciplines?: string | null;
   location?: string | null;
   salary?: string | null;
   deadline?: string | null;
+  degreeRequired?: string | null;
+  starting?: string | null;
+  jobType?: string | null;
+  salarySource?: string | null;
+  salaryInterval?: string | null;
+  salaryMinAmount?: number | null;
+  salaryMaxAmount?: number | null;
+  salaryCurrency?: string | null;
+  isRemote?: boolean | null;
+  jobLevel?: string | null;
+  jobFunction?: string | null;
+  companyIndustry?: string | null;
+  skills?: string | null;
+  experienceRange?: string | null;
+  vacancyCount?: number | null;
+  workFromHomeType?: string | null;
   status?: JobStatus;
   outcome?: JobOutcome | null;
   closedAt?: number | null;
   jobDescription?: string | null;
   locationEvidence?: JobLocationEvidence | null;
-  suitabilityScore?: number;
+  suitabilityScore?: number | null;
   suitabilityReason?: string;
   jobBrief?: string | null;
   tailoredSummary?: string;

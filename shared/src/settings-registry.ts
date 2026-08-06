@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  LOCATION_INPUT_MODE_VALUES,
   LOCATION_MATCH_STRICTNESS_VALUES,
   LOCATION_SEARCH_SCOPE_VALUES,
 } from "./location-preferences";
@@ -9,9 +10,16 @@ import {
   CHAT_STYLE_MANUAL_LANGUAGE_VALUES,
   type ChatStyleLanguageMode,
   type ChatStyleManualLanguage,
+  LLM_PROVIDER_VALUES,
+  LLM_PURPOSE_VALUES,
+  type LlmProviderId,
+  type LlmPurposeApiKeys,
+  type LlmPurposeOverrides,
   PDF_RENDERER_VALUES,
   type PdfRenderer,
   type ResumeProjectsSettings,
+  TYPST_THEME_VALUES,
+  type TypstTheme,
 } from "./types/settings";
 
 function parseNonEmptyStringOrNull(raw: string | undefined): string | null {
@@ -22,6 +30,12 @@ function parseIntOrNull(raw: string | undefined): number | null {
   if (!raw) return null;
   const parsed = parseInt(raw, 10);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+function parseNumberOrNull(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseJsonArrayOrNull(raw: string | undefined): string[] | null {
@@ -41,15 +55,37 @@ function parseBitBoolOrNull(raw: string | undefined): boolean | null {
   return null;
 }
 
+const GLM_PROVIDER_ALIASES = new Set([
+  "zhipu",
+  "zhipu_ai",
+  "zhipuai",
+  "bigmodel",
+  "zai",
+  "z_ai",
+]);
+
+/**
+ * Map known GLM provider aliases to "glm".
+ * `normalized` should already be lowercased with separators (-, .) replaced by underscores.
+ */
+export function mapGlmProviderAlias(normalized: string): string {
+  return GLM_PROVIDER_ALIASES.has(normalized) ? "glm" : normalized;
+}
+
 function normalizeLlmProviderOrNull(raw: string | undefined): string | null {
   if (raw === undefined) return null;
-  const normalized = raw.trim().toLowerCase().replace(/-/g, "_");
-  return normalized ? normalized : null;
+  const normalized = raw.trim().toLowerCase().replace(/[-.]/g, "_");
+  const mapped = mapGlmProviderAlias(normalized);
+  if (mapped === "claude") return "anthropic";
+  return mapped || null;
 }
 
 export const DEFAULT_GEMINI_MODEL = "google/gemini-3-flash-preview";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
-export const DEFAULT_CODEX_MODEL = "";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+export const DEFAULT_GLM_MODEL = "glm-5.1";
+export const DEFAULT_CODEX_MODEL = "gpt-5.4-mini";
+export const DEFAULT_CLAUDE_CLI_MODEL = "claude-sonnet-5";
 
 export function getDefaultModelForProvider(
   provider: string | null | undefined,
@@ -66,12 +102,28 @@ export function getDefaultModelForProvider(
     return DEFAULT_OPENAI_MODEL;
   }
 
+  if (normalizedProvider === "anthropic") {
+    return DEFAULT_ANTHROPIC_MODEL;
+  }
+
   if (normalizedProvider === "gemini" || normalizedProvider === "gemini_cli") {
     return DEFAULT_GEMINI_MODEL;
   }
 
+  if (normalizedProvider === "claude_cli") {
+    return DEFAULT_CLAUDE_CLI_MODEL;
+  }
+
+  if (normalizedProvider === "glm") {
+    return DEFAULT_GLM_MODEL;
+  }
+
   if (normalizedProvider === "codex") {
     return DEFAULT_CODEX_MODEL;
+  }
+
+  if (normalizedProvider === "ollama") {
+    return "";
   }
   return DEFAULT_GEMINI_MODEL;
 }
@@ -141,6 +193,40 @@ const parseChatStyleManualLanguageOrNull = createEnumParser(
   CHAT_STYLE_MANUAL_LANGUAGE_VALUES,
 );
 const parsePdfRendererOrNull = createEnumParser(PDF_RENDERER_VALUES);
+const parseTypstThemeOrNull = createEnumParser(TYPST_THEME_VALUES);
+
+const llmPurposeOverrideSchema = z.object({
+  provider: z.preprocess(
+    (value) =>
+      typeof value === "string" ? normalizeLlmProviderOrNull(value) : value,
+    z.enum(LLM_PROVIDER_VALUES).nullable().optional(),
+  ),
+  baseUrl: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim() === "" ? null : value,
+    z.string().trim().url().max(2000).nullable().optional(),
+  ),
+  model: z.preprocess(
+    (value) => (value === "" ? null : value),
+    z.string().trim().max(200).nullable().optional(),
+  ),
+});
+
+export const llmPurposeOverridesSchema = z
+  .object({
+    scoring: llmPurposeOverrideSchema.optional(),
+    tailoring: llmPurposeOverrideSchema.optional(),
+    projectSelection: llmPurposeOverrideSchema.optional(),
+  })
+  .strict();
+
+export const llmPurposeApiKeysSchema = z
+  .object({
+    scoring: z.string().trim().max(2000).nullable().optional(),
+    tailoring: z.string().trim().max(2000).nullable().optional(),
+    projectSelection: z.string().trim().max(2000).nullable().optional(),
+  })
+  .strict();
 
 const WORKPLACE_TYPE_VALUES = ["remote", "hybrid", "onsite"] as const;
 const parseWorkplaceTypesOrNull = createEnumArrayParser(WORKPLACE_TYPE_VALUES);
@@ -154,6 +240,83 @@ const CAPTCHA_SOLVER_PROVIDER_VALUES = ["manual", "2captcha"] as const;
 const parseCaptchaSolverProviderOrNull = createEnumParser(
   CAPTCHA_SOLVER_PROVIDER_VALUES,
 );
+
+function parseJsonObjectOrNull<T>(raw: string | undefined): T | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as T)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseLlmPurposeOverrides(
+  raw: string | undefined,
+): LlmPurposeOverrides | null {
+  const parsed = parseJsonObjectOrNull<unknown>(raw);
+  if (!parsed) return null;
+
+  const result = llmPurposeOverridesSchema.safeParse(parsed);
+  return result.success ? normalizeLlmPurposeOverrides(result.data) : null;
+}
+
+function parseLlmPurposeApiKeys(
+  raw: string | undefined,
+): LlmPurposeApiKeys | null {
+  const parsed = parseJsonObjectOrNull<unknown>(raw);
+  if (!parsed) return null;
+
+  const result = llmPurposeApiKeysSchema.safeParse(parsed);
+  return result.success ? normalizeLlmPurposeApiKeys(result.data) : null;
+}
+
+function normalizeLlmPurposeApiKeys(
+  value: LlmPurposeApiKeys | null | undefined,
+): LlmPurposeApiKeys | null {
+  if (!value) return null;
+
+  const out: LlmPurposeApiKeys = {};
+  for (const purpose of LLM_PURPOSE_VALUES) {
+    const apiKey = value[purpose]?.trim();
+    if (apiKey) {
+      out[purpose] = apiKey;
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizeLlmPurposeOverrides(
+  value: LlmPurposeOverrides | null | undefined,
+): LlmPurposeOverrides | null {
+  if (!value) return null;
+
+  const out: LlmPurposeOverrides = {};
+  for (const purpose of LLM_PURPOSE_VALUES) {
+    const override = value[purpose];
+    if (!override) continue;
+
+    const provider = normalizeLlmProviderOrNull(
+      override.provider ?? undefined,
+    ) as LlmProviderId | null;
+    const baseUrl = override.baseUrl?.trim() || null;
+    const model = override.model?.trim() || null;
+    const normalized = {
+      ...(provider ? { provider } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
+      ...(model ? { model } : {}),
+    };
+
+    if (Object.keys(normalized).length > 0) {
+      out[purpose] = normalized;
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : null;
+}
 
 export const resumeProjectsSchema = z.object({
   maxProjects: z.number().int().min(0).max(100),
@@ -182,18 +345,7 @@ export const settingsRegistry = {
     envKey: "LLM_PROVIDER",
     schema: z.preprocess(
       (v) => (typeof v === "string" ? normalizeLlmProviderOrNull(v) : v),
-      z
-        .enum([
-          "openrouter",
-          "lmstudio",
-          "ollama",
-          "openai",
-          "openai_compatible",
-          "gemini",
-          "gemini_cli",
-          "codex",
-        ])
-        .nullable(),
+      z.enum(LLM_PROVIDER_VALUES).nullable(),
     ),
     default: (): string =>
       typeof process !== "undefined"
@@ -215,6 +367,19 @@ export const settingsRegistry = {
     parse: parseNonEmptyStringOrNull,
     serialize: (value: string | null | undefined): string | null =>
       value ?? null,
+  },
+  llmPurposeOverrides: {
+    kind: "typed" as const,
+    schema: llmPurposeOverridesSchema,
+    default: (): LlmPurposeOverrides => ({}),
+    parse: (raw: string | undefined): LlmPurposeOverrides | null =>
+      parseLlmPurposeOverrides(raw),
+    serialize: (
+      value: LlmPurposeOverrides | null | undefined,
+    ): string | null => {
+      const normalized = normalizeLlmPurposeOverrides(value);
+      return normalized ? JSON.stringify(normalized) : null;
+    },
   },
   pipelineWebhookUrl: {
     kind: "typed" as const,
@@ -339,6 +504,15 @@ export const settingsRegistry = {
     parse: parseBitBoolOrNull,
     serialize: serializeBitBool,
   },
+  typstTheme: {
+    kind: "typed" as const,
+    schema: z.enum(TYPST_THEME_VALUES),
+    default: (): TypstTheme =>
+      "classic",
+    parse: parseTypstThemeOrNull,
+    serialize: (value: TypstTheme | null | undefined): string | null =>
+      value ?? null,
+  },
   ukvisajobsMaxJobs: {
     kind: "typed" as const,
     schema: z.number().int().min(1).max(1000),
@@ -456,6 +630,35 @@ export const settingsRegistry = {
     parse: parseWorkplaceTypesOrNull,
     serialize: serializeNullableJsonArray,
   },
+  onboardingProfileCompleted: {
+    kind: "typed" as const,
+    schema: z.boolean(),
+    default: (): boolean => false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
+  onboardingLlmCompleted: {
+    kind: "typed" as const,
+    schema: z.boolean(),
+    default: (): boolean => false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
+  onboardingResumeConfirmedSource: {
+    kind: "typed" as const,
+    schema: z.string().trim().max(300),
+    default: (): string => "",
+    parse: parseNonEmptyStringOrNull,
+    serialize: (value: string | null | undefined): string | null =>
+      value ?? null,
+  },
+  onboardingLegacyMigrationPending: {
+    kind: "typed" as const,
+    schema: z.boolean(),
+    default: (): boolean => false,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
   blockedCompanyKeywords: {
     kind: "typed" as const,
     schema: z.array(z.string().trim().min(1).max(200)).max(200),
@@ -505,7 +708,7 @@ export const settingsRegistry = {
   },
   searchCities: {
     kind: "typed" as const,
-    schema: z.string().trim().max(100),
+    schema: z.string().trim().max(3000),
     default: (): string =>
       typeof process !== "undefined"
         ? process.env.SEARCH_CITIES || process.env.JOBSPY_LOCATION || ""
@@ -513,6 +716,35 @@ export const settingsRegistry = {
     parse: parseNonEmptyStringOrNull,
     serialize: (value: string | null | undefined): string | null =>
       value ?? null,
+  },
+  locationSearchMode: {
+    kind: "typed" as const,
+    schema: z.enum(LOCATION_INPUT_MODE_VALUES),
+    default: () => "radius" as const,
+    parse: parseNonEmptyStringOrNull,
+    serialize: (value: string | null | undefined): string | null =>
+      value ?? null,
+  },
+  locationLatitude: {
+    kind: "typed" as const,
+    schema: z.number().min(-90).max(90).nullable(),
+    default: (): number | null => null,
+    parse: parseNumberOrNull,
+    serialize: serializeNullableNumber,
+  },
+  locationLongitude: {
+    kind: "typed" as const,
+    schema: z.number().min(-180).max(180).nullable(),
+    default: (): number | null => null,
+    parse: parseNumberOrNull,
+    serialize: serializeNullableNumber,
+  },
+  locationRadiusMiles: {
+    kind: "typed" as const,
+    schema: z.number().int().min(1).max(200),
+    default: (): number => 50,
+    parse: parseIntOrNull,
+    serialize: serializeNullableNumber,
   },
   locationSearchScope: {
     kind: "typed" as const,
@@ -562,6 +794,13 @@ export const settingsRegistry = {
     serialize: serializeBitBool,
   },
   renderMarkdownInJobDescriptions: {
+    kind: "typed" as const,
+    schema: z.boolean(),
+    default: (): boolean => true,
+    parse: parseBitBoolOrNull,
+    serialize: serializeBitBool,
+  },
+  autoTailorOnManualImport: {
     kind: "typed" as const,
     schema: z.boolean(),
     default: (): boolean => true,
@@ -743,10 +982,6 @@ export const settingsRegistry = {
     kind: "string" as const,
     schema: z.string().trim().max(200),
   },
-  onboardingBasicAuthDecision: {
-    kind: "string" as const,
-    schema: z.enum(["enabled", "skipped"]),
-  },
   rxresumeUrl: {
     kind: "string" as const,
     envKey: "RXRESUME_URL",
@@ -765,17 +1000,22 @@ export const settingsRegistry = {
     envKey: "ADZUNA_APP_ID",
     schema: z.string().trim().max(200),
   },
-  basicAuthUser: {
-    kind: "string" as const,
-    envKey: "BASIC_AUTH_USER",
-    schema: z.string().trim().max(200),
-  },
 
   // --- Secrets ---
   llmApiKey: {
     kind: "secret" as const,
     envKey: "LLM_API_KEY",
     schema: z.string().trim().max(2000),
+  },
+  llmPurposeApiKeys: {
+    kind: "secret" as const,
+    schema: llmPurposeApiKeysSchema,
+    parse: (raw: string | undefined): LlmPurposeApiKeys | null =>
+      parseLlmPurposeApiKeys(raw),
+    serialize: (value: LlmPurposeApiKeys | null | undefined): string | null => {
+      const normalized = normalizeLlmPurposeApiKeys(value);
+      return normalized ? JSON.stringify(normalized) : null;
+    },
   },
   rxresumeApiKey: {
     kind: "secret" as const,
@@ -818,12 +1058,6 @@ export const settingsRegistry = {
     kind: "alias" as const,
     schema: z.string().trim().max(100),
     target: "searchCities" as const,
-  },
-
-  // --- Virtual ---
-  enableBasicAuth: {
-    kind: "virtual" as const,
-    schema: z.boolean(),
   },
 } as const;
 

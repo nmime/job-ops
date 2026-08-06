@@ -1,8 +1,14 @@
+import { getDesignResumeAssetContentBlob } from "@client/api/settings-profile";
+import { createId } from "@paralleldrive/cuid2";
+import type { DesignResumeJson } from "@shared/types";
 import { FileImage, ImagePlus, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import { DesignResumeFieldAssistant } from "./DesignResumeFieldAssistant";
 import { RichTextEditor } from "./RichTextEditor";
 import { fieldId, getByPath, toBoolean, toNumber, toText } from "./utils";
 
@@ -89,6 +95,41 @@ export function PictureSection({
   onUpdatePicture,
 }: PictureSectionProps) {
   const editDisabled = !pictureEnabled;
+  const pictureUrl = toText(picture.url);
+  const [previewUrl, setPreviewUrl] = useState(pictureUrl);
+
+  useEffect(() => {
+    if (!pictureUrl) {
+      setPreviewUrl("");
+      return;
+    }
+
+    if (!pictureUrl.startsWith("/api/design-resume/assets/")) {
+      setPreviewUrl(pictureUrl);
+      return;
+    }
+
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    getDesignResumeAssetContentBlob(pictureUrl)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewUrl(pictureUrl);
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [pictureUrl]);
 
   return (
     <div className="grid gap-3">
@@ -106,8 +147,8 @@ export function PictureSection({
           className={`${insetPanelClassName} flex items-center gap-3 border-dashed p-3`}
         >
           <img
-            src={toText(picture.url)}
-            alt="Design Resume profile"
+            src={previewUrl}
+            alt="Resume Studio profile"
             className="h-16 w-16 rounded-lg border border-border/60 object-cover"
           />
           <div className="flex flex-wrap gap-2">
@@ -222,33 +263,54 @@ export function PictureSection({
 }
 
 type BasicsSectionProps = {
+  resumeJson: DesignResumeJson;
   basics: Record<string, unknown>;
   onUpdateBasics: (path: string, value: unknown) => void;
 };
 
-export function BasicsSection({ basics, onUpdateBasics }: BasicsSectionProps) {
+export function BasicsSection({
+  resumeJson,
+  basics,
+  onUpdateBasics,
+}: BasicsSectionProps) {
   return (
     <div className="grid gap-3">
       {[
-        ["name", "Name"],
-        ["headline", "Headline"],
-        ["email", "Email"],
-        ["phone", "Phone"],
-        ["location", "Location"],
-        ["website.url", "Website"],
-      ].map(([path, label]) => (
+        { path: "name", label: "Name", ai: false },
+        { path: "headline", label: "Headline", ai: true },
+        { path: "email", label: "Email", ai: false },
+        { path: "phone", label: "Phone", ai: false },
+        { path: "location", label: "Location", ai: false },
+        { path: "website.url", label: "Website", ai: false },
+      ].map(({ path, label, ai }) => (
         <div key={path} className="grid gap-2">
           <label className={labelClassName} htmlFor={fieldId("basics", path)}>
             {label}
           </label>
-          <Input
-            id={fieldId("basics", path)}
-            value={toText(getByPath(basics, path))}
-            onChange={(event) =>
-              onUpdateBasics(path, event.currentTarget.value)
-            }
-            className={fieldClassName}
-          />
+          <div className="relative">
+            <Input
+              id={fieldId("basics", path)}
+              value={toText(getByPath(basics, path))}
+              onChange={(event) =>
+                onUpdateBasics(path, event.currentTarget.value)
+              }
+              className={cn(fieldClassName, ai && "pr-11")}
+            />
+            {ai ? (
+              <div className="-translate-y-1/2 absolute right-1.5 top-1/2">
+                <DesignResumeFieldAssistant
+                  resumeJson={resumeJson}
+                  fieldPath={`basics.${path}`}
+                  label={label}
+                  value={toText(getByPath(basics, path))}
+                  valueType="plain_text"
+                  section="Basics"
+                  onApply={(next) => onUpdateBasics(path, next)}
+                  triggerClassName="bg-background/80 hover:bg-accent"
+                />
+              </div>
+            ) : null}
+          </div>
         </div>
       ))}
     </div>
@@ -256,12 +318,16 @@ export function BasicsSection({ basics, onUpdateBasics }: BasicsSectionProps) {
 }
 
 type BasicsCustomFieldsSectionProps = {
+  title: string;
   customFields: Record<string, unknown>[];
+  onUpdateTitle: (title: string) => void;
   onChange: (nextFields: Record<string, unknown>[]) => void;
 };
 
 export function BasicsCustomFieldsSection({
+  title,
   customFields,
+  onUpdateTitle,
   onChange,
 }: BasicsCustomFieldsSectionProps) {
   const moveField = (index: number, direction: -1 | 1) => {
@@ -275,6 +341,20 @@ export function BasicsCustomFieldsSection({
 
   return (
     <div className="space-y-3">
+      <div className="grid gap-2">
+        <label
+          className={labelClassName}
+          htmlFor={fieldId("custom-fields", "title")}
+        >
+          Section title
+        </label>
+        <Input
+          id={fieldId("custom-fields", "title")}
+          value={title}
+          onChange={(event) => onUpdateTitle(event.currentTarget.value)}
+          className={fieldClassName}
+        />
+      </div>
       {customFields.map((field, index) => (
         <div
           key={toText(field.id, `field-${index}`)}
@@ -282,8 +362,9 @@ export function BasicsCustomFieldsSection({
         >
           <div className="grid gap-3">
             {[
+              ["title", "Title"],
               ["icon", "Icon"],
-              ["text", "Text"],
+              ["text", "Value"],
               ["link", "Link"],
             ].map(([key, label]) => (
               <div key={key} className="grid gap-2">
@@ -349,7 +430,8 @@ export function BasicsCustomFieldsSection({
           onChange([
             ...customFields,
             {
-              id: crypto.randomUUID(),
+              id: createId(),
+              title: "",
               icon: "",
               text: "",
               link: "",
@@ -365,11 +447,13 @@ export function BasicsCustomFieldsSection({
 }
 
 type SummarySectionProps = {
+  resumeJson: DesignResumeJson;
   summary: Record<string, unknown>;
   onUpdateSummary: (key: string, value: unknown) => void;
 };
 
 export function SummarySection({
+  resumeJson,
   summary,
   onUpdateSummary,
 }: SummarySectionProps) {
@@ -391,11 +475,25 @@ export function SummarySection({
           onCheckedChange={(checked) => onUpdateSummary("hidden", !checked)}
         />
       </div>
-      <RichTextEditor
-        value={toText(summary.content)}
-        onChange={(next) => onUpdateSummary("content", next)}
-        placeholder="Summarize the story your resume should tell."
-      />
+      <div className="grid gap-2">
+        <RichTextEditor
+          value={toText(summary.content)}
+          onChange={(next) => onUpdateSummary("content", next)}
+          placeholder="Summarize the story your resume should tell."
+          toolbarEnd={
+            <DesignResumeFieldAssistant
+              resumeJson={resumeJson}
+              fieldPath="summary.content"
+              label="Summary"
+              value={toText(summary.content)}
+              valueType="html"
+              section="Summary"
+              onApply={(next) => onUpdateSummary("content", next)}
+              triggerClassName="bg-background/80 hover:bg-accent"
+            />
+          }
+        />
+      </div>
     </div>
   );
 }

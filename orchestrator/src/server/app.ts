@@ -20,6 +20,7 @@ import { logger } from "@infra/logger";
 import { runWithRequestContext } from "@infra/request-context";
 import { sanitizeUnknown } from "@infra/sanitize";
 import { verifyToken } from "@server/auth/jwt";
+import { getJobOpsAppConfig } from "@server/config/app-mode";
 import { isDemoMode } from "@server/config/demo";
 import * as usersRepo from "@server/repositories/users";
 import { proxyChallengeViewerRequest } from "@server/services/challenge-viewer";
@@ -61,9 +62,31 @@ const ALLOWED_UMAMI_PROXY_METHODS = new Map<string, string[]>([
   ["/script.js", ["GET", "HEAD"]],
   ["/api/send", ["POST"]],
 ]);
+const ANALYTICS_DISABLED_TRUTHY_VALUES = new Set(["1", "true", "yes", "on"]);
+const UMAMI_SCRIPT_PATTERN =
+  /\s*<script\s+defer\s+src="https:\/\/umami\.dakheera47\.com\/script\.js"\s+data-website-id="0dc42ed1-87c3-4ac0-9409-5a9b9588fe66"\s*><\/script>/;
+const OPENPANEL_SCRIPT_PATTERN =
+  /\s*<script>\s*window\.op =[\s\S]*?window\.op\("init", \{[\s\S]*?\n\s*}\);\s*<\/script>\s*<script src="https:\/\/openpanel\.dev\/op1\.js" defer async><\/script>/;
 
 function isStatsRoute(path: string): boolean {
   return path === "/stats" || path.startsWith("/stats/");
+}
+
+function isAnalyticsDisabled(): boolean {
+  const normalized = process.env.JOBOPS_DISABLE_ANALYTICS?.trim().toLowerCase();
+  return normalized ? ANALYTICS_DISABLED_TRUTHY_VALUES.has(normalized) : false;
+}
+
+function renderHtmlWithAnalyticsConfig(html: string): string {
+  if (!isAnalyticsDisabled()) return html;
+  const withoutAnalytics = html
+    .replace(UMAMI_SCRIPT_PATTERN, "")
+    .replace(OPENPANEL_SCRIPT_PATTERN, "");
+  if (!withoutAnalytics.includes("</head>")) return withoutAnalytics;
+  return withoutAnalytics.replace(
+    "</head>",
+    "    <script>window.__JOBOPS_ANALYTICS_DISABLED__=true;</script>\n  </head>",
+  );
 }
 
 function getUmamiUpstreamUrl(originalUrl: string): URL {
@@ -170,6 +193,8 @@ export function createAuthGuard() {
     const normalizedPath = path.split("?")[0] || path;
 
     // Explicitly allowed public API routes
+    if (normalizedPath === "/api/demo/info") return true;
+    if (normalizedPath === "/api/app/status") return true;
     if (normalizedPath === "/api/profile/status") return true;
     if (
       normalizedMethod === "POST" &&
@@ -187,6 +212,7 @@ export function createAuthGuard() {
       normalizedMethod === "POST" &&
       (normalizedPath === "/api/auth/login" ||
         normalizedPath === "/api/auth/logout" ||
+        normalizedPath === "/api/auth/signup" ||
         normalizedPath === "/api/auth/setup")
     )
       return true;
@@ -199,7 +225,7 @@ export function createAuthGuard() {
       ["GET", "HEAD"].includes(normalizedMethod) &&
       /^\/api\/design-resume\/assets\/[^/]+\/content$/.test(normalizedPath)
     )
-      return true;
+      return getJobOpsAppConfig().appMode !== "hosted";
     if (
       ["GET", "HEAD"].includes(normalizedMethod) &&
       /^\/api\/[^/]+\/health$/.test(normalizedPath)
@@ -311,6 +337,8 @@ export function createAuthGuard() {
 }
 
 export function createApp() {
+  getJobOpsAppConfig();
+
   const app = express();
   const authGuard = createAuthGuard();
   const corsMiddleware = cors();
@@ -425,6 +453,11 @@ export function createApp() {
   });
 
   app.all(/^\/stats(?:\/.*)?$/, async (req, res) => {
+    if (isAnalyticsDisabled()) {
+      res.status(404).type("text/plain; charset=utf-8").send("Not found");
+      return;
+    }
+
     const upstreamUrl = getUmamiUpstreamUrl(req.originalUrl);
     if (!isAllowedUmamiProxyPath(upstreamUrl.pathname)) {
       res.status(404).type("text/plain; charset=utf-8").send("Not found");
@@ -525,7 +558,7 @@ export function createApp() {
           cachedDocsIndexHtml = await readFile(docsIndexPath, "utf-8");
         }
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.send(cachedDocsIndexHtml);
+        res.send(renderHtmlWithAnalyticsConfig(cachedDocsIndexHtml));
       });
     }
 
@@ -544,7 +577,7 @@ export function createApp() {
         cachedIndexHtml = await readFile(indexPath, "utf-8");
       }
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(cachedIndexHtml);
+      res.send(renderHtmlWithAnalyticsConfig(cachedIndexHtml));
     });
   }
 

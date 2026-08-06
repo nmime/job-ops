@@ -1,6 +1,7 @@
 // src/server/services/modelSelection.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as settingsRepo from "../repositories/settings";
+import { resolveLlmModel, resolveLlmRuntimeSettings } from "./modelSelection";
 import { pickProjectIdsForJob } from "./projectSelection";
 import { scoreJobSuitability } from "./scorer";
 import { getEffectiveSettings } from "./settings";
@@ -56,6 +57,14 @@ describe("Model Selection Logic", () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
+        output_text: JSON.stringify({
+          score: 50,
+          explanation: "ok",
+          summary: "sum",
+          headline: "head",
+          skills: [],
+          selectedProjectIds: ["1"],
+        }),
         choices: [
           {
             message: {
@@ -220,6 +229,285 @@ describe("Model Selection Logic", () => {
       const body = JSON.parse(fetchCall[1]?.body as string);
       expect(body.model).toBe("global-model");
     });
+
+    it("should use a purpose-specific paid provider while default provider stays local", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "",
+        llmPurposeApiKeys: JSON.stringify({ tailoring: "sk-purpose" }),
+      });
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "llama3.2",
+          default: "llama3.2",
+          override: "llama3.2",
+        },
+        modelScorer: { value: "llama3.2", override: null },
+        modelTailoring: {
+          value: "gpt-5.4-mini",
+          override: "gpt-5.4-mini",
+        },
+        modelProjectSelection: { value: "llama3.2", override: null },
+        llmProvider: {
+          value: "ollama",
+          default: "ollama",
+          override: "ollama",
+        },
+        llmBaseUrl: {
+          value: "http://localhost:11434",
+          default: "http://localhost:11434",
+          override: null,
+        },
+        llmPurposeOverrides: {
+          value: {
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+          },
+          default: {},
+          override: {
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+          },
+        },
+      } as any);
+
+      await generateTailoring("job desc", {});
+
+      const fetchCall = vi.mocked(fetch).mock.calls[0];
+      expect(fetchCall[0]).toBe("https://api.openai.com/v1/responses");
+      expect(fetchCall[1]?.headers).toMatchObject({
+        Authorization: "Bearer sk-purpose",
+      });
+      const body = JSON.parse(fetchCall[1]?.body as string);
+      expect(body.model).toBe("gpt-5.4-mini");
+    });
+
+    it("ignores malformed stored purpose API keys", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "sk-global",
+        llmPurposeApiKeys: JSON.stringify({ tailoring: 123 }),
+      });
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "llama3.2",
+          default: "llama3.2",
+          override: "llama3.2",
+        },
+        modelScorer: { value: "llama3.2", override: null },
+        modelTailoring: {
+          value: "gpt-5.4-mini",
+          override: "gpt-5.4-mini",
+        },
+        modelProjectSelection: { value: "llama3.2", override: null },
+        llmProvider: {
+          value: "ollama",
+          default: "ollama",
+          override: "ollama",
+        },
+        llmBaseUrl: {
+          value: "http://localhost:11434",
+          default: "http://localhost:11434",
+          override: null,
+        },
+        llmPurposeOverrides: {
+          value: {
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+          },
+          default: {},
+          override: {
+            tailoring: { provider: "openai", model: "gpt-5.4-mini" },
+          },
+        },
+      } as any);
+
+      await expect(
+        resolveLlmRuntimeSettings("tailoring"),
+      ).resolves.toMatchObject({
+        apiKey: "sk-global",
+        provider: "openai",
+      });
+    });
+
+    it("uses GLM defaults for a purpose-specific provider override", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "sk-global",
+        llmPurposeApiKeys: JSON.stringify({ scoring: "sk-glm" }),
+      });
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "llama3.2",
+          default: "llama3.2",
+          override: "llama3.2",
+        },
+        modelScorer: { value: "glm-5.1", override: null },
+        modelTailoring: { value: "llama3.2", override: null },
+        modelProjectSelection: { value: "llama3.2", override: null },
+        llmProvider: {
+          value: "ollama",
+          default: "ollama",
+          override: "ollama",
+        },
+        llmBaseUrl: {
+          value: "http://localhost:11434",
+          default: "http://localhost:11434",
+          override: null,
+        },
+        llmPurposeOverrides: {
+          value: {
+            scoring: { provider: "glm" },
+          },
+          default: {},
+          override: {
+            scoring: { provider: "glm" },
+          },
+        },
+      } as any);
+
+      await expect(resolveLlmRuntimeSettings("scoring")).resolves.toMatchObject(
+        {
+          provider: "glm",
+          model: "glm-5.1",
+          baseUrl: "https://api.z.ai/api/paas/v4",
+          apiKey: "sk-glm",
+        },
+      );
+    });
+
+    it("uses Anthropic defaults for a purpose-specific provider override", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "sk-global",
+        llmPurposeApiKeys: JSON.stringify({ tailoring: "sk-ant" }),
+      });
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "llama3.2",
+          default: "llama3.2",
+          override: "llama3.2",
+        },
+        modelScorer: { value: "llama3.2", override: null },
+        modelTailoring: { value: "claude-sonnet-4-6", override: null },
+        modelProjectSelection: { value: "llama3.2", override: null },
+        llmProvider: {
+          value: "ollama",
+          default: "ollama",
+          override: "ollama",
+        },
+        llmBaseUrl: {
+          value: "http://localhost:11434",
+          default: "http://localhost:11434",
+          override: null,
+        },
+        llmPurposeOverrides: {
+          value: {
+            tailoring: { provider: "anthropic" },
+          },
+          default: {},
+          override: {
+            tailoring: { provider: "anthropic" },
+          },
+        },
+      } as any);
+
+      await expect(
+        resolveLlmRuntimeSettings("tailoring"),
+      ).resolves.toMatchObject({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        baseUrl: "https://api.anthropic.com",
+        apiKey: "sk-ant",
+      });
+    });
+
+    it("does not carry stale OpenRouter base URLs into native Anthropic", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "sk-ant",
+      });
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "claude-sonnet-4-6",
+          default: "claude-sonnet-4-6",
+          override: null,
+        },
+        modelScorer: { value: "claude-sonnet-4-6", override: null },
+        modelTailoring: { value: "claude-sonnet-4-6", override: null },
+        modelProjectSelection: { value: "claude-sonnet-4-6", override: null },
+        llmProvider: {
+          value: "anthropic",
+          default: "anthropic",
+          override: "anthropic",
+        },
+        llmBaseUrl: {
+          value: "https://openrouter.ai",
+          default: "https://openrouter.ai",
+          override: "https://openrouter.ai",
+        },
+        llmPurposeOverrides: {
+          value: {},
+          default: {},
+          override: {},
+        },
+      } as any);
+
+      await expect(
+        resolveLlmRuntimeSettings("tailoring"),
+      ).resolves.toMatchObject({
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        baseUrl: "https://api.anthropic.com",
+        apiKey: "sk-ant",
+      });
+    });
+
+    it("uses the Codex default model when tailoring uses Codex with no model override", async () => {
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({});
+      vi.mocked(getEffectiveSettings).mockResolvedValue({
+        model: {
+          value: "llama3.2",
+          default: "llama3.2",
+          override: "llama3.2",
+        },
+        modelScorer: { value: "llama3.2", override: null },
+        modelTailoring: { value: "", override: null },
+        modelProjectSelection: { value: "llama3.2", override: null },
+        llmProvider: {
+          value: "ollama",
+          default: "ollama",
+          override: "ollama",
+        },
+        llmBaseUrl: {
+          value: "http://localhost:11434",
+          default: "http://localhost:11434",
+          override: null,
+        },
+        llmPurposeOverrides: {
+          value: {
+            tailoring: { provider: "codex" },
+          },
+          default: {},
+          override: {
+            tailoring: { provider: "codex" },
+          },
+        },
+      } as any);
+
+      await expect(resolveLlmModel("tailoring")).resolves.toBe("gpt-5.4-mini");
+      await expect(
+        resolveLlmRuntimeSettings("tailoring"),
+      ).resolves.toMatchObject({
+        provider: "codex",
+        model: "gpt-5.4-mini",
+      });
+    });
+
+    it("resolves OPENROUTER_API_KEY from env when no stored key is set", async () => {
+      delete process.env.LLM_API_KEY;
+      process.env.OPENROUTER_API_KEY = "sk-openrouter-only";
+      vi.mocked(settingsRepo.getAllSettings).mockResolvedValue({
+        llmApiKey: "",
+      });
+
+      await expect(resolveLlmRuntimeSettings()).resolves.toMatchObject({
+        provider: "openrouter",
+        apiKey: "sk-openrouter-only",
+      });
+    });
   });
 
   describe("Project Selection Service", () => {
@@ -249,7 +537,7 @@ describe("Model Selection Logic", () => {
       } as any);
 
       await pickProjectIdsForJob({
-        jobDescription: "desc",
+        jobDescription: "<p>desc</p>",
         eligibleProjects: [
           {
             id: "1",
@@ -264,6 +552,10 @@ describe("Model Selection Logic", () => {
       const fetchCall = vi.mocked(fetch).mock.calls[0];
       const body = JSON.parse(fetchCall[1]?.body as string);
       expect(body.model).toBe("specific-project-model");
+      expect(body.messages[0].content).not.toContain("<p>");
+      expect(body.messages[0].content).toContain(
+        'Candidate projects (pick from these IDs only):\n[{"id":"1"',
+      );
     });
 
     it("should fall back to global model when specific not set", async () => {

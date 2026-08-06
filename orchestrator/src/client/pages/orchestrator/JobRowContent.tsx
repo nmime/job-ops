@@ -1,5 +1,7 @@
+import { isAwaitingAiScore } from "@client/components";
 import type { JobListItem } from "@shared/types.js";
-import { Loader2 } from "lucide-react";
+import { Loader2, XCircle } from "lucide-react";
+import { Tip } from "@/client/components/Tip";
 import { isPdfRegenerating, isPdfStale } from "@/client/lib/pdf-freshness";
 import { cn } from "@/lib/utils";
 import { defaultStatusToken, statusTokens } from "./constants";
@@ -8,6 +10,7 @@ interface JobRowContentProps {
   job: JobListItem;
   isSelected?: boolean;
   showStatusDot?: boolean;
+  showSuitabilityScore?: boolean;
   statusDotClassName?: string;
   className?: string;
 }
@@ -22,10 +25,12 @@ export const JobRowContent = ({
   job,
   isSelected = false,
   showStatusDot = true,
+  showSuitabilityScore = true,
   statusDotClassName,
   className,
 }: JobRowContentProps) => {
   const hasScore = job.suitabilityScore != null;
+  const isAwaitingAi = isAwaitingAiScore(job);
   const statusToken = statusTokens[job.status] ?? defaultStatusToken;
   const suitabilityTone = getSuitabilityScoreTone(job.suitabilityScore ?? 0);
   const showStalePdf = isPdfStale(job);
@@ -81,13 +86,37 @@ export const JobRowContent = ({
         )}
       </div>
 
-      {hasScore && (
+      {showSuitabilityScore && hasScore ? (
         <div className="shrink-0 text-right">
           <span className={cn("text-sm tabular-nums", suitabilityTone)}>
             {job.suitabilityScore}
           </span>
         </div>
-      )}
+      ) : showSuitabilityScore && isAwaitingAi ? (
+        <div className="shrink-0 text-right">
+          <Tip
+            content="Waiting for AI scoring to finish."
+            contentClassName="max-w-60 text-xs"
+          >
+            <Loader2
+              aria-label="Waiting for AI scoring to finish."
+              className="h-4 w-4 animate-spin text-muted-foreground"
+            />
+          </Tip>
+        </div>
+      ) : showSuitabilityScore ? (
+        <div className="shrink-0 text-right">
+          <Tip
+            content="AI misconfiguration or service error. Please check your settings and AI service status."
+            contentClassName="max-w-60 text-xs"
+          >
+            <XCircle
+              aria-label="AI misconfiguration or service error."
+              className="h-4 w-4 text-destructive"
+            />
+          </Tip>
+        </div>
+      ) : null}
     </div>
   );
 };

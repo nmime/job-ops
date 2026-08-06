@@ -99,7 +99,7 @@ describe.sequential("Auth read-only enforcement", () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it("allows Design Resume asset content without auth for PDF rendering", async () => {
+  it("allows Resume Studio asset content without auth for PDF rendering", async () => {
     vi.mocked(countUsers).mockResolvedValue(1);
 
     const { middleware } = createAuthGuard();
@@ -132,6 +132,25 @@ describe.sequential("Auth read-only enforcement", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(next).toHaveBeenCalledOnce();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("allows demo info before first-run account setup", async () => {
+    vi.mocked(countUsers).mockResolvedValue(0);
+
+    const { middleware } = createAuthGuard();
+    const req = createMockRequest({
+      method: "GET",
+      path: "/api/demo/info",
+    });
+    const res = createMockResponse();
+    const next = vi.fn() as NextFunction;
+
+    middleware(req, res, next);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(countUsers).not.toHaveBeenCalled();
     expect(res.status).not.toHaveBeenCalled();
   });
 

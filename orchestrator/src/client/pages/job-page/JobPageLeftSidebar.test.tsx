@@ -24,21 +24,34 @@ describe("JobPageLeftSidebar score ring", () => {
     [70, "border-emerald-400/60"],
     [65, "border-amber-400/60"],
     [59, "border-slate-500/55"],
-    [null, "border-border/60"],
+    [null, "border-destructive/40"],
   ])("uses the expected band for score %s", (score, expectedClass) => {
-    renderSidebar({ suitabilityScore: score });
+    renderSidebar({ suitabilityScore: score, suitabilityReason: null });
 
     const ring = screen.getByRole("img", {
       name:
         score === null
-          ? "Suitability score not available"
+          ? "AI misconfiguration or service error. Please check your settings and AI service status."
           : `Suitability score ${score}`,
     });
 
     expect(ring).toHaveClass(expectedClass);
     expect(
-      within(ring).getByText(score === null ? "—" : String(score)),
+      within(ring).getByText(score === null ? "!" : String(score)),
     ).toBeInTheDocument();
+  });
+
+  it("renders an interactive button when suitabilityReason is present", () => {
+    renderSidebar({
+      suitabilityScore: 85,
+      suitabilityReason: "Strong match because of TypeScript skills",
+    });
+
+    const button = screen.getByRole("button", {
+      name: "View fit assessment",
+    });
+    expect(button).toBeInTheDocument();
+    expect(within(button).getByText("85")).toBeInTheDocument();
   });
 });
 
@@ -55,5 +68,12 @@ describe("JobPageLeftSidebar application details", () => {
 
     expect(screen.getByText("Applied")).toBeInTheDocument();
     expect(screen.getByText(/1 May 2026/)).toBeInTheDocument();
+  });
+
+  it("shows the source posting age when available", () => {
+    renderSidebar({ datePosted: "1 hour ago" });
+
+    expect(screen.getByText("Posted")).toBeInTheDocument();
+    expect(screen.getByText("1 hour ago")).toBeInTheDocument();
   });
 });

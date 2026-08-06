@@ -4,6 +4,7 @@
 
 import { logger } from "@infra/logger";
 import type { ResumeProfile } from "@shared/types";
+import { stripHtmlTags } from "@shared/utils/string";
 import type { JsonSchemaDefinition } from "./llm/types";
 import { createConfiguredLlmService, resolveLlmModel } from "./modelSelection";
 import {
@@ -90,7 +91,7 @@ export async function generateTailoring(
     writingStyle,
   );
 
-  const llm = await createConfiguredLlmService();
+  const llm = await createConfiguredLlmService("tailoring");
   const result = await llm.callJson<TailoredData>({
     model,
     messages: [{ role: "user", content: prompt }],
@@ -148,9 +149,11 @@ async function buildTailoringPrompt(
   jd: string,
   writingStyle: Awaited<ReturnType<typeof getWritingStyle>>,
 ): Promise<string> {
+  const jobDescription = stripHtmlTags(jd);
   const resolvedLanguage = resolveWritingOutputLanguage({
     style: writingStyle,
     profile,
+    jobDescription,
   });
   const outputLanguage = getWritingLanguageLabel(resolvedLanguage.language);
   let effectiveConstraints = stripLanguageDirectivesFromConstraints(
@@ -187,8 +190,8 @@ async function buildTailoringPrompt(
   const template = await getEffectivePromptTemplate("tailoringPromptTemplate");
 
   return renderPromptTemplate(template, {
-    jobDescription: jd,
-    profileJson: JSON.stringify(relevantProfile, null, 2),
+    jobDescription,
+    profileJson: JSON.stringify(relevantProfile),
     outputLanguage,
     tone: writingStyle.tone,
     formality: writingStyle.formality,

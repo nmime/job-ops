@@ -1,19 +1,68 @@
 import type { JobListItem, StageEvent } from "@shared/types";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { celebrateOffer } from "@/client/lib/celebrate";
 import * as api from "../api";
 import { renderWithQueryClient } from "../test/renderWithQueryClient";
 import { InProgressBoardPage } from "./InProgressBoardPage";
 
+vi.mock("@/components/ui/dropdown-menu", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/ui/dropdown-menu")>();
+
+  return {
+    ...actual,
+    DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
+    DropdownMenuTrigger: ({ children }: { children: ReactNode }) => (
+      <>{children}</>
+    ),
+    DropdownMenuContent: ({ children }: { children: ReactNode }) => (
+      <div role="menu">{children}</div>
+    ),
+    DropdownMenuItem: ({
+      children,
+      onSelect,
+      disabled,
+    }: {
+      children: ReactNode;
+      onSelect?: () => void;
+      disabled?: boolean;
+    }) => (
+      <button
+        type="button"
+        role="menuitem"
+        disabled={disabled}
+        onClick={onSelect}
+      >
+        {children}
+      </button>
+    ),
+  };
+});
+
 const render = (ui: Parameters<typeof renderWithQueryClient>[0]) =>
   renderWithQueryClient(ui);
+
+const getBoardCardRoot = (cardTitle: HTMLElement): HTMLElement => {
+  const cardRoot = cardTitle.closest("div.rounded-lg");
+  if (!cardRoot) {
+    throw new Error("Board card root not found");
+  }
+  return cardRoot as HTMLElement;
+};
 
 vi.mock("../api", () => ({
   getJobs: vi.fn(),
   getJobStageEvents: vi.fn(),
   transitionJobStage: vi.fn(),
+  updateJobStageEvent: vi.fn(),
+}));
+
+vi.mock("@/client/lib/celebrate", () => ({
+  celebrateOffer: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -23,9 +72,49 @@ vi.mock("sonner", () => ({
   },
 }));
 
+vi.mock("@client/components/LogEventModal", () => {
+  const { useState } = require("react");
+  return {
+    LogEventModal: ({ isOpen, onLog, onClose, jobTitle, employer }: any) => {
+      const [title, setTitle] = useState("Update");
+      const [stage, setStage] = useState("no_change");
+      return isOpen ? (
+        <div data-testid="log-event-modal">
+          <div>
+            Record a new update or stage change for {jobTitle} at {employer}.
+          </div>
+          <input
+            placeholder="e.g. Recruiter Screen"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <select
+            data-testid="mock-stage-select"
+            value={stage}
+            onChange={(e) => setStage(e.target.value)}
+          >
+            <option value="no_change">No Change</option>
+            <option value="offer">Offer</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => onLog({ title, stage, date: "2026-06-12" })}
+          >
+            Log Event
+          </button>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      ) : null;
+    },
+  };
+});
+
 const makeJob = (overrides: Partial<JobListItem>): JobListItem => ({
   id: "job-1",
   source: "manual",
+  sourceJobId: null,
   title: "Backend Engineer",
   employer: "Acme",
   jobUrl: "https://example.com/jobs/1",
@@ -154,6 +243,67 @@ describe("InProgressBoardPage", () => {
         },
       });
     });
+
+    expect(celebrateOffer).toHaveBeenCalled();
+  });
+
+  it("opens the log event modal from the card menu without navigating", async () => {
+    render(
+      <MemoryRouter>
+        <InProgressBoardPage />
+      </MemoryRouter>,
+    );
+
+    const cardRoot = getBoardCardRoot(
+      await screen.findByText("Backend Engineer"),
+    );
+
+    fireEvent.click(
+      within(cardRoot).getByRole("menuitem", { name: /log event/i }),
+    );
+
+    expect(screen.getByTestId("log-event-modal")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /record a new update or stage change for backend engineer at acme/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("logs an event from the board menu", async () => {
+    render(
+      <MemoryRouter>
+        <InProgressBoardPage />
+      </MemoryRouter>,
+    );
+
+    const cardRoot = getBoardCardRoot(
+      await screen.findByText("Backend Engineer"),
+    );
+
+    fireEvent.click(
+      within(cardRoot).getByRole("menuitem", { name: /log event/i }),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("e.g. Recruiter Screen"), {
+      target: { value: "Phone screen" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^log event$/i }));
+
+    await waitFor(() => {
+      expect(api.transitionJobStage).toHaveBeenCalledWith(
+        "job-1",
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            eventLabel: "Phone screen",
+            actor: "user",
+          }),
+        }),
+      );
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Event logged");
+    expect(celebrateOffer).not.toHaveBeenCalled();
   });
 
   it("surfaces load errors", async () => {
@@ -168,5 +318,42 @@ describe("InProgressBoardPage", () => {
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("Failed to load board");
     });
+  });
+
+  it("triggers celebrateOffer when logging a stage event to Offer stage from board menu", async () => {
+    render(
+      <MemoryRouter>
+        <InProgressBoardPage />
+      </MemoryRouter>,
+    );
+
+    const cardRoot = getBoardCardRoot(
+      await screen.findByText("Backend Engineer"),
+    );
+
+    fireEvent.click(
+      within(cardRoot).getByRole("menuitem", { name: /log event/i }),
+    );
+
+    fireEvent.change(screen.getByTestId("mock-stage-select"), {
+      target: { value: "offer" },
+    });
+
+    fireEvent.change(screen.getByPlaceholderText("e.g. Recruiter Screen"), {
+      target: { value: "Got Offer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^log event$/i }));
+
+    await waitFor(() => {
+      expect(api.transitionJobStage).toHaveBeenCalledWith(
+        "job-1",
+        expect.objectContaining({
+          toStage: "offer",
+        }),
+      );
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Event logged");
+    expect(celebrateOffer).toHaveBeenCalled();
   });
 });

@@ -49,6 +49,76 @@ function addTenantColumn(tableName: string): void {
   );
 }
 
+function addUserColumn(tableName: string): void {
+  if (!tableExists(tableName) || tableHasColumn(tableName, "user_id")) {
+    return;
+  }
+  sqlite.exec(`ALTER TABLE ${tableName} ADD COLUMN user_id TEXT`);
+}
+
+function tenantOwnerFor(tableName: string): string {
+  return `(SELECT tenant_memberships.user_id
+    FROM tenant_memberships
+    WHERE tenant_memberships.tenant_id = ${tableName}.tenant_id
+    ORDER BY CASE tenant_memberships.role WHEN 'owner' THEN 0 ELSE 1 END,
+      tenant_memberships.created_at ASC,
+      tenant_memberships.user_id ASC
+    LIMIT 1)`;
+}
+
+function backfillUserFromTenantOwner(tableName: string): void {
+  if (
+    !tableExists(tableName) ||
+    !tableHasColumn(tableName, "tenant_id") ||
+    !tableHasColumn(tableName, "user_id")
+  ) {
+    return;
+  }
+
+  sqlite.exec(`
+    UPDATE ${tableName}
+    SET user_id = COALESCE(user_id, ${tenantOwnerFor(tableName)})
+    WHERE user_id IS NULL
+  `);
+}
+
+function backfillUserFromParent(args: {
+  tableName: string;
+  parentTableName: string;
+  localColumnName: string;
+  parentColumnName: string;
+}): void {
+  if (
+    !tableExists(args.tableName) ||
+    !tableExists(args.parentTableName) ||
+    !tableHasColumn(args.tableName, "user_id") ||
+    !tableHasColumn(args.parentTableName, "user_id") ||
+    !tableHasColumn(args.tableName, args.localColumnName) ||
+    !tableHasColumn(args.parentTableName, args.parentColumnName)
+  ) {
+    return;
+  }
+
+  sqlite.exec(`
+    UPDATE ${args.tableName}
+    SET user_id = (
+      SELECT ${args.parentTableName}.user_id
+      FROM ${args.parentTableName}
+      WHERE ${args.parentTableName}.${args.parentColumnName} =
+        ${args.tableName}.${args.localColumnName}
+      LIMIT 1
+    )
+    WHERE user_id IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM ${args.parentTableName}
+        WHERE ${args.parentTableName}.${args.parentColumnName} =
+          ${args.tableName}.${args.localColumnName}
+          AND ${args.parentTableName}.user_id IS NOT NULL
+      )
+  `);
+}
+
 function hashPasswordSync(password: string): {
   passwordHash: string;
   passwordSalt: string;
@@ -67,6 +137,10 @@ const pipelineRunsHasConfigSnapshot = tableHasColumn(
 const pipelineRunsHasTenantId = tableHasColumn("pipeline_runs", "tenant_id");
 const jobsHasPdfRegenerating = tableHasColumn("jobs", "pdf_regenerating");
 const jobsHasJobBrief = tableHasColumn("jobs", "job_brief");
+const watchlistJobStatesHasUserId = tableHasColumn(
+  "watchlist_job_states",
+  "user_id",
+);
 
 const migrations = [
   `CREATE TABLE IF NOT EXISTS tenants (
@@ -102,6 +176,39 @@ const migrations = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
     UNIQUE(user_id, tenant_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS hosted_usage_counters (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('job_search', 'pipeline_run', 'tailoring', 'ghostwriter', 'pdf_export')),
+    used_units INTEGER NOT NULL DEFAULT 0,
+    reserved_units INTEGER NOT NULL DEFAULT 0,
+    limit_units INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, period, action)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS hosted_usage_reservations (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('job_search', 'pipeline_run', 'tailoring', 'ghostwriter', 'pdf_export')),
+    reserved_units INTEGER NOT NULL,
+    used_units INTEGER NOT NULL DEFAULT 0,
+    refunded_units INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK(status IN ('reserved', 'settled', 'refunded')),
+    idempotency_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
 
   `CREATE TABLE IF NOT EXISTS jobs (
@@ -199,6 +306,62 @@ const migrations = [
     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
   )`,
 
+  `CREATE TABLE IF NOT EXISTS watchlist_job_states (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'ignored' CHECK(state IN ('ignored', 'moved_to_workspace')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, source, source_job_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS watchlist_checks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    last_checked_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS watchlist_seen_jobs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job_id TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, source, source_job_id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS watchlist_selected_sources (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    catalog_source_id TEXT,
+    label TEXT NOT NULL,
+    careers_url TEXT NOT NULL,
+    cxs_jobs_url TEXT,
+    source_type TEXT NOT NULL,
+    is_custom INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, sort_order),
+    UNIQUE(tenant_id, user_id, careers_url)
+  )`,
+
   `CREATE TABLE IF NOT EXISTS analytics_install_state (
     id TEXT PRIMARY KEY,
     distinct_id TEXT NOT NULL,
@@ -256,6 +419,33 @@ const migrations = [
 
   `CREATE INDEX IF NOT EXISTS idx_auth_sessions_revoked_at
     ON auth_sessions(revoked_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_hosted_usage_counters_tenant_user_period
+    ON hosted_usage_counters(tenant_id, user_id, period)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_hosted_usage_counters_tenant_user_period_action_unique
+    ON hosted_usage_counters(tenant_id, user_id, period, action)`,
+  `CREATE INDEX IF NOT EXISTS idx_hosted_usage_reservations_tenant_user_period
+    ON hosted_usage_reservations(tenant_id, user_id, period)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_hosted_usage_reservations_idempotency_unique
+    ON hosted_usage_reservations(tenant_id, user_id, period, action, idempotency_key)`,
+
+  `CREATE TABLE IF NOT EXISTS pipeline_search_presets (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    config TEXT NOT NULL,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, name)
+  )`,
+
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_search_presets_tenant_user_name_unique
+    ON pipeline_search_presets(tenant_id, user_id, name)`,
+
+  `CREATE INDEX IF NOT EXISTS idx_pipeline_search_presets_tenant_user_updated
+    ON pipeline_search_presets(tenant_id, user_id, updated_at)`,
 
   `CREATE TABLE IF NOT EXISTS design_resume_documents (
     id TEXT PRIMARY KEY,
@@ -289,6 +479,26 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS idx_design_resume_assets_document_id
     ON design_resume_assets(document_id)`,
 
+  `CREATE TABLE IF NOT EXISTS job_documents (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    job_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    media_type TEXT,
+    byte_size INTEGER NOT NULL,
+    storage_path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+  )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_job_documents_job_id
+    ON job_documents(job_id)`,
+
+  `CREATE INDEX IF NOT EXISTS idx_job_documents_tenant_job_id
+    ON job_documents(tenant_id, job_id)`,
+
   `CREATE TABLE IF NOT EXISTS job_chat_threads (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
@@ -300,6 +510,7 @@ const migrations = [
     active_root_message_id TEXT,
     selected_note_ids TEXT NOT NULL DEFAULT '[]',
     selected_email_ids TEXT NOT NULL DEFAULT '[]',
+    selected_document_ids TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
     FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
   )`,
@@ -738,6 +949,47 @@ const migrations = [
   FROM jobs`,
   `DROP TABLE IF EXISTS jobs`,
   `ALTER TABLE jobs_new RENAME TO jobs`,
+  `DROP TABLE IF EXISTS watchlist_job_states_new`,
+  `CREATE TABLE watchlist_job_states_new (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'ignored' CHECK(state IN ('ignored', 'moved_to_workspace')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    UNIQUE(tenant_id, user_id, source, source_job_id)
+  )`,
+  `INSERT OR IGNORE INTO watchlist_job_states_new (
+    id, tenant_id, user_id, source, source_job_id, state, created_at, updated_at
+  )
+  SELECT
+    ${
+      watchlistJobStatesHasUserId
+        ? "watchlist_job_states.id"
+        : "lower(hex(randomblob(16)))"
+    },
+    watchlist_job_states.tenant_id,
+    ${
+      watchlistJobStatesHasUserId
+        ? "watchlist_job_states.user_id"
+        : "tenant_owners.user_id"
+    },
+    watchlist_job_states.source,
+    watchlist_job_states.source_job_id,
+    watchlist_job_states.state,
+    watchlist_job_states.created_at,
+    watchlist_job_states.updated_at
+  FROM watchlist_job_states
+  ${
+    watchlistJobStatesHasUserId
+      ? ""
+      : "JOIN (SELECT tenant_id, MIN(user_id) AS user_id FROM tenant_memberships GROUP BY tenant_id) AS tenant_owners ON tenant_owners.tenant_id = watchlist_job_states.tenant_id"
+  }`,
+  `DROP TABLE IF EXISTS watchlist_job_states`,
+  `ALTER TABLE watchlist_job_states_new RENAME TO watchlist_job_states`,
   `UPDATE jobs
    SET pdf_source = 'generated'
    WHERE pdf_path IS NOT NULL
@@ -749,6 +1001,12 @@ const migrations = [
   `CREATE INDEX IF NOT EXISTS idx_jobs_tenant_status ON jobs(tenant_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_discovered_at ON jobs(discovered_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status_discovered_at ON jobs(status, discovered_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_watchlist_job_states_tenant_user_state ON watchlist_job_states(tenant_id, user_id, state)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_job_states_tenant_user_source_job_unique ON watchlist_job_states(tenant_id, user_id, source, source_job_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_checks_tenant_user_unique ON watchlist_checks(tenant_id, user_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_seen_jobs_tenant_user_source_job_unique ON watchlist_seen_jobs(tenant_id, user_id, source, source_job_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_watchlist_seen_jobs_tenant_user_last_seen ON watchlist_seen_jobs(tenant_id, user_id, last_seen_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_watchlist_selected_sources_tenant_user ON watchlist_selected_sources(tenant_id, user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started_at ON pipeline_runs(started_at)`,
   `CREATE INDEX IF NOT EXISTS idx_stage_events_application_id ON stage_events(application_id)`,
   `CREATE INDEX IF NOT EXISTS idx_stage_events_occurred_at ON stage_events(occurred_at)`,
@@ -856,6 +1114,7 @@ const migrations = [
   `ALTER TABLE job_chat_threads ADD COLUMN active_root_message_id TEXT`,
   `ALTER TABLE job_chat_threads ADD COLUMN selected_note_ids TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE job_chat_threads ADD COLUMN selected_email_ids TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE job_chat_threads ADD COLUMN selected_document_ids TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE pipeline_runs ADD COLUMN config_snapshot TEXT`,
   `ALTER TABLE analytics_install_state ADD COLUMN raw_event_replay_version INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE analytics_install_state ADD COLUMN raw_event_replay_completed_at TEXT`,
@@ -996,6 +1255,7 @@ function ensureTenantColumns(): void {
     "job_chat_runs",
     "design_resume_documents",
     "design_resume_assets",
+    "job_documents",
     "post_application_integrations",
     "post_application_sync_runs",
     "post_application_messages",
@@ -1014,22 +1274,144 @@ function ensureTenantColumns(): void {
   }
 }
 
+function ensurePrivateUserColumns(): void {
+  for (const tableName of [
+    "jobs",
+    "stage_events",
+    "tasks",
+    "job_notes",
+    "interviews",
+    "pipeline_runs",
+    "settings",
+    "job_chat_threads",
+    "job_chat_messages",
+    "job_chat_runs",
+    "design_resume_documents",
+    "design_resume_assets",
+    "job_documents",
+    "post_application_integrations",
+    "post_application_sync_runs",
+    "post_application_messages",
+    "tracer_links",
+    "tracer_click_events",
+  ]) {
+    addUserColumn(tableName);
+  }
+
+  for (const tableName of [
+    "jobs",
+    "pipeline_runs",
+    "settings",
+    "design_resume_documents",
+    "post_application_integrations",
+    "post_application_sync_runs",
+  ]) {
+    backfillUserFromTenantOwner(tableName);
+  }
+
+  for (const tableName of [
+    "stage_events",
+    "tasks",
+    "job_notes",
+    "interviews",
+  ]) {
+    backfillUserFromParent({
+      tableName,
+      parentTableName: "jobs",
+      localColumnName: "application_id",
+      parentColumnName: "id",
+    });
+    backfillUserFromTenantOwner(tableName);
+  }
+
+  for (const tableName of ["job_documents", "tracer_links"]) {
+    backfillUserFromParent({
+      tableName,
+      parentTableName: "jobs",
+      localColumnName: "job_id",
+      parentColumnName: "id",
+    });
+    backfillUserFromTenantOwner(tableName);
+  }
+
+  for (const tableName of [
+    "job_chat_threads",
+    "job_chat_messages",
+    "job_chat_runs",
+  ]) {
+    backfillUserFromParent({
+      tableName,
+      parentTableName: "jobs",
+      localColumnName: "job_id",
+      parentColumnName: "id",
+    });
+    backfillUserFromTenantOwner(tableName);
+  }
+
+  backfillUserFromParent({
+    tableName: "design_resume_assets",
+    parentTableName: "design_resume_documents",
+    localColumnName: "document_id",
+    parentColumnName: "id",
+  });
+  backfillUserFromTenantOwner("design_resume_assets");
+
+  for (const tableName of ["post_application_messages"]) {
+    backfillUserFromParent({
+      tableName,
+      parentTableName: "post_application_integrations",
+      localColumnName: "integration_id",
+      parentColumnName: "id",
+    });
+    backfillUserFromParent({
+      tableName,
+      parentTableName: "jobs",
+      localColumnName: "matched_job_id",
+      parentColumnName: "id",
+    });
+    backfillUserFromTenantOwner(tableName);
+  }
+
+  backfillUserFromParent({
+    tableName: "tracer_click_events",
+    parentTableName: "tracer_links",
+    localColumnName: "tracer_link_id",
+    parentColumnName: "id",
+  });
+  backfillUserFromTenantOwner("tracer_click_events");
+}
+
 function rebuildSettingsTable(): void {
   if (!tableExists("settings")) return;
 
   sqlite.exec(`CREATE TABLE IF NOT EXISTS settings_new (
     tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    user_id TEXT,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(tenant_id, key),
+    UNIQUE(tenant_id, user_id, key),
     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
   )`);
 
   const hasTenantId = tableHasColumn("settings", "tenant_id");
-  sqlite.exec(`INSERT OR REPLACE INTO settings_new(tenant_id, key, value, created_at, updated_at)
-    SELECT ${hasTenantId ? `COALESCE(tenant_id, ${sqlString(DEFAULT_TENANT_ID)})` : sqlString(DEFAULT_TENANT_ID)}, key, value, created_at, updated_at
+  const hasUserId = tableHasColumn("settings", "user_id");
+  const tenantExpression = hasTenantId
+    ? `COALESCE(tenant_id, ${sqlString(DEFAULT_TENANT_ID)})`
+    : sqlString(DEFAULT_TENANT_ID);
+  const ownerExpression = `(SELECT tenant_memberships.user_id
+    FROM tenant_memberships
+    WHERE tenant_memberships.tenant_id = ${tenantExpression}
+    ORDER BY CASE tenant_memberships.role WHEN 'owner' THEN 0 ELSE 1 END,
+      tenant_memberships.created_at ASC,
+      tenant_memberships.user_id ASC
+    LIMIT 1)`;
+  const userExpression = hasUserId
+    ? `COALESCE(user_id, ${ownerExpression})`
+    : ownerExpression;
+  sqlite.exec(`INSERT OR REPLACE INTO settings_new(tenant_id, user_id, key, value, created_at, updated_at)
+    SELECT ${tenantExpression}, ${userExpression}, key, value, created_at, updated_at
     FROM settings`);
   sqlite.exec("DROP TABLE IF EXISTS settings");
   sqlite.exec("ALTER TABLE settings_new RENAME TO settings");
@@ -1040,6 +1422,7 @@ function ensureTracerLinksUniqueIndex(): void {
 
   for (const columnName of [
     "tenant_id",
+    "user_id",
     "job_id",
     "source_path",
     "destination_url_hash",
@@ -1053,7 +1436,7 @@ function ensureTracerLinksUniqueIndex(): void {
         SELECT
           id,
           first_value(id) OVER (
-            PARTITION BY tenant_id, job_id, source_path, destination_url_hash
+            PARTITION BY tenant_id, coalesce(user_id, ''), job_id, source_path, destination_url_hash
             ORDER BY created_at ASC, id ASC
           ) AS keep_id
         FROM tracer_links
@@ -1077,7 +1460,7 @@ function ensureTracerLinksUniqueIndex(): void {
       SELECT
         id,
         first_value(id) OVER (
-          PARTITION BY tenant_id, job_id, source_path, destination_url_hash
+          PARTITION BY tenant_id, coalesce(user_id, ''), job_id, source_path, destination_url_hash
           ORDER BY created_at ASC, id ASC
         ) AS keep_id
       FROM tracer_links
@@ -1091,8 +1474,166 @@ function ensureTracerLinksUniqueIndex(): void {
   `);
 
   sqlite.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracer_links_tenant_job_source_destination_unique ON tracer_links(tenant_id, job_id, source_path, destination_url_hash)",
+    "DROP INDEX IF EXISTS idx_tracer_links_tenant_job_source_destination_unique",
   );
+  sqlite.exec(
+    "DROP INDEX IF EXISTS idx_tracer_links_tenant_user_job_source_destination_unique",
+  );
+  sqlite.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracer_links_tenant_user_job_source_destination_unique ON tracer_links(tenant_id, coalesce(user_id, ''), job_id, source_path, destination_url_hash)",
+  );
+}
+
+function rebuildPostApplicationPrivateTables(): void {
+  if (
+    !tableExists("post_application_integrations") ||
+    !tableExists("post_application_messages") ||
+    !tableExists("tracer_links")
+  ) {
+    return;
+  }
+
+  for (const tableName of [
+    "post_application_integrations",
+    "post_application_messages",
+    "tracer_links",
+  ]) {
+    if (
+      !tableHasColumn(tableName, "tenant_id") ||
+      !tableHasColumn(tableName, "user_id")
+    ) {
+      return;
+    }
+  }
+
+  sqlite.exec("PRAGMA foreign_keys = OFF");
+  try {
+    sqlite.exec(`
+      DROP TABLE IF EXISTS post_application_integrations_new;
+      CREATE TABLE post_application_integrations_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+        user_id TEXT,
+        provider TEXT NOT NULL CHECK(provider IN ('gmail', 'imap')),
+        account_key TEXT NOT NULL DEFAULT 'default',
+        display_name TEXT,
+        status TEXT NOT NULL DEFAULT 'disconnected' CHECK(status IN ('disconnected', 'connected', 'error')),
+        credentials TEXT,
+        last_connected_at INTEGER,
+        last_synced_at INTEGER,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(tenant_id, user_id, provider, account_key)
+      );
+      INSERT OR IGNORE INTO post_application_integrations_new (
+        id, tenant_id, user_id, provider, account_key, display_name, status,
+        credentials, last_connected_at, last_synced_at, last_error, created_at, updated_at
+      )
+      SELECT
+        id, tenant_id, user_id, provider, account_key, display_name, status,
+        credentials, last_connected_at, last_synced_at, last_error, created_at, updated_at
+      FROM post_application_integrations
+      ORDER BY created_at ASC, id ASC;
+      DROP TABLE post_application_integrations;
+      ALTER TABLE post_application_integrations_new RENAME TO post_application_integrations;
+
+      DROP TABLE IF EXISTS post_application_messages_new;
+      CREATE TABLE post_application_messages_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+        user_id TEXT,
+        provider TEXT NOT NULL CHECK(provider IN ('gmail', 'imap')),
+        account_key TEXT NOT NULL DEFAULT 'default',
+        integration_id TEXT,
+        sync_run_id TEXT,
+        external_message_id TEXT NOT NULL,
+        external_thread_id TEXT,
+        from_address TEXT NOT NULL DEFAULT '',
+        from_domain TEXT,
+        sender_name TEXT,
+        subject TEXT NOT NULL DEFAULT '',
+        received_at INTEGER NOT NULL,
+        snippet TEXT NOT NULL DEFAULT '',
+        classification_label TEXT,
+        classification_confidence REAL,
+        classification_payload TEXT,
+        relevance_llm_score REAL,
+        relevance_decision TEXT NOT NULL DEFAULT 'needs_llm' CHECK(relevance_decision IN ('relevant', 'not_relevant', 'needs_llm')),
+        match_confidence INTEGER,
+        message_type TEXT NOT NULL DEFAULT 'other' CHECK(message_type IN ('interview', 'rejection', 'offer', 'update', 'other')),
+        stage_event_payload TEXT,
+        processing_status TEXT NOT NULL DEFAULT 'pending_user' CHECK(processing_status IN ('auto_linked', 'pending_user', 'manual_linked', 'ignored')),
+        matched_job_id TEXT,
+        decided_at INTEGER,
+        decided_by TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (integration_id) REFERENCES post_application_integrations(id) ON DELETE SET NULL,
+        FOREIGN KEY (sync_run_id) REFERENCES post_application_sync_runs(id) ON DELETE SET NULL,
+        FOREIGN KEY (matched_job_id) REFERENCES jobs(id) ON DELETE SET NULL,
+        UNIQUE(tenant_id, user_id, provider, account_key, external_message_id)
+      );
+      INSERT OR IGNORE INTO post_application_messages_new (
+        id, tenant_id, user_id, provider, account_key, integration_id, sync_run_id,
+        external_message_id, external_thread_id, from_address, from_domain, sender_name,
+        subject, received_at, snippet, classification_label, classification_confidence,
+        classification_payload, relevance_llm_score, relevance_decision, match_confidence,
+        message_type, stage_event_payload, processing_status, matched_job_id, decided_at,
+        decided_by, error_code, error_message, created_at, updated_at
+      )
+      SELECT
+        id, tenant_id, user_id, provider, account_key, integration_id, sync_run_id,
+        external_message_id, external_thread_id, from_address, from_domain, sender_name,
+        subject, received_at, snippet, classification_label, classification_confidence,
+        classification_payload, relevance_llm_score, relevance_decision, match_confidence,
+        message_type, stage_event_payload, processing_status, matched_job_id, decided_at,
+        decided_by, error_code, error_message, created_at, updated_at
+      FROM post_application_messages
+      ORDER BY created_at ASC, id ASC;
+      DROP TABLE post_application_messages;
+      ALTER TABLE post_application_messages_new RENAME TO post_application_messages;
+
+      DROP TABLE IF EXISTS tracer_links_new;
+      CREATE TABLE tracer_links_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+        user_id TEXT,
+        token TEXT NOT NULL UNIQUE,
+        job_id TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        source_label TEXT NOT NULL,
+        destination_url TEXT NOT NULL,
+        destination_url_hash TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+        UNIQUE(tenant_id, user_id, job_id, source_path, destination_url_hash)
+      );
+      INSERT OR IGNORE INTO tracer_links_new (
+        id, tenant_id, user_id, token, job_id, source_path, source_label,
+        destination_url, destination_url_hash, is_active, created_at, updated_at
+      )
+      SELECT
+        id, tenant_id, user_id, token, job_id, source_path, source_label,
+        destination_url, destination_url_hash, is_active, created_at, updated_at
+      FROM tracer_links
+      ORDER BY created_at ASC, id ASC;
+      DROP TABLE tracer_links;
+      ALTER TABLE tracer_links_new RENAME TO tracer_links;
+    `);
+  } finally {
+    sqlite.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 function seedLegacyOwnerFromBasicAuth(): void {
@@ -1136,15 +1677,82 @@ function seedLegacyOwnerFromBasicAuth(): void {
   sqlite.exec("DELETE FROM auth_sessions");
 }
 
+function seedLegacyOnboardingMigration(): void {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS app_data_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+
+  const migrationId = "onboarding-markers-v1";
+  const applied = sqlite
+    .prepare("SELECT 1 FROM app_data_migrations WHERE id = ?")
+    .get(migrationId);
+  if (applied) return;
+
+  sqlite.exec(`INSERT OR IGNORE INTO settings(
+    tenant_id, user_id, key, value, created_at, updated_at
+  )
+  SELECT scopes.tenant_id, scopes.user_id, 'onboardingLegacyMigrationPending', '1', datetime('now'), datetime('now')
+  FROM (
+    SELECT tenant_id, user_id FROM settings WHERE key NOT LIKE 'onboarding%'
+    UNION
+    SELECT tenant_id, user_id FROM design_resume_documents
+  ) AS scopes
+  WHERE NOT EXISTS (
+    SELECT 1 FROM settings existing
+    WHERE existing.tenant_id = scopes.tenant_id
+      AND coalesce(existing.user_id, '') = coalesce(scopes.user_id, '')
+      AND existing.key IN (
+        'onboardingProfileCompleted',
+        'onboardingLlmCompleted',
+        'onboardingResumeConfirmedSource',
+        'onboardingLegacyMigrationPending'
+      )
+  )`);
+  sqlite
+    .prepare("INSERT INTO app_data_migrations(id) VALUES (?)")
+    .run(migrationId);
+}
+
 console.log("🔐 Applying tenancy compatibility migrations...");
 ensureTenantColumns();
+seedLegacyOwnerFromBasicAuth();
+ensurePrivateUserColumns();
+rebuildPostApplicationPrivateTables();
 rebuildSettingsTable();
+seedLegacyOnboardingMigration();
 ensureTracerLinksUniqueIndex();
+sqlite.exec("DROP INDEX IF EXISTS idx_settings_tenant_key_unique");
+sqlite.exec("DROP INDEX IF EXISTS idx_settings_tenant_user_key_unique");
 sqlite.exec(
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_tenant_key_unique ON settings(tenant_id, key)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_tenant_user_key_unique ON settings(tenant_id, coalesce(user_id, ''), key)",
+);
+sqlite.exec("DROP INDEX IF EXISTS idx_jobs_tenant_job_url_unique");
+sqlite.exec("DROP INDEX IF EXISTS idx_jobs_tenant_user_job_url_unique");
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_tenant_user_job_url_unique ON jobs(tenant_id, coalesce(user_id, ''), job_url)",
+);
+sqlite.exec("DROP INDEX IF EXISTS idx_jobs_tenant_status");
+sqlite.exec(
+  "DROP INDEX IF EXISTS idx_post_app_integrations_tenant_user_provider_account_unique",
 );
 sqlite.exec(
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_tenant_job_url_unique ON jobs(tenant_id, job_url)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_post_app_integrations_tenant_user_provider_account_unique ON post_application_integrations(tenant_id, coalesce(user_id, ''), provider, account_key)",
+);
+sqlite.exec(
+  "DROP INDEX IF EXISTS idx_post_app_messages_tenant_user_provider_account_external_unique",
+);
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_post_app_messages_tenant_user_provider_account_external_unique ON post_application_messages(tenant_id, coalesce(user_id, ''), provider, account_key, external_message_id)",
+);
+sqlite.exec(
+  "DROP INDEX IF EXISTS idx_tracer_links_tenant_user_job_source_destination_unique",
+);
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracer_links_tenant_user_job_source_destination_unique ON tracer_links(tenant_id, coalesce(user_id, ''), job_id, source_path, destination_url_hash)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_jobs_tenant_user_status ON jobs(tenant_id, user_id, status)",
 );
 sqlite.exec(
   "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)",

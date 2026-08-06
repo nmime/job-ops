@@ -238,6 +238,21 @@ const HEALTH_PROBE_CONFIG_BY_SOURCE: Record<
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,
     settings: {},
   },
+  fiveamsat: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "egypt",
+    settings: {
+      fiveamsatMaxJobsPerTerm: "1",
+    },
+  },
+  wazzuf: {
+    searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
+    selectedCountry: "egypt",
+    settings: {
+      wazzufMaxJobsPerTerm: "1",
+    },
+  },
+  },
   manual: {
     searchTerm: DEFAULT_HEALTH_SEARCH_TERM,
     selectedCountry: DEFAULT_HEALTH_SELECTED_COUNTRY,

@@ -318,11 +318,57 @@ describe("salary penalty", () => {
   function getPromptProfile(): Record<string, any> {
     const prompt = getScoringPrompt();
     const match = prompt.match(
-      /CANDIDATE PROFILE:\n(?<profile>[\s\S]*?)\n\nJOB LISTING:/,
+      /CANDIDATE PROFILE:\n(?<profile>[\s\S]*?)\n\nSCORING INSTRUCTIONS:/,
     );
     expect(match?.groups?.profile).toBeDefined();
     return JSON.parse(match?.groups?.profile ?? "{}");
   }
+
+  it("sends minified source job JSON with nulls and no generated state", async () => {
+    const { scoreJobSuitability } = await import("./scorer");
+    getEffectiveSettingsMock.mockResolvedValue({
+      penalizeMissingSalary: { value: false, default: false, override: null },
+      missingSalaryPenalty: { value: 10, default: 10, override: null },
+      scoringInstructions: { value: "", default: "", override: null },
+      rxresumeBaseResumeId: "base-resume-123",
+    } as any);
+
+    await scoreJobSuitability(
+      createJob({
+        salary: null,
+        jobDescription: "<p>Build <strong>TypeScript</strong> services.</p>",
+        jobLevel: "senior",
+        salaryMinAmount: 80_000,
+        companyIndustry: "Fintech",
+        skills: "TypeScript, Node.js",
+        emails: "jobs@example.com",
+        suitabilityScore: 42,
+        jobBrief: '{"stale":true}',
+        tailoredSummary: "Private tailored summary",
+        pdfPath: "/private/resume.pdf",
+      }),
+      {},
+    );
+
+    const match = getScoringPrompt().match(
+      /JOB DATA \(JSON\):\n(?<job>[^\n]+)\n\n/,
+    );
+    const job = JSON.parse(match?.groups?.job ?? "{}");
+    expect(job).toMatchObject({
+      salary: null,
+      jobLevel: "senior",
+      salaryMinAmount: 80_000,
+      companyIndustry: "Fintech",
+      skills: "TypeScript, Node.js",
+      emails: "jobs@example.com",
+      jobDescription: "Build TypeScript services.",
+    });
+    expect(job).not.toHaveProperty("suitabilityScore");
+    expect(job).not.toHaveProperty("jobBrief");
+    expect(job).not.toHaveProperty("tailoredSummary");
+    expect(job).not.toHaveProperty("pdfPath");
+    expect(getScoringPrompt()).not.toContain("<strong>");
+  });
 
   describe("profile prompt sanitization", () => {
     it("includes top-level education and the full top-level CV content", async () => {
@@ -521,6 +567,42 @@ describe("salary penalty", () => {
   });
 
   describe("isSalaryMissing detection", () => {
+    it("uses accepted salary patches before applying the missing-salary penalty", async () => {
+      const { scoreJobSuitability } = await import("./scorer");
+      callJsonMock.mockResolvedValue({
+        success: true,
+        data: {
+          score: 80,
+          reason: "Good match",
+          jobPatches: [
+            {
+              field: "salaryMinAmount",
+              value: 45_000,
+              confidence: "high",
+              evidence: "Salary: £45,000 per year",
+            },
+          ],
+        },
+      });
+
+      const result = await scoreJobSuitability(
+        createJob({
+          salary: null,
+          salaryMinAmount: null,
+          salaryMaxAmount: null,
+          jobDescription: "Salary: £45,000 per year",
+        }),
+        {},
+      );
+
+      expect(result.score).toBe(80);
+      expect(result.reason).not.toContain("missing salary");
+      expect(result.jobUpdates).toEqual({
+        salaryMinAmount: 45_000,
+        salarySource: "ai_job_fact_review",
+      });
+    });
+
     it("should detect null salary as missing", async () => {
       const { scoreJobSuitability } = await import("./scorer");
       getEffectiveSettingsMock.mockResolvedValue({
@@ -685,6 +767,46 @@ describe("salary penalty", () => {
       );
     });
 
+    it("uses per-run scoring instructions instead of global scoring settings", async () => {
+      const { scoreJobSuitability } = await import("./scorer");
+      getEffectiveSettingsMock.mockResolvedValue({
+        penalizeMissingSalary: { value: false, default: false, override: null },
+        missingSalaryPenalty: { value: 10, default: 10, override: null },
+        scoringInstructions: {
+          value: "Global instruction that should not be used.",
+          default: "",
+          override: "Global instruction that should not be used.",
+        },
+        rxresumeBaseResumeId: "base-resume-123",
+      } as any);
+
+      callJsonMock.mockResolvedValue({
+        success: true,
+        data: { score: 80, reason: "Good match" },
+      });
+
+      await scoreJobSuitability(
+        createJob({
+          id: "test-job-per-run-instructions",
+          title: "Software Engineer",
+        }),
+        {},
+        {
+          scoringInstructions:
+            "Prefer roles above GBP 60k and lower-score graduate programmes.",
+        },
+      );
+
+      const prompt =
+        callJsonMock.mock.calls.at(-1)?.[0]?.messages?.[0]?.content;
+      expect(prompt).toContain(
+        "Prefer roles above GBP 60k and lower-score graduate programmes.",
+      );
+      expect(prompt).not.toContain(
+        "Global instruction that should not be used.",
+      );
+    });
+
     it("uses a custom scoring prompt template override", async () => {
       const { scoreJobSuitability } = await import("./scorer");
       getEffectiveSettingsMock.mockResolvedValue({
@@ -707,10 +829,22 @@ describe("salary penalty", () => {
 
       callJsonMock.mockResolvedValue({
         success: true,
-        data: { score: 80, reason: "Good match" },
+        data: {
+          score: 80,
+          reason: "Good match",
+          jobBrief: {
+            role_summary: "Build backend services.",
+            they_want: ["TypeScript"],
+            specifics: ["Node.js"],
+            company_offers: [],
+            practical_details: ["Salary: Not stated"],
+            missing_or_unclear: ["Sponsorship"],
+            repeated_signals: ["Ownership"],
+          },
+        },
       });
 
-      await scoreJobSuitability(
+      const result = await scoreJobSuitability(
         createJob({
           id: "test-job-custom-template",
           title: "Backend Engineer",
@@ -727,7 +861,30 @@ describe("salary penalty", () => {
               ),
             }),
           ],
+          jsonSchema: expect.objectContaining({
+            schema: expect.objectContaining({
+              required: [
+                "score",
+                "reason",
+                "jobBrief",
+                "jobPatches",
+                "jobWarnings",
+              ],
+            }),
+          }),
         }),
+      );
+      expect(getScoringPrompt()).toContain('"jobBrief"');
+      expect(getScoringPrompt()).toContain('"jobPatches"');
+      expect(getScoringPrompt()).toContain(
+        "Do not guess, infer from general knowledge, estimate, annualise compensation",
+      );
+      expect(getScoringPrompt()).toContain("JOB DATA (JSON):");
+      expect(getScoringPrompt()).toContain(
+        '"jobDescription":"Job description content"',
+      );
+      expect(JSON.parse(result.jobBrief as string)).toEqual(
+        expect.objectContaining({ role_summary: "Build backend services." }),
       );
     });
 
@@ -854,36 +1011,11 @@ describe("salary penalty", () => {
     });
   });
 
-  describe("mock scoring with penalty", () => {
-    it("should apply penalty in mock scoring fallback", async () => {
-      const { scoreJobSuitability } = await import("./scorer");
-      getEffectiveSettingsMock.mockResolvedValue({
-        penalizeMissingSalary: { value: true, default: true, override: null },
-        missingSalaryPenalty: { value: 10, default: 10, override: null },
-        rxresumeBaseResumeId: "base-resume-123",
-      } as any);
-
-      // Simulate API key error to trigger mock scoring
-      callJsonMock.mockResolvedValue({
-        success: false,
-        error: "API key not configured",
-      });
-
-      const job = createJob({
-        id: "test-job-1",
-        salary: null,
-        title: "Software Engineer",
-      });
-      const result = await scoreJobSuitability(job, {});
-
-      // Mock score base is 50, with keyword bonuses from "Software Engineer"
-      // After 10 point penalty, should be reduced
-      expect(result.score).toBeLessThanOrEqual(50);
-      expect(result.reason).toContain("missing salary information");
-    });
-
-    it("should not apply penalty in mock scoring when disabled", async () => {
-      const { scoreJobSuitability } = await import("./scorer");
+  describe("LlmNotConfiguredError", () => {
+    it("should throw LlmNotConfiguredError when API key is not configured", async () => {
+      const { scoreJobSuitability, LlmNotConfiguredError } = await import(
+        "./scorer"
+      );
       getEffectiveSettingsMock.mockResolvedValue({
         penalizeMissingSalary: { value: false, default: false, override: null },
         missingSalaryPenalty: { value: 10, default: 10, override: null },
@@ -892,7 +1024,7 @@ describe("salary penalty", () => {
 
       callJsonMock.mockResolvedValue({
         success: false,
-        error: "API key not configured",
+        error: "LLM API key not configured",
       });
 
       const job = createJob({
@@ -900,9 +1032,35 @@ describe("salary penalty", () => {
         salary: null,
         title: "Software Engineer",
       });
-      const result = await scoreJobSuitability(job, {});
 
-      expect(result.reason).not.toContain("missing salary");
+      await expect(scoreJobSuitability(job, {})).rejects.toThrow(
+        LlmNotConfiguredError,
+      );
+    });
+
+    it("should throw LlmNotConfiguredError for non-API-key errors", async () => {
+      const { scoreJobSuitability, LlmNotConfiguredError } = await import(
+        "./scorer"
+      );
+      getEffectiveSettingsMock.mockResolvedValue({
+        penalizeMissingSalary: { value: false, default: false, override: null },
+        missingSalaryPenalty: { value: 10, default: 10, override: null },
+        rxresumeBaseResumeId: "base-resume-123",
+      } as any);
+
+      callJsonMock.mockResolvedValue({
+        success: false,
+        error: "Rate limit exceeded",
+      });
+
+      const job = createJob({
+        id: "test-job-2",
+        title: "Software Engineer",
+      });
+
+      await expect(scoreJobSuitability(job, {})).rejects.toThrow(
+        LlmNotConfiguredError,
+      );
     });
   });
 });

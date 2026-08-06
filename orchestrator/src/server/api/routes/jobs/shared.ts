@@ -61,6 +61,7 @@ export function toJobListItem(
   return {
     id: job.id,
     source: job.source,
+    sourceJobId: job.sourceJobId,
     title: job.title,
     employer: job.employer,
     jobUrl: job.jobUrl,
@@ -202,15 +203,15 @@ export const updateOutcomeSchema = z.object({
 export const jobActionRequestSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("skip"),
-    jobIds: z.array(z.string().min(1)).min(1).max(100),
+    jobIds: z.array(z.string().min(1)).min(1).max(500),
   }),
   z.object({
     action: z.literal("rescore"),
-    jobIds: z.array(z.string().min(1)).min(1).max(100),
+    jobIds: z.array(z.string().min(1)).min(1).max(500),
   }),
   z.object({
     action: z.literal("move_to_ready"),
-    jobIds: z.array(z.string().min(1)).min(1).max(100),
+    jobIds: z.array(z.string().min(1)).min(1).max(500),
     options: z
       .object({
         force: z.boolean().optional(),
@@ -231,6 +232,12 @@ export const jobsRevisionQuerySchema = z.object({
 export const uploadJobPdfSchema = z.object({
   fileName: z.string().trim().min(1).max(255),
   mediaType: z.string().trim().min(1).max(200).optional(),
+  dataBase64: z.string().trim().min(1),
+});
+
+export const uploadJobDocumentSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  mediaType: z.string().trim().max(200).nullable().optional(),
   dataBase64: z.string().trim().min(1),
 });
 

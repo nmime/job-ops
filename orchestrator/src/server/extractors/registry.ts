@@ -6,6 +6,10 @@ import {
   type ExtractorSourceId,
   PIPELINE_EXTRACTOR_SOURCE_IDS,
 } from "@shared/extractors";
+import {
+  type LocationSourceCapabilitiesInput,
+  normalizeLocationSourceCapabilities,
+} from "@shared/location-domain.js";
 import type { ExtractorManifest } from "@shared/types";
 import { discoverManifestPaths, loadManifestFromFile } from "./discovery";
 
@@ -13,6 +17,9 @@ export interface ExtractorRegistry {
   manifests: Map<string, ExtractorManifest>;
   manifestBySource: Map<ExtractorSourceId, ExtractorManifest>;
   availableSources: ExtractorSourceId[];
+  locationCapabilitiesBySource: Partial<
+    Record<ExtractorSourceId, LocationSourceCapabilitiesInput>
+  >;
 }
 
 let registry: ExtractorRegistry | null = null;
@@ -45,6 +52,20 @@ class DuplicateSourceProviderError extends Error {
     this.existingManifestId = args.existingManifestId;
     this.duplicateManifestId = args.duplicateManifestId;
     this.name = "DuplicateSourceProviderError";
+  }
+}
+
+class UnknownLocationCapabilitySourceError extends Error {
+  readonly manifestId: string;
+  readonly unknownSources: string[];
+
+  constructor(args: { manifestId: string; unknownSources: string[] }) {
+    super(
+      `Extractor manifest ${args.manifestId} declares location capabilities for unknown sources: ${args.unknownSources.join(", ")}`,
+    );
+    this.manifestId = args.manifestId;
+    this.unknownSources = args.unknownSources;
+    this.name = "UnknownLocationCapabilitySourceError";
   }
 }
 
@@ -111,6 +132,9 @@ async function createRegistry(): Promise<ExtractorRegistry> {
   const manifestPaths = await discoverManifestPaths();
   const manifests = new Map<string, ExtractorManifest>();
   const manifestBySource = new Map<ExtractorSourceId, ExtractorManifest>();
+  const locationCapabilitiesBySource: Partial<
+    Record<ExtractorSourceId, LocationSourceCapabilitiesInput>
+  > = {};
 
   for (const path of manifestPaths) {
     try {
@@ -143,6 +167,31 @@ async function createRegistry(): Promise<ExtractorRegistry> {
         continue;
       }
 
+      const unknownLocationCapabilitySources = Object.keys(
+        manifest.locationCapabilities ?? {},
+      ).filter((source) => !validSources.includes(source as ExtractorSourceId));
+
+      if (unknownLocationCapabilitySources.length > 0) {
+        const error = new UnknownLocationCapabilitySourceError({
+          manifestId: manifest.id,
+          unknownSources: unknownLocationCapabilitySources,
+        });
+
+        if (strictModeEnabled()) {
+          throw error;
+        }
+
+        logger.warn(
+          "Extractor manifest contains location capabilities for sources it does not provide",
+          {
+            manifestId: manifest.id,
+            path,
+            unknownSources: unknownLocationCapabilitySources,
+            providedSources: validSources,
+          },
+        );
+      }
+
       for (const typedSource of validSources) {
         if (manifestBySource.has(typedSource)) {
           const existing = manifestBySource.get(typedSource);
@@ -157,13 +206,22 @@ async function createRegistry(): Promise<ExtractorRegistry> {
       manifests.set(manifest.id, manifest);
       for (const source of validSources) {
         manifestBySource.set(source, manifest);
+        locationCapabilitiesBySource[source] =
+          normalizeLocationSourceCapabilities({
+            source,
+            ...(manifest.locationCapabilities?.[source] ?? {}),
+          });
       }
     } catch (error) {
       if (error instanceof DuplicateSourceProviderError) {
         throw error;
       }
 
-      if (error instanceof DuplicateManifestIdError && strictModeEnabled()) {
+      if (
+        (error instanceof DuplicateManifestIdError ||
+          error instanceof UnknownLocationCapabilitySourceError) &&
+        strictModeEnabled()
+      ) {
         throw error;
       }
 
@@ -187,6 +245,9 @@ async function createRegistry(): Promise<ExtractorRegistry> {
       id: manifest.id,
       sources: manifest.providesSources,
       requiredEnvVarsCount: manifest.requiredEnvVars?.length ?? 0,
+      locationCapabilitySources: manifest.providesSources.filter((source) =>
+        Boolean(manifest.locationCapabilities?.[source]),
+      ),
     })),
   });
 
@@ -194,6 +255,7 @@ async function createRegistry(): Promise<ExtractorRegistry> {
     manifests,
     manifestBySource,
     availableSources,
+    locationCapabilitiesBySource,
   };
 }
 

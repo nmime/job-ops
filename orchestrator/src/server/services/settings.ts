@@ -5,7 +5,15 @@ import {
   getDefaultModelForProvider,
   settingsRegistry,
 } from "@shared/settings-registry";
-import type { AppSettings, ResumeProfile } from "@shared/types";
+import {
+  type AppSettings,
+  LLM_PURPOSE_VALUES,
+  type LlmPurpose,
+  type LlmPurposeApiKeyHints,
+  type LlmPurposeApiKeys,
+  type LlmPurposeOverrides,
+  type ResumeProfile,
+} from "@shared/types";
 import {
   designResumeToProfile,
   getCurrentDesignResumeOrNullOnLegacy,
@@ -33,14 +41,23 @@ function resolveDefaultLlmBaseUrl(provider: string): string {
   if (normalized === "openai_compatible") {
     return "https://api.openai.com";
   }
+  if (normalized === "glm") {
+    return "https://api.z.ai/api/paas/v4";
+  }
   if (normalized === "gemini") {
     return "https://generativelanguage.googleapis.com";
   }
   if (normalized === "gemini_cli") {
     return "";
   }
+  if (normalized === "claude_cli") {
+    return "";
+  }
   if (normalized === "codex") {
     return "";
+  }
+  if (normalized === "requesty") {
+    return "https://router.requesty.ai/v1";
   }
   return "https://openrouter.ai";
 }
@@ -75,8 +92,67 @@ function normalizeModelForProviderCompatibility(
     }
   }
 
+  if (normalizedProvider === "claude_cli") {
+    const isClaudeModel =
+      ["sonnet", "opus", "haiku", "fable"].includes(normalizedModel) ||
+      normalizedModel.startsWith("claude-");
+    if (!isClaudeModel) {
+      return null;
+    }
+  }
+
+  if (normalizedProvider === "glm") {
+    const isGlmModel =
+      normalizedModel.startsWith("glm") ||
+      normalizedModel.startsWith("charglm");
+    if (!isGlmModel) {
+      return null;
+    }
+  }
+
   return trimmedModel;
 }
+
+function isBaseResumeNotConfiguredError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("Base resume not configured")
+  );
+}
+
+function readPurposeOverrides(
+  overrides: Partial<Record<settingsRepo.SettingKey, string>>,
+): LlmPurposeOverrides {
+  return (
+    settingsRegistry.llmPurposeOverrides.parse(overrides.llmPurposeOverrides) ??
+    {}
+  );
+}
+
+function readPurposeApiKeyHints(
+  overrides: Partial<Record<settingsRepo.SettingKey, string>>,
+): LlmPurposeApiKeyHints {
+  const purposeApiKeys = settingsRegistry.llmPurposeApiKeys.parse(
+    overrides.llmPurposeApiKeys,
+  ) as LlmPurposeApiKeys | null;
+  const hints: LlmPurposeApiKeyHints = {};
+  for (const purpose of LLM_PURPOSE_VALUES) {
+    const value = purposeApiKeys?.[purpose]?.trim();
+    if (!value) continue;
+    const hintLength = value.length > 4 ? 4 : Math.max(value.length - 1, 1);
+    hints[purpose] = value.slice(0, hintLength);
+  }
+  return hints;
+}
+
+const MODEL_KEY_BY_PURPOSE: Record<
+  LlmPurpose,
+  "modelScorer" | "modelTailoring" | "modelProjectSelection"
+> = {
+  scoring: "modelScorer",
+  tailoring: "modelTailoring",
+  projectSelection: "modelProjectSelection",
+};
 
 /**
  * Get the effective app settings, combining environment variables and database overrides.
@@ -92,6 +168,7 @@ export async function getEffectiveSettings(): Promise<AppSettings> {
   );
   const effectiveLlmProvider =
     providerOverride ?? settingsRegistry.llmProvider.default();
+  const purposeOverrides = readPurposeOverrides(overrides);
   const resolvedModelDefault =
     normalizeModelForProviderCompatibility(
       effectiveLlmProvider,
@@ -139,6 +216,9 @@ export async function getEffectiveSettings(): Promise<AppSettings> {
 
   if (Object.keys(profile).length === 0) {
     profile = await getProfile().catch((error) => {
+      if (isBaseResumeNotConfiguredError(error)) {
+        return {};
+      }
       logger.warn("Failed to load base resume profile for settings", { error });
       return {};
     });
@@ -148,6 +228,7 @@ export async function getEffectiveSettings(): Promise<AppSettings> {
 
   const result: Partial<AppSettings> = {
     ...envSettings,
+    llmPurposeApiKeyHints: readPurposeApiKeyHints(overrides),
   };
 
   const rawModel = overrides.model;
@@ -217,14 +298,30 @@ export async function getEffectiveSettings(): Promise<AppSettings> {
         override,
       };
     } else if (def.kind === "model") {
+      const purpose = (
+        Object.entries(MODEL_KEY_BY_PURPOSE) as Array<
+          [LlmPurpose, keyof typeof settingsRegistry]
+        >
+      ).find(([, modelKey]) => modelKey === key)?.[0];
+      const purposeOverride = purpose ? purposeOverrides[purpose] : undefined;
+      const purposeProvider = purposeOverride?.provider ?? effectiveLlmProvider;
+      const purposeModelDefault =
+        purposeProvider === effectiveLlmProvider
+          ? modelValue
+          : getDefaultModelForProvider(purposeProvider);
       const override =
         normalizeModelForProviderCompatibility(
-          effectiveLlmProvider,
-          overrides[key as settingsRepo.SettingKey] ?? null,
+          purposeProvider,
+          purposeOverride?.model ??
+            overrides[key as settingsRepo.SettingKey] ??
+            null,
         ) ?? null;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // biome-ignore lint/suspicious/noExplicitAny: dynamic assignment for settings building
-      (result as any)[key] = { value: override || modelValue, override };
+      (result as any)[key] = {
+        value: override || purposeModelDefault,
+        override,
+      };
     } else if (def.kind === "string") {
       if (!("envKey" in def) || !def.envKey) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

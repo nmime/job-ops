@@ -1,6 +1,9 @@
 import { logger } from "@infra/logger";
 import { getOriginalEnvValue } from "@server/services/envSettings";
+import { resolveLlmApiKey } from "@server/services/llm/credentials";
+import { mapGlmProviderAlias } from "@shared/settings-registry";
 import { toStringOrNull } from "@shared/utils/type-conversion";
+import { ClaudeCliClient } from "./claude-cli/client";
 import { CodexClient } from "./codex/client";
 import { GeminiCliClient } from "./gemini-cli/client";
 import {
@@ -8,7 +11,11 @@ import {
   getOrderedModes,
   rememberSuccessfulMode,
 } from "./policies/mode-selection";
-import { getRetryDelayMs, shouldRetryAttempt } from "./policies/retry-policy";
+import {
+  getRetryDelayMs,
+  parseRetryAfterMs,
+  shouldRetryAttempt,
+} from "./policies/retry-policy";
 import { strategies } from "./providers";
 import type {
   JsonSchemaDefinition,
@@ -36,6 +43,7 @@ export class LlmService {
   private readonly strategy: (typeof strategies)[LlmProvider];
   private readonly codexClient: CodexClient;
   private readonly geminiCliClient: GeminiCliClient;
+  private readonly claudeCliClient: ClaudeCliClient;
 
   constructor(options: LlmServiceOptions = {}) {
     const normalizedBaseUrl =
@@ -48,29 +56,25 @@ export class LlmService {
     );
 
     const strategy = strategies[resolvedProvider];
-    const baseUrl = normalizedBaseUrl || strategy.defaultBaseUrl;
+    const baseUrl = providerUsesConfiguredBaseUrl(resolvedProvider)
+      ? normalizedBaseUrl || strategy.defaultBaseUrl
+      : strategy.defaultBaseUrl;
 
-    let apiKey =
-      toStringOrNull(options.apiKey) ||
-      toStringOrNull(getOriginalEnvValue("LLM_API_KEY")) ||
-      null;
+    const apiKey = resolveLlmApiKey({
+      storedApiKey: options.apiKey,
+      provider: resolvedProvider,
+    });
 
-    // Backwards-compat migration: OPENROUTER_API_KEY -> LLM_API_KEY.
-    // This prevents users from losing access when upgrading (keys are often only shown once).
     if (
-      !apiKey &&
+      !toStringOrNull(options.apiKey) &&
+      !toStringOrNull(getOriginalEnvValue("LLM_API_KEY")) &&
       resolvedProvider === "openrouter" &&
+      apiKey &&
       toStringOrNull(getOriginalEnvValue("OPENROUTER_API_KEY"))
     ) {
       logger.warn(
-        "[DEPRECATED] OPENROUTER_API_KEY is deprecated. Copying to LLM_API_KEY; please update your environment.",
+        "[DEPRECATED] OPENROUTER_API_KEY is deprecated. Use LLM_API_KEY instead; keys are often only shown once.",
       );
-      const migrated = toStringOrNull(
-        getOriginalEnvValue("OPENROUTER_API_KEY"),
-      );
-      if (migrated) {
-        apiKey = migrated;
-      }
     }
 
     this.provider = resolvedProvider;
@@ -79,6 +83,7 @@ export class LlmService {
     this.strategy = strategy;
     this.codexClient = new CodexClient();
     this.geminiCliClient = new GeminiCliClient();
+    this.claudeCliClient = new ClaudeCliClient();
   }
 
   async callJson<T>(options: LlmRequestOptions<T>): Promise<LlmResponse<T>> {
@@ -88,6 +93,10 @@ export class LlmService {
 
     if (this.provider === "gemini_cli") {
       return this.callGeminiCliJson(options);
+    }
+
+    if (this.provider === "claude_cli") {
+      return this.callClaudeCliJson(options);
     }
 
     if (this.strategy.requiresApiKey && !this.apiKey) {
@@ -149,6 +158,10 @@ export class LlmService {
 
     if (this.provider === "gemini_cli") {
       return this.geminiCliClient.validateCredentials();
+    }
+
+    if (this.provider === "claude_cli") {
+      return this.claudeCliClient.validateCredentials();
     }
 
     if (this.strategy.requiresApiKey && !this.apiKey) {
@@ -217,14 +230,22 @@ export class LlmService {
       return sortModels(models, getPreferredModel(this.provider));
     }
 
+    if (this.provider === "claude_cli") {
+      const models = await this.claudeCliClient.listModels();
+      return sortModels(models, getPreferredModel(this.provider));
+    }
+
     if (this.strategy.requiresApiKey && !this.apiKey) {
       throw new Error("LLM API key is missing.");
     }
 
     if (
       this.provider !== "openai" &&
+      this.provider !== "anthropic" &&
+      this.provider !== "glm" &&
       this.provider !== "gemini" &&
-      this.provider !== "ollama"
+      this.provider !== "ollama" &&
+      this.provider !== "requesty"
     ) {
       return [];
     }
@@ -233,8 +254,17 @@ export class LlmService {
       if (this.provider === "openai") {
         return this.listOpenAiModels();
       }
+      if (this.provider === "anthropic") {
+        return this.listAnthropicModels();
+      }
       if (this.provider === "gemini") {
         return this.listGeminiModels();
+      }
+      if (this.provider === "glm") {
+        return this.listGlmModels();
+      }
+      if (this.provider === "requesty") {
+        return this.listRequestyModels();
       }
       return this.listOllamaModels();
     })();
@@ -326,6 +356,48 @@ export class LlmService {
     return { success: false, error: "All retry attempts failed" };
   }
 
+  private async callClaudeCliJson<T>(
+    options: LlmRequestOptions<T>,
+  ): Promise<LlmResponse<T>> {
+    const { maxRetries = 0, retryDelayMs = 500, signal, jobId } = options;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          logger.info("LLM retry attempt", {
+            jobId: jobId ?? "unknown",
+            attempt,
+            maxRetries,
+          });
+          await sleep(getRetryDelayMs(retryDelayMs, attempt));
+        }
+
+        const result = await this.claudeCliClient.callJson({
+          ...options,
+          signal,
+        });
+        const parsed = parseJsonContent<T>(result.text, jobId);
+        return { success: true, data: parsed };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (attempt < maxRetries && shouldRetryAttempt({ message })) {
+          logger.warn("Claude CLI attempt failed, retrying", {
+            jobId: jobId ?? "unknown",
+            attempt: attempt + 1,
+            maxRetries,
+            message,
+          });
+          continue;
+        }
+
+        return { success: false, error: message };
+      }
+    }
+
+    return { success: false, error: "All retry attempts failed" };
+  }
+
   private async tryMode<T>(args: {
     mode: ResponseMode;
     model: string;
@@ -347,16 +419,24 @@ export class LlmService {
     } = args;
     const jobId = args.jobId;
     const model = normalizeModelForProvider(this.provider, rawModel);
+    let lastRetryAfterMs: number | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (attempt > 0) {
+          const delayMs = getRetryDelayMs(
+            retryDelayMs,
+            attempt,
+            lastRetryAfterMs,
+          );
           logger.info("LLM retry attempt", {
             jobId: jobId ?? "unknown",
             attempt,
             maxRetries,
+            delayMs,
+            retryAfterMs: lastRetryAfterMs ?? "none",
           });
-          await sleep(getRetryDelayMs(retryDelayMs, attempt));
+          await sleep(delayMs);
         }
 
         const { url, headers, body } = this.strategy.buildRequest({
@@ -384,6 +464,9 @@ export class LlmService {
           ) as LlmApiError;
           err.status = response.status;
           err.body = truncate(errorBody, 600);
+          err.retryAfterMs = parseRetryAfterMs(
+            response.headers?.get?.("retry-after"),
+          );
           throw err;
         }
 
@@ -400,6 +483,7 @@ export class LlmService {
         const message = error instanceof Error ? error.message : String(error);
         const status = (error as LlmApiError).status;
         const body = (error as LlmApiError).body;
+        lastRetryAfterMs = (error as LlmApiError).retryAfterMs;
 
         if (
           this.strategy.isCapabilityError({
@@ -452,6 +536,29 @@ export class LlmService {
       .filter(Boolean);
   }
 
+  private async listAnthropicModels(): Promise<string[]> {
+    const response = await fetch(joinUrl(this.baseUrl, "/v1/models"), {
+      method: "GET",
+      headers: buildHeaders({
+        apiKey: this.apiKey,
+        provider: this.provider,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await getResponseDetail(response);
+      throw new Error(detail || `Anthropic returned ${response.status}.`);
+    }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | null }>;
+    };
+    return (payload.data ?? [])
+      .map((entry) => entry.id?.trim() ?? "")
+      .filter(isAnthropicTextGenerationModel)
+      .filter(Boolean);
+  }
+
   private async listGeminiModels(): Promise<string[]> {
     const url = addQueryParam(
       joinUrl(this.baseUrl, "/v1beta/models"),
@@ -489,6 +596,56 @@ export class LlmService {
       .filter(Boolean);
   }
 
+  private async listGlmModels(): Promise<string[]> {
+    const base = this.baseUrl.replace(/\/+$/, "");
+    const suffix = "/chat/completions";
+    const modelsBase = base.endsWith(suffix)
+      ? base.slice(0, -suffix.length)
+      : base;
+    const response = await fetch(joinUrl(modelsBase, "/models"), {
+      method: "GET",
+      headers: buildHeaders({
+        apiKey: this.apiKey,
+        provider: this.provider,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await getResponseDetail(response);
+      throw new Error(detail || `GLM returned ${response.status}.`);
+    }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | null }>;
+    };
+    return (payload.data ?? [])
+      .map((entry) => entry.id?.trim() ?? "")
+      .filter(isGlmTextGenerationModel)
+      .filter(Boolean);
+  }
+
+  private async listRequestyModels(): Promise<string[]> {
+    const response = await fetch(joinUrl(this.baseUrl, "/models"), {
+      method: "GET",
+      headers: buildHeaders({
+        apiKey: this.apiKey,
+        provider: this.provider,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await getResponseDetail(response);
+      throw new Error(detail || `Requesty returned ${response.status}.`);
+    }
+
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | null }>;
+    };
+    return (payload.data ?? [])
+      .map((entry) => entry.id?.trim() ?? "")
+      .filter(Boolean);
+  }
+
   private async listOllamaModels(): Promise<string[]> {
     const response = await fetch(joinUrl(this.baseUrl, "/api/tags"), {
       method: "GET",
@@ -516,7 +673,7 @@ function normalizeProvider(
   raw: string | null,
   baseUrl: string | null,
 ): LlmProvider {
-  const normalized = raw?.trim().toLowerCase().replace(/-/g, "_");
+  const normalized = normalizeProviderName(raw);
   if (normalized === "openai_compatible") {
     if (
       baseUrl?.includes("localhost:1234") ||
@@ -527,17 +684,38 @@ function normalizeProvider(
     return "openai_compatible";
   }
   if (normalized === "openai") return "openai";
+  if (normalized === "anthropic" || normalized === "claude") {
+    return "anthropic";
+  }
+  if (normalized === "glm") return "glm";
   if (normalized === "gemini") return "gemini";
   if (normalized === "gemini_cli") return "gemini_cli";
+  if (normalized === "claude_cli") return "claude_cli";
   if (normalized === "lmstudio") return "lmstudio";
   if (normalized === "ollama") return "ollama";
   if (normalized === "codex") return "codex";
+  if (normalized === "requesty") return "requesty";
   if (normalized && normalized !== "openrouter") {
     logger.warn("Unknown LLM provider, defaulting to openrouter", {
       normalized,
     });
   }
   return "openrouter";
+}
+
+function normalizeProviderName(raw: string | null): string | undefined {
+  const normalized = raw?.trim().toLowerCase().replace(/[-.]/g, "_");
+  if (!normalized) return normalized;
+  return mapGlmProviderAlias(normalized);
+}
+
+function providerUsesConfiguredBaseUrl(provider: LlmProvider): boolean {
+  return (
+    provider === "lmstudio" ||
+    provider === "ollama" ||
+    provider === "openai_compatible" ||
+    provider === "glm"
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -561,9 +739,12 @@ function normalizeGeminiModelName(value: string): string {
 
 function getPreferredModel(provider: LlmProvider): string | null {
   if (provider === "openai") return "gpt-5.4-mini";
+  if (provider === "anthropic") return "claude-sonnet-4-6";
+  if (provider === "glm") return "glm-5.1";
   if (provider === "gemini" || provider === "gemini_cli") {
     return "google/gemini-3-flash-preview";
   }
+  if (provider === "claude_cli") return "claude-sonnet-5";
   return null;
 }
 
@@ -597,6 +778,11 @@ function isOpenAiTextGenerationModel(model: string): boolean {
   return /^(gpt|o1|o3|o4|chatgpt|codex)/.test(normalized);
 }
 
+function isAnthropicTextGenerationModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized.startsWith("claude-");
+}
+
 function isGeminiTextGenerationModel(model: string): boolean {
   const normalized = normalizeGeminiModelName(model).toLowerCase();
   if (!normalized) return false;
@@ -604,6 +790,26 @@ function isGeminiTextGenerationModel(model: string): boolean {
 
   const blockedPatterns = ["embedding", "aqa", "vision", "image", "tts"];
   return !blockedPatterns.some((pattern) => normalized.includes(pattern));
+}
+
+function isGlmTextGenerationModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const blockedPatterns = [
+    "embedding",
+    "image",
+    "tts",
+    "asr",
+    "speech",
+    "audio",
+    "tokenizer",
+  ];
+  if (blockedPatterns.some((pattern) => normalized.includes(pattern))) {
+    return false;
+  }
+
+  return normalized.startsWith("glm") || normalized.startsWith("charglm");
 }
 
 function sortModels(models: string[], preferredModel: string | null): string[] {

@@ -1,6 +1,10 @@
 import type { JobStatus, PostApplicationProvider } from "@shared/types";
 
 export const queryKeys = {
+  app: {
+    all: ["app"] as const,
+    status: () => [...queryKeys.app.all, "status"] as const,
+  },
   designResume: {
     all: ["design-resume"] as const,
     current: () => [...queryKeys.designResume.all, "current"] as const,
@@ -33,6 +37,10 @@ export const queryKeys = {
     all: ["demo"] as const,
     info: () => [...queryKeys.demo.all, "info"] as const,
   },
+  onboarding: {
+    all: ["onboarding"] as const,
+    status: () => [...queryKeys.onboarding.all, "status"] as const,
+  },
   jobs: {
     all: ["jobs"] as const,
     inProgressBoard: () =>
@@ -46,6 +54,8 @@ export const queryKeys = {
       [...queryKeys.jobs.all, "stage-events", id] as const,
     tasks: (id: string) => [...queryKeys.jobs.all, "tasks", id] as const,
     notes: (id: string) => [...queryKeys.jobs.all, "notes", id] as const,
+    documents: (id: string) =>
+      [...queryKeys.jobs.all, "documents", id] as const,
     emails: (id: string, limit: number) =>
       [...queryKeys.jobs.all, "emails", id, { limit }] as const,
   },
@@ -53,8 +63,15 @@ export const queryKeys = {
     all: ["pipeline"] as const,
     status: () => [...queryKeys.pipeline.all, "status"] as const,
     runs: () => [...queryKeys.pipeline.all, "runs"] as const,
+    searchPresets: () => [...queryKeys.pipeline.all, "search-presets"] as const,
     runInsights: (id: string) =>
       [...queryKeys.pipeline.all, "run-insights", id] as const,
+  },
+  watchlist: {
+    all: ["watchlist"] as const,
+    sources: () => [...queryKeys.watchlist.all, "sources"] as const,
+    results: () => [...queryKeys.watchlist.all, "results"] as const,
+    states: () => [...queryKeys.watchlist.all, "states"] as const,
   },
   visaSponsors: {
     all: ["visa-sponsors"] as const,

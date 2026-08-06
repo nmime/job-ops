@@ -4,13 +4,19 @@ import { useSearchParams } from "react-router-dom";
 import type {
   DateFilterDimension,
   DateFilterPreset,
+  EmploymentType,
   JobDateFilter,
   JobSort,
   SalaryFilter,
   SalaryFilterMode,
   SponsorFilter,
 } from "./constants";
-import { DEFAULT_SORT, dateFilterDimensionOrder } from "./constants";
+import {
+  DEFAULT_SORT,
+  dateFilterDimensionOrder,
+  employmentTypeValues,
+  postedWithinValues,
+} from "./constants";
 
 const allowedSponsorFilters: SponsorFilter[] = [
   "all",
@@ -25,7 +31,7 @@ const allowedSalaryModes: SalaryFilterMode[] = [
   "between",
 ];
 const allowedSortKeys: JobSort["key"][] = [
-  "date",
+  "datePosted",
   "discoveredAt",
   "score",
   "salary",
@@ -57,6 +63,19 @@ const parseDateDimensions = (value: string | null): DateFilterDimension[] => {
   }
 
   return dateFilterDimensionOrder.filter((dimension) => seen.has(dimension));
+};
+
+const parseEmploymentTypes = (value: string | null): EmploymentType[] => {
+  if (!value) return [];
+
+  const seen = new Set<EmploymentType>();
+  for (const token of value.split(",")) {
+    if (employmentTypeValues.includes(token as EmploymentType)) {
+      seen.add(token as EmploymentType);
+    }
+  }
+
+  return employmentTypeValues.filter((type) => seen.has(type));
 };
 
 export const useOrchestratorFilters = () => {
@@ -142,6 +161,67 @@ export const useOrchestratorFilters = () => {
           else prev.set("salaryMax", String(value.max));
 
           prev.delete("minSalary");
+          return prev;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const postedWithinDays = useMemo((): number | null => {
+    const raw = searchParams.get("postedWithin");
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return postedWithinValues.includes(parsed) ? parsed : null;
+  }, [searchParams]);
+
+  const setPostedWithinDays = useCallback(
+    (value: number | null) => {
+      setSearchParams(
+        (prev) => {
+          if (value == null) prev.delete("postedWithin");
+          else prev.set("postedWithin", String(value));
+          return prev;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const employmentTypes = useMemo(
+    (): EmploymentType[] =>
+      parseEmploymentTypes(searchParams.get("employment")),
+    [searchParams],
+  );
+
+  const setEmploymentTypes = useCallback(
+    (values: EmploymentType[]) => {
+      const normalized = employmentTypeValues.filter((type) =>
+        values.includes(type),
+      );
+      setSearchParams(
+        (prev) => {
+          if (normalized.length === 0) prev.delete("employment");
+          else prev.set("employment", normalized.join(","));
+          return prev;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const location = searchParams.get("location") ?? "";
+  const setLocation = useCallback(
+    (value: string) => {
+      setSearchParams(
+        (prev) => {
+          // Keep the raw value (incl. spaces) so multi-word locations like
+          // "new york" remain typeable; only drop the param when it is blank.
+          if (!value.trim()) prev.delete("location");
+          else prev.set("location", value);
           return prev;
         },
         { replace: true },
@@ -244,6 +324,9 @@ export const useOrchestratorFilters = () => {
         prev.delete("salaryMin");
         prev.delete("salaryMax");
         prev.delete("minSalary");
+        prev.delete("postedWithin");
+        prev.delete("employment");
+        prev.delete("location");
         prev.delete("sort");
         prev.delete("date");
         prev.delete("appliedStart");
@@ -263,6 +346,12 @@ export const useOrchestratorFilters = () => {
     setSponsorFilter,
     salaryFilter,
     setSalaryFilter,
+    postedWithinDays,
+    setPostedWithinDays,
+    employmentTypes,
+    setEmploymentTypes,
+    location,
+    setLocation,
     dateFilter,
     setDateFilter,
     sort,

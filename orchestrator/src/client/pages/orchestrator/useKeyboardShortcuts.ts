@@ -5,6 +5,8 @@ import {
 } from "@client/hooks/queries/useJobMutations";
 import { useHotkeys } from "@client/hooks/useHotkeys";
 import { useProfile } from "@client/hooks/useProfile";
+import { useSettings } from "@client/hooks/useSettings";
+import { resolveFilenameLanguage } from "@client/lib/pdf-filename";
 import { downloadJobPdf, openJobPdf } from "@client/lib/private-pdf";
 import { SHORTCUTS } from "@client/lib/shortcut-map";
 import type { JobAction, JobListItem } from "@shared/types.js";
@@ -23,6 +25,7 @@ type UseKeyboardShortcutsArgs = {
   activeJobs: JobListItem[];
   selectedJobId: string | null;
   selectedJob: JobListItem | null;
+  selectedJobSummary: JobListItem | null;
   selectedJobIds: Set<string>;
   isDesktop: boolean;
   handleSelectJobId: (id: string | null) => void;
@@ -45,6 +48,7 @@ export function useKeyboardShortcuts(args: UseKeyboardShortcutsArgs): void {
     activeJobs,
     selectedJobId,
     selectedJob,
+    selectedJobSummary,
     selectedJobIds,
     isDesktop: _isDesktop,
     handleSelectJobId,
@@ -61,7 +65,9 @@ export function useKeyboardShortcuts(args: UseKeyboardShortcutsArgs): void {
   const shortcutActionInFlight = useRef(false);
   const markAsAppliedMutation = useMarkAsAppliedMutation();
   const skipJobMutation = useSkipJobMutation();
-  const { personName } = useProfile();
+  const { settings } = useSettings();
+  const { personName, profile } = useProfile();
+  const filenameLanguage = resolveFilenameLanguage({ settings, profile });
 
   const navigateJobList = useCallback(
     (direction: 1 | -1) => {
@@ -238,15 +244,20 @@ export function useKeyboardShortcuts(args: UseKeyboardShortcutsArgs): void {
         if (activeTab !== "ready") return;
         void downloadJobPdf(
           selectedJob.id,
-          `${safeFilenamePart(personName || "Unknown")}_${safeFilenamePart(selectedJob.employer)}.pdf`,
+          `${safeFilenamePart(personName || "Unknown", {
+            language: filenameLanguage,
+          })}_${safeFilenamePart(selectedJob.employer, {
+            language: filenameLanguage,
+          })}.pdf`,
         ).catch((error) => {
           showErrorToast(error, "Could not download PDF");
         });
       },
 
       [SHORTCUTS.openListing.key]: () => {
-        if (!selectedJob) return;
-        const link = selectedJob.applicationLink || selectedJob.jobUrl;
+        const listingJob = selectedJob ?? selectedJobSummary;
+        if (!listingJob) return;
+        const link = listingJob.applicationLink || listingJob.jobUrl;
         if (link) window.open(link, "_blank", "noopener,noreferrer");
       },
 

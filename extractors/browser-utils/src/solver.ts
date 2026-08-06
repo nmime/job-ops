@@ -4,11 +4,11 @@ import {
   solvePaidCaptcha,
 } from "./captcha-provider.js";
 import { isChallengePage } from "./challenge.js";
-import { saveCookies } from "./cookies.js";
+import { readCookieJar, saveCookies } from "./cookies.js";
 import { createLaunchOptions } from "./launch.js";
 
 export type SolverResult =
-  | { status: "solved" }
+  | { status: "solved"; cookiesSaved: number }
   | { status: "timeout" }
   | { status: "error"; message: string };
 
@@ -16,6 +16,26 @@ export interface ChallengeSolveOptions {
   paidCaptcha?: PaidCaptchaSolverOptions;
   headless?: boolean;
   manualFallback?: boolean;
+}
+
+function noReusableCookiesError(): SolverResult {
+  return {
+    status: "error",
+    message:
+      "Challenge appeared solved, but no reusable Cloudflare clearance cookie was saved.",
+  };
+}
+
+async function saveReusableCookies(
+  context: BrowserContext,
+  extractorId: string,
+  storageDir: string,
+): Promise<number | null> {
+  const cookiesSaved = await saveCookies(context, extractorId, storageDir);
+  if (cookiesSaved === 0) return null;
+
+  const jar = await readCookieJar(extractorId, storageDir);
+  return jar.hasClearanceCookie ? cookiesSaved : null;
 }
 
 const SOLVED_PAGE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
@@ -26,14 +46,16 @@ const SOLVED_PAGE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
   p { color:#a1a1aa; font-size:1.1rem; }
 </style></head><body>
   <div><h1>Challenge solved</h1><p>You can close this tab and return to Job Ops.</p></div>
-</body></html>`)}`;
+</body>
+</html>`)}`;
 
 /**
- * Opens a headed browser for a human to solve a Cloudflare challenge.
+ * Opens a browser to solve a Cloudflare challenge.
  *
- * This is the "2FA for scraping" flow: the system can't solve the challenge
- * headless, so it opens a visible browser, lets the human interact, detects
- * when the challenge is resolved, saves the cookies, and closes.
+ * With options.headless=false (default), a visible browser opens for a human
+ * to interact with. With options.paidCaptcha set, a paid CAPTCHA-solver
+ * service (2Captcha, etc.) attempts the challenge headlessly first, falling
+ * back to the manual browser flow unless options.manualFallback=false.
  *
  * The saved cookies (especially cf_clearance) allow subsequent headless runs
  * to skip the challenge until the cookie expires.
@@ -41,7 +63,8 @@ const SOLVED_PAGE = `data:text/html,${encodeURIComponent(`<!DOCTYPE html>
  * @param url - The URL that triggered the challenge
  * @param extractorId - Used to namespace the saved cookies
  * @param storageDir - Where to save cookies (e.g. "./storage")
- * @param timeoutMs - Max time to wait for the human (default 5 minutes)
+ * @param timeoutMs - Max time to wait (default 5 minutes)
+ * @param options - Solver options (paid captcha, headless, manual fallback)
  */
 export async function solveChallenge(
   url: string,
@@ -57,10 +80,6 @@ export async function solveChallenge(
 
   try {
     const { firefox } = await import("playwright");
-    // Always headed — the whole point is a human needs to see the challenge
-    // and click through it. The solved cf_clearance cookie is tied to this
-    // browser's UA + TLS fingerprint, so extractors must reuse the same UA
-    // (persisted in the cookie jar) when creating their headless context.
     const { launchOptions } = await createLaunchOptions({
       headless: options.headless ?? false,
     });
@@ -76,11 +95,17 @@ export async function solveChallenge(
     // If there's no challenge, we're done — save cookies anyway since the
     // browser session established a valid cf_clearance
     if (!(await isChallengePage(page))) {
-      await saveCookies(context, extractorId, storageDir);
+      const cookiesSaved = await saveReusableCookies(
+        context,
+        extractorId,
+        storageDir,
+      );
+      if (cookiesSaved === null) return noReusableCookiesError();
       if (!options.headless) await showSolvedPage(page);
-      return { status: "solved" };
+      return { status: "solved", cookiesSaved };
     }
 
+    // Attempt paid CAPTCHA solver first if configured.
     if (options.paidCaptcha) {
       const paidResult = await solvePaidCaptcha(page, {
         ...options.paidCaptcha,
@@ -88,15 +113,21 @@ export async function solveChallenge(
         timeoutMs,
       });
       if (paidResult.status === "solved") {
-        await saveCookies(context, extractorId, storageDir);
+        const cookiesSaved = await saveReusableCookies(
+          context,
+          extractorId,
+          storageDir,
+        );
+        if (cookiesSaved === null) return noReusableCookiesError();
         if (!options.headless) await showSolvedPage(page);
-        return { status: "solved" };
+        return { status: "solved", cookiesSaved };
       }
       if (!options.manualFallback) {
         return paidResult.status === "timeout"
           ? { status: "timeout" }
           : { status: "error", message: paidResult.message };
       }
+      // manualFallback: continue to manual polling below
     }
 
     // Poll until the challenge is resolved or timeout
@@ -107,9 +138,14 @@ export async function solveChallenge(
       await page.waitForTimeout(pollInterval);
 
       if (!(await isChallengePage(page))) {
-        await saveCookies(context, extractorId, storageDir);
+        const cookiesSaved = await saveReusableCookies(
+          context,
+          extractorId,
+          storageDir,
+        );
+        if (cookiesSaved === null) return noReusableCookiesError();
         if (!options.headless) await showSolvedPage(page);
-        return { status: "solved" };
+        return { status: "solved", cookiesSaved };
       }
     }
 

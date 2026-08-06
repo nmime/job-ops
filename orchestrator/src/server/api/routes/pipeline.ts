@@ -23,10 +23,12 @@ import {
   getProgress,
   requestPipelineCancel,
   resolvePipelineChallenge,
+  resumePipelineScoring,
   runPipeline,
   subscribeToProgress,
 } from "@server/pipeline/index";
 import * as pipelineRepo from "@server/repositories/pipeline";
+import * as pipelineSearchPresetsRepo from "@server/repositories/pipeline-search-presets";
 import { trackCanonicalActivationEvent } from "@server/services/activation-funnel";
 import { solveExtractorChallenge } from "@server/services/captcha-solver";
 import {
@@ -35,12 +37,20 @@ import {
   ensureChallengeViewer,
 } from "@server/services/challenge-viewer";
 import { simulatePipelineRun } from "@server/services/demo-simulator";
+import { reserveHostedUsage } from "@server/services/hosted-usage";
+import { planPipelineSearch } from "@server/services/pipeline-search-plan";
+import { ensurePipelineSearchTerms } from "@server/services/pipeline-search-terms";
+import {
+  resolveCountryAtPoint,
+  resolveNearbyPlaceNames,
+} from "@server/services/proximity-search";
 import { PIPELINE_EXTRACTOR_SOURCE_IDS } from "@shared/extractors";
 import {
   createLocationIntent,
   planLocationSources,
 } from "@shared/location-intelligence.js";
 import {
+  LOCATION_INPUT_MODE_VALUES,
   LOCATION_MATCH_STRICTNESS_VALUES,
   LOCATION_SEARCH_SCOPE_VALUES,
 } from "@shared/location-preferences.js";
@@ -48,11 +58,42 @@ import type {
   PipelineProgressState,
   PipelineStatusResponse,
 } from "@shared/types";
+import {
+  MAX_PIPELINE_RUN_BUDGET,
+  normalizePipelineRunBudget,
+} from "@shared/types";
 import { type Request, type Response, Router } from "express";
 import { z } from "zod";
 
 export const pipelineRouter = Router();
 const WORKPLACE_TYPE_VALUES = ["remote", "hybrid", "onsite"] as const;
+const pipelineSourceSchema = z.enum(
+  PIPELINE_EXTRACTOR_SOURCE_IDS as [
+    (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
+    ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
+  ],
+);
+const pipelineRunBudgetSchema = z
+  .number()
+  .int()
+  .max(MAX_PIPELINE_RUN_BUDGET)
+  .transform(normalizePipelineRunBudget);
+const locationCountrySchema = z.object({
+  latitude: z.number().finite().min(-90).max(90),
+  longitude: z.number().finite().min(-180).max(180),
+});
+const locationAreaSchema = locationCountrySchema.extend({
+  radiusMiles: z.number().int().min(1).max(200),
+});
+
+function toSelectedSourcesValue(
+  sources: readonly string[] | undefined,
+): string | undefined {
+  if (!Array.isArray(sources) || sources.length === 0) return undefined;
+  return [...sources]
+    .sort((left, right) => left.localeCompare(right))
+    .join("|");
+}
 
 function resolveRequestOrigin(req: Request): string | null {
   const configuredBaseUrl = process.env.JOBOPS_PUBLIC_BASE_URL?.trim();
@@ -108,6 +149,44 @@ pipelineRouter.get("/status", async (_req: Request, res: Response) => {
     );
   }
 });
+
+pipelineRouter.post(
+  "/location-country",
+  async (req: Request, res: Response) => {
+    try {
+      const point = locationCountrySchema.parse(req.body);
+      const country = await resolveCountryAtPoint(point);
+      ok(res, { country });
+    } catch (error) {
+      fail(
+        res,
+        error instanceof z.ZodError
+          ? badRequest("Invalid map point.", error.flatten())
+          : serviceUnavailable(
+              "Unable to detect the country at the selected map point.",
+            ),
+      );
+    }
+  },
+);
+
+pipelineRouter.post(
+  "/location-area-preview",
+  async (req: Request, res: Response) => {
+    try {
+      const proximity = locationAreaSchema.parse(req.body);
+      const locations = await resolveNearbyPlaceNames(proximity);
+      ok(res, { locations });
+    } catch (error) {
+      fail(
+        res,
+        error instanceof z.ZodError
+          ? badRequest("Invalid map area.", error.flatten())
+          : serviceUnavailable("Unable to preview locations in this map area."),
+      );
+    }
+  },
+);
 
 /**
  * GET /api/pipeline/progress/snapshot - Get the current pipeline progress state
@@ -175,6 +254,219 @@ pipelineRouter.get("/runs", async (_req: Request, res: Response) => {
   }
 });
 
+const pipelineSearchPresetConfigSchema = z.object({
+  searchTerms: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+  sources: z.array(pipelineSourceSchema).min(1),
+  country: z.string().trim().max(100),
+  cityLocations: z.array(z.string().trim().min(1).max(100)).max(25),
+  locationMode: z.enum(LOCATION_INPUT_MODE_VALUES).optional(),
+  proximity: z
+    .object({
+      latitude: z.number().finite().min(-90).max(90),
+      longitude: z.number().finite().min(-180).max(180),
+      radiusMiles: z.number().int().min(1).max(200),
+    })
+    .nullable()
+    .optional(),
+  workplaceTypes: z.array(z.enum(WORKPLACE_TYPE_VALUES)).min(1).max(3),
+  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES),
+  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES),
+  topN: z.number().int().min(1).max(50),
+  minSuitabilityScore: z.number().int().min(0).max(100),
+  runBudget: pipelineRunBudgetSchema,
+  scoringInstructions: z.string().trim().max(4000).optional().default(""),
+  automaticPresetId: z
+    .enum(["fast", "balanced", "detailed", "custom"])
+    .optional(),
+  // Optional per-#621 Watchlist source selection persisted with the preset.
+  // Omitted = legacy behavior (include every saved Watchlist source).
+  watchlistSelectedSourceIds: z
+    .array(z.string().min(1).max(128))
+    .max(200)
+    .optional(),
+});
+
+const createPipelineSearchPresetSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    config: pipelineSearchPresetConfigSchema,
+  })
+  .strict();
+
+const updatePipelineSearchPresetSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    config: pipelineSearchPresetConfigSchema.optional(),
+  })
+  .strict()
+  .refine((value) => value.name !== undefined || value.config !== undefined, {
+    message: "Provide a name or config update",
+  });
+
+const pipelineSearchPlanSchema = z
+  .object({
+    prompt: z.string().trim().min(1).max(2000),
+    currentConfig: pipelineSearchPresetConfigSchema,
+  })
+  .strict();
+
+pipelineRouter.get("/search-presets", async (_req: Request, res: Response) => {
+  try {
+    ok(res, {
+      searches: await pipelineSearchPresetsRepo.listPipelineSearchPresets(),
+    });
+  } catch (error) {
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+pipelineRouter.post("/search-presets", async (req: Request, res: Response) => {
+  try {
+    const input = createPipelineSearchPresetSchema.parse(req.body);
+    if (
+      await pipelineSearchPresetsRepo.pipelineSearchPresetNameExists({
+        name: input.name,
+      })
+    ) {
+      return fail(
+        res,
+        conflict("A saved search with this name already exists"),
+      );
+    }
+
+    ok(
+      res,
+      await pipelineSearchPresetsRepo.createPipelineSearchPreset(input),
+      201,
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return fail(res, badRequest(error.message, error.flatten()));
+    }
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+pipelineRouter.patch(
+  "/search-presets/:id",
+  async (req: Request, res: Response) => {
+    try {
+      const input = updatePipelineSearchPresetSchema.parse(req.body);
+      if (
+        input.name !== undefined &&
+        (await pipelineSearchPresetsRepo.pipelineSearchPresetNameExists({
+          name: input.name,
+          excludingId: req.params.id,
+        }))
+      ) {
+        return fail(
+          res,
+          conflict("A saved search with this name already exists"),
+        );
+      }
+
+      const updated =
+        await pipelineSearchPresetsRepo.updatePipelineSearchPreset(
+          req.params.id,
+          input,
+        );
+      if (!updated) return fail(res, notFound("Saved search not found"));
+      ok(res, updated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return fail(res, badRequest(error.message, error.flatten()));
+      }
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
+pipelineRouter.post(
+  "/search-presets/:id/used",
+  async (req: Request, res: Response) => {
+    try {
+      const updated =
+        await pipelineSearchPresetsRepo.markPipelineSearchPresetUsed(
+          req.params.id,
+        );
+      if (!updated) return fail(res, notFound("Saved search not found"));
+      ok(res, updated);
+    } catch (error) {
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
+pipelineRouter.delete(
+  "/search-presets/:id",
+  async (req: Request, res: Response) => {
+    try {
+      const deleted =
+        await pipelineSearchPresetsRepo.deletePipelineSearchPreset(
+          req.params.id,
+        );
+      if (deleted === 0) return fail(res, notFound("Saved search not found"));
+      ok(res, { deleted: true });
+    } catch (error) {
+      fail(
+        res,
+        new AppError({
+          status: 500,
+          code: "INTERNAL_ERROR",
+          message: error instanceof Error ? error.message : "Unknown error",
+        }),
+      );
+    }
+  },
+);
+
+pipelineRouter.post("/search-plan", async (req: Request, res: Response) => {
+  try {
+    const input = pipelineSearchPlanSchema.parse(req.body ?? {});
+    ok(res, await planPipelineSearch(input));
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return fail(res, badRequest(error.message, error.flatten()));
+    }
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
 /**
  * GET /api/pipeline/runs/:id/insights - Get exact and inferred metrics for a run
  */
@@ -229,6 +521,37 @@ const runPipelineSchema = z
     matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
   })
   .strict();
+const runPipelineSchema = z.object({
+  topN: z.number().min(1).max(50).optional(),
+  minSuitabilityScore: z.number().min(0).max(100).optional(),
+  sources: z.array(pipelineSourceSchema).min(1).optional(),
+  runBudget: pipelineRunBudgetSchema.optional(),
+  searchTerms: z.array(z.string().trim().min(1)).optional(),
+  scoringInstructions: z.string().trim().max(4000).optional(),
+  country: z.string().trim().optional(),
+  cityLocations: z.array(z.string().trim().min(1)).optional(),
+  proximity: z
+    .object({
+      latitude: z.number().finite().min(-90).max(90),
+      longitude: z.number().finite().min(-180).max(180),
+      radiusMiles: z.number().int().min(1).max(200),
+    })
+    .nullable()
+    .optional(),
+  workplaceTypes: z
+    .array(z.enum(WORKPLACE_TYPE_VALUES))
+    .min(1)
+    .max(3)
+    .optional(),
+  searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
+  matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
+  // Per-#621: optional client-supplied per-run Watchlist source filter.
+  // Omitted preserves the legacy "include every saved Watchlist source"
+  // behavior; [] disables Watchlist entirely; non-empty restricts to a
+  // subset. Cross-tenant safety is enforced by re-resolving IDs against
+  // the user's saved Watchlist sources inside discoverJobsStep.
+  watchlistSelectedSourceIds: z.array(z.string().min(1).max(128)).optional(),
+});
 
 pipelineRouter.post("/run", async (req: Request, res: Response) => {
   try {
@@ -236,6 +559,7 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
     const locationIntent = createLocationIntent({
       selectedCountry: config.country,
       cityLocations: config.cityLocations,
+      proximity: config.proximity,
       workplaceTypes: config.workplaceTypes,
       geoScope: config.searchScope,
       matchStrictness: config.matchStrictness,
@@ -275,6 +599,7 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       const sourcePlans = planLocationSources({
         intent: locationIntent,
         sources: config.sources,
+        capabilitiesBySource: registry.locationCapabilitiesBySource ?? {},
       });
       if (sourcePlans.incompatibleSources.length > 0) {
         const incompatible = sourcePlans.plans
@@ -299,19 +624,39 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
         topN: config.topN,
         minSuitabilityScore: config.minSuitabilityScore,
         sources: config.sources,
+        scoringInstructions: config.scoringInstructions,
         locationIntent,
       });
       return okWithMeta(res, simulated, { simulated: true });
     }
 
+    if (getPipelineStatus().isRunning) {
+      return fail(res, conflict("Pipeline is already running"));
+    }
+
+    const searchTermsState = await ensurePipelineSearchTerms({
+      requestedSearchTerms: config.searchTerms,
+    });
+    const pipelineUsage = await reserveHostedUsage({
+      action: "pipeline_run",
+    });
+
     // Start pipeline in background
     runWithRequestContext({}, () => {
-      runPipeline({
-        topN: config.topN,
-        minSuitabilityScore: config.minSuitabilityScore,
-        sources: config.sources,
-        locationIntent,
-      }).catch((error) => {
+      runPipeline(
+        {
+          topN: config.topN,
+          minSuitabilityScore: config.minSuitabilityScore,
+          sources: config.sources,
+          scoringInstructions: config.scoringInstructions,
+          runBudget: config.runBudget,
+          locationIntent,
+          watchlistSelectedSourceIds: config.watchlistSelectedSourceIds,
+        },
+        {
+          hostedUsageReservationId: pipelineUsage.reservation?.id ?? null,
+        },
+      ).catch((error) => {
         logger.error("Background pipeline run failed", error);
       });
     });
@@ -319,25 +664,38 @@ pipelineRouter.post("/run", async (req: Request, res: Response) => {
       "jobs_pipeline_run_started",
       {
         source_count: config.sources?.length,
+        selected_sources: toSelectedSourcesValue(config.sources),
         top_n: config.topN,
         min_suitability_score: config.minSuitabilityScore,
+        run_budget: config.runBudget,
         country: config.country,
         has_city_locations: Array.isArray(config.cityLocations)
           ? config.cityLocations.length > 0
           : false,
+        search_terms_count: searchTermsState.searchTermsCount,
+        search_terms_source: searchTermsState.source,
+        // Count-only, never raw IDs (tenant safety / PII).
+        watchlist_source_filter_count: Array.isArray(
+          config.watchlistSelectedSourceIds,
+        )
+          ? config.watchlistSelectedSourceIds.length
+          : undefined,
       },
       {
         requestOrigin: resolveRequestOrigin(req),
         urlPath: "/jobs",
       },
     );
-    ok(res, { message: "Pipeline started" });
+    ok(res, { message: "Search started" });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return fail(res, badRequest(error.message, error.flatten()));
     }
     if (error instanceof Error && error.name === "AbortError") {
       return fail(res, requestTimeout("Request timed out"));
+    }
+    if (error instanceof AppError) {
+      return fail(res, error);
     }
     fail(
       res,
@@ -375,6 +733,32 @@ pipelineRouter.post("/cancel", async (_req: Request, res: Response) => {
       pipelineRunId: cancelResult.pipelineRunId,
       alreadyRequested: cancelResult.alreadyRequested,
     });
+  } catch (error) {
+    fail(
+      res,
+      new AppError({
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: error instanceof Error ? error.message : "Unknown error",
+      }),
+    );
+  }
+});
+
+/**
+ * POST /api/pipeline/resume-scoring - Resume a pipeline paused because LLM
+ * was not configured. Called after the user configures an API key in Settings.
+ */
+pipelineRouter.post("/resume-scoring", async (_req: Request, res: Response) => {
+  try {
+    const { resolved } = resumePipelineScoring();
+    if (!resolved) {
+      return fail(
+        res,
+        conflict("Pipeline is not paused waiting for LLM configuration"),
+      );
+    }
+    ok(res, { resolved: true });
   } catch (error) {
     fail(
       res,
@@ -502,12 +886,14 @@ pipelineRouter.post("/solve-challenge", async (req: Request, res: Response) => {
         route: "/api/pipeline/solve-challenge",
         extractorId: body.extractorId,
         challengesRemaining: remaining,
+        cookiesSaved: result.cookiesSaved,
       });
 
       ok(res, {
         status: "solved",
         extractorId: body.extractorId,
         challengesRemaining: remaining,
+        cookiesSaved: result.cookiesSaved,
       });
     } else {
       logger.warn("Challenge solver did not succeed", {

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import {
   type ExtractorSourceId,
   PIPELINE_EXTRACTOR_SOURCE_IDS,
 } from "@shared/extractors";
+import { normalizeLocationSourceCapabilities } from "@shared/location-domain.js";
 import type { ExtractorManifest } from "@shared/types";
 import { vi } from "vitest";
 
@@ -68,20 +69,6 @@ vi.mock("@server/services/scorer", () => ({
   scoreJobSuitability: vi.fn(),
 }));
 
-vi.mock("@server/services/job-brief", () => ({
-  generateJobBrief: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("@server/services/auto-apply", () => ({
-  sendAutoApplication: vi.fn().mockResolvedValue({
-    mode: "email",
-    recipient: "jobs@example.com",
-    subject: "Application for Test Role at Acme",
-    messageId: "test-message-id",
-    attachedResume: false,
-  }),
-}));
-
 vi.mock("@server/services/profile", () => ({
   getProfile: vi.fn().mockResolvedValue({}),
   clearProfileCache: vi.fn(),
@@ -108,10 +95,6 @@ vi.mock("@server/services/challenge-viewer", () => ({
     () => "/challenge-viewer/session/viewer-token/vnc.html",
   ),
   proxyChallengeViewerRequest: vi.fn(),
-}));
-
-vi.mock("browser-utils", () => ({
-  solveChallenge: vi.fn().mockResolvedValue({ status: "solved" }),
 }));
 
 vi.mock("@server/services/visa-sponsors/index", () => ({
@@ -145,17 +128,23 @@ const isolatedEnvKeys = [
   "BASIC_AUTH_PASSWORD",
   "JWT_SECRET",
   "JWT_EXPIRY_SECONDS",
+  "JOBOPS_APP_MODE",
+  "JOBOPS_HOSTED_PLATFORM_LLM_ENABLED",
+  "JOBOPS_HOSTED_QUOTAS_ENABLED",
+  "JOBOPS_HOSTED_SIGNUPS_ENABLED",
+  "JOBOPS_HOSTED_TENANT_ID",
   "WEBHOOK_SECRET",
   "UKVISAJOBS_EMAIL",
   "UKVISAJOBS_PASSWORD",
   "ADZUNA_APP_ID",
   "ADZUNA_APP_KEY",
-  "CAPTCHA_SOLVER_PROVIDER",
-  "CAPTCHA_SOLVER_AUTO_SOLVE_ENABLED",
-  "CAPTCHA_SOLVER_API_KEY",
 ] as const;
 
 const nativeFetch = globalThis.fetch;
+const nativeConsoleLog = console.log;
+const nativeConsoleWarn = console.warn;
+const nativeConsoleError = console.error;
+let migratedDbTemplatePromise: Promise<string> | null = null;
 
 function createTestExtractorRegistry(): ExtractorRegistry {
   const manifests = new Map<string, ExtractorManifest>();
@@ -179,11 +168,71 @@ function createTestExtractorRegistry(): ExtractorRegistry {
     manifests,
     manifestBySource,
     availableSources: [...PIPELINE_EXTRACTOR_SOURCE_IDS],
+    locationCapabilitiesBySource: Object.fromEntries(
+      Array.from(manifestBySource.keys()).map((source) => [
+        source,
+        normalizeLocationSourceCapabilities({ source }),
+      ]),
+    ),
   };
 }
 
 function restoreNativeFetch(): void {
   globalThis.fetch = nativeFetch;
+}
+
+async function importMigrationsSilently(): Promise<void> {
+  console.log = () => {};
+  console.warn = () => {};
+  console.error = () => {};
+
+  try {
+    await import("@server/db/migrate");
+  } finally {
+    console.log = nativeConsoleLog;
+    console.warn = nativeConsoleWarn;
+    console.error = nativeConsoleError;
+  }
+}
+
+function buildBaseTestEnv(): NodeJS.ProcessEnv {
+  const nextEnv = { ...originalEnv };
+  for (const key of isolatedEnvKeys) {
+    delete nextEnv[key];
+  }
+
+  return {
+    ...nextEnv,
+    NODE_ENV: "test",
+    JOBOPS_TEST_AUTH_BYPASS: "1",
+    MODEL: "test-model",
+    JOBSPY_SEARCH_TERMS: "alpha|beta",
+  };
+}
+
+async function ensureMigratedDbTemplate(): Promise<string> {
+  if (migratedDbTemplatePromise) {
+    return migratedDbTemplatePromise;
+  }
+
+  migratedDbTemplatePromise = (async () => {
+    const templateDir = await mkdtemp(join(tmpdir(), "job-ops-api-template-"));
+    const previousEnv = process.env;
+
+    try {
+      process.env = {
+        ...buildBaseTestEnv(),
+        DATA_DIR: templateDir,
+      };
+      await importMigrationsSilently();
+    } finally {
+      process.env = previousEnv;
+    }
+
+    return join(templateDir, "jobs.db");
+  })();
+
+  return migratedDbTemplatePromise;
 }
 
 export async function startServer(options?: {
@@ -199,21 +248,23 @@ export async function startServer(options?: {
   vi.resetModules();
   const tempDir = await mkdtemp(join(tmpdir(), "job-ops-api-test-"));
   const envOverrides = options?.env ?? {};
-  const nextEnv = { ...originalEnv };
-  for (const key of isolatedEnvKeys) {
-    delete nextEnv[key];
-  }
+  const requiresLegacyBasicAuthSeed =
+    typeof envOverrides.BASIC_AUTH_USER === "string" &&
+    envOverrides.BASIC_AUTH_USER.trim().length > 0 &&
+    typeof envOverrides.BASIC_AUTH_PASSWORD === "string" &&
+    envOverrides.BASIC_AUTH_PASSWORD.trim().length > 0;
+
   process.env = {
-    ...nextEnv,
+    ...buildBaseTestEnv(),
     DATA_DIR: tempDir,
-    NODE_ENV: "test",
-    JOBOPS_TEST_AUTH_BYPASS: "1",
-    MODEL: "test-model",
-    JOBSPY_SEARCH_TERMS: "alpha|beta",
     ...envOverrides,
   };
 
-  await import("@server/db/migrate");
+  if (requiresLegacyBasicAuthSeed) {
+    await importMigrationsSilently();
+  } else {
+    await copyFile(await ensureMigratedDbTemplate(), join(tempDir, "jobs.db"));
+  }
   const { applyStoredEnvOverrides } = await import(
     "@server/services/envSettings"
   );
@@ -236,10 +287,13 @@ export async function startServer(options?: {
   await applyStoredEnvOverrides();
 
   const app = createApp();
-  const server = app.listen(0);
-  await new Promise<void>((resolve) =>
-    server.once("listening", () => resolve()),
-  );
+  const server = await new Promise<Server>((resolve, reject) => {
+    let listeningServer: Server;
+    listeningServer = app.listen(0, "127.0.0.1", () =>
+      resolve(listeningServer),
+    );
+    listeningServer.once("error", reject);
+  });
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Failed to resolve server address");

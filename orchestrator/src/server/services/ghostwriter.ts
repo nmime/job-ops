@@ -8,6 +8,10 @@ import {
 import { logger } from "@infra/logger";
 import { getRequestId } from "@infra/request-context";
 import {
+  GHOSTWRITER_DOCUMENT_CONTEXT_MAX_SELECTED,
+  normalizeGhostwriterSelectedDocumentIds,
+} from "@shared/ghostwriter-document-context.js";
+import {
   GHOSTWRITER_EMAIL_CONTEXT_MAX_SELECTED,
   normalizeGhostwriterSelectedEmailIds,
 } from "@shared/ghostwriter-email-context.js";
@@ -22,8 +26,17 @@ import type {
   JobChatRun,
 } from "@shared/types";
 import * as jobChatRepo from "../repositories/ghostwriter";
+import * as jobDocumentsRepo from "../repositories/job-documents";
 import * as jobsRepo from "../repositories/jobs";
-import { buildJobChatPromptContext } from "./ghostwriter-context";
+import {
+  buildJobChatPromptContext,
+  canUseJobDocumentForGhostwriterContext,
+} from "./ghostwriter-context";
+import {
+  refundHostedUsageReservation,
+  reserveHostedUsage,
+  settleHostedUsageReservation,
+} from "./hosted-usage";
 import { LlmService } from "./llm/service";
 import type { JsonSchemaDefinition } from "./llm/types";
 import { resolveLlmRuntimeSettings as resolveRuntimeLlmSettings } from "./modelSelection";
@@ -37,7 +50,17 @@ type LlmRuntimeSettings = {
 };
 
 const abortControllers = new Map<string, AbortController>();
-const OPENROUTER_CAPABILITY_TIMEOUT_MS = 2500;
+
+function getPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+const getCapabilityTimeoutMs = () =>
+  getPositiveIntEnv("LLM_GHOSTWRITER_CAPABILITY_TIMEOUT_MS", 2500);
 const OPENROUTER_CAPABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
 const openRouterImageCapabilityCache = new Map<
   string,
@@ -51,6 +74,8 @@ const CHAT_RESPONSE_SCHEMA: JsonSchemaDefinition = {
     properties: {
       response: {
         type: "string",
+        description:
+          "The direct user-facing reply in plain text or Markdown. Do not serialize JSON into this string unless the user explicitly asks for JSON.",
       },
     },
     required: ["response"],
@@ -115,6 +140,7 @@ type GenerateReplyOptions = {
   prompt: string;
   attachments?: readonly JobChatImageAttachment[];
   llmConfig?: LlmRuntimeSettings;
+  usageReservation: GhostwriterUsageReservation;
   replaceMessageId?: string;
   version?: number;
   /** Parent message ID for the assistant reply (i.e. the user message that triggered it). */
@@ -148,6 +174,42 @@ type GenerateReplyOptions = {
   };
 };
 
+type GhostwriterUsageReservation = {
+  reservationId: string | null;
+};
+
+async function reserveGhostwriterUsageForThread(
+  threadId: string,
+): Promise<GhostwriterUsageReservation> {
+  const activeRun = await jobChatRepo.getActiveRunForThread(threadId);
+  if (activeRun) {
+    throw conflict("A chat generation is already running for this thread");
+  }
+
+  const usage = await reserveHostedUsage({ action: "ghostwriter" });
+  return { reservationId: usage.reservation?.id ?? null };
+}
+
+async function settleGhostwriterUsage(
+  usageReservation: GhostwriterUsageReservation,
+  usedUnits: number,
+): Promise<void> {
+  if (!usageReservation.reservationId) return;
+  await settleHostedUsageReservation({
+    reservationId: usageReservation.reservationId,
+    usedUnits,
+  });
+  usageReservation.reservationId = null;
+}
+
+async function refundGhostwriterUsage(
+  usageReservation: GhostwriterUsageReservation,
+): Promise<void> {
+  if (!usageReservation.reservationId) return;
+  await refundHostedUsageReservation(usageReservation.reservationId);
+  usageReservation.reservationId = null;
+}
+
 function resolveOpenRouterModelsUrl(baseUrl: string | null): string {
   const normalized = (baseUrl || "https://openrouter.ai").replace(/\/+$/, "");
   if (normalized.endsWith("/api/v1")) return `${normalized}/models`;
@@ -174,7 +236,7 @@ async function getOpenRouterImageCapabilityReason(
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    OPENROUTER_CAPABILITY_TIMEOUT_MS,
+    getCapabilityTimeoutMs(),
   );
 
   try {
@@ -267,7 +329,17 @@ async function imageInputCapabilityReason(
       : `The selected Gemini model (${input.model}) is not recognized as image-capable.`;
   }
 
-  if (provider === "openrouter" || provider === "openai_compatible") {
+  if (provider === "claude_cli") {
+    return /^(claude-|sonnet$|opus$|haiku$|fable$)/.test(model)
+      ? null
+      : `The selected Claude model (${input.model}) is not recognized as image-capable.`;
+  }
+
+  if (
+    provider === "openrouter" ||
+    provider === "openai_compatible" ||
+    provider === "glm"
+  ) {
     if (provider === "openrouter") {
       const metadataReason = await getOpenRouterImageCapabilityReason(input);
       if (metadataReason !== undefined) return metadataReason;
@@ -282,6 +354,10 @@ async function imageInputCapabilityReason(
       "llava",
       "pixtral",
       "gemini",
+      "glm-4v",
+      "glm-4.6v",
+      "glm-4.7v",
+      "glm-5v",
       "gpt-4o",
       "gpt-4.1",
       "gpt-4.5",
@@ -339,6 +415,11 @@ async function resolveAndValidateImageInput(
 }
 
 async function ensureJobThread(jobId: string) {
+  const job = await jobsRepo.getJobById(jobId);
+  if (!job) {
+    throw notFound("Job not found");
+  }
+
   return jobChatRepo.getOrCreateThreadForJob({
     jobId,
     title: null,
@@ -421,25 +502,83 @@ async function validateSelectedEmailIdsForJob(
   });
 }
 
+async function validateSelectedDocumentIdsForJob(
+  jobId: string,
+  selectedDocumentIds: readonly string[],
+): Promise<string[]> {
+  const normalizedIds =
+    normalizeGhostwriterSelectedDocumentIds(selectedDocumentIds);
+
+  if (normalizedIds.length > GHOSTWRITER_DOCUMENT_CONTEXT_MAX_SELECTED) {
+    throw badRequest(
+      `Select up to ${GHOSTWRITER_DOCUMENT_CONTEXT_MAX_SELECTED} documents for Ghostwriter context`,
+      {
+        maxSelectedDocuments: GHOSTWRITER_DOCUMENT_CONTEXT_MAX_SELECTED,
+        selectedCount: normalizedIds.length,
+      },
+    );
+  }
+
+  if (normalizedIds.length === 0) return [];
+
+  const documents = await jobDocumentsRepo.listJobDocumentsByIds(
+    jobId,
+    normalizedIds,
+  );
+  const documentsById = new Map(
+    documents.map((document) => [document.id, document]),
+  );
+  const invalidDocumentIds = normalizedIds.filter(
+    (documentId) => !documentsById.has(documentId),
+  );
+  if (invalidDocumentIds.length > 0) {
+    throw badRequest("Selected documents must belong to this job", {
+      invalidDocumentIds,
+    });
+  }
+
+  const unsupportedDocumentIds = normalizedIds.filter((documentId) => {
+    const document = documentsById.get(documentId);
+    return document ? !canUseJobDocumentForGhostwriterContext(document) : false;
+  });
+  if (unsupportedDocumentIds.length > 0) {
+    throw badRequest(
+      "Selected documents must be PDFs or text-like files for Ghostwriter context",
+      { unsupportedDocumentIds },
+    );
+  }
+
+  return normalizedIds;
+}
+
 async function updateThreadContext(input: {
   jobId: string;
   threadId: string;
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
 }) {
-  const [selectedNoteIds, selectedEmailIds] = await Promise.all([
-    input.selectedNoteIds === undefined
-      ? Promise.resolve(undefined)
-      : validateSelectedNoteIdsForJob(input.jobId, input.selectedNoteIds),
-    input.selectedEmailIds === undefined
-      ? Promise.resolve(undefined)
-      : validateSelectedEmailIdsForJob(input.jobId, input.selectedEmailIds),
-  ]);
+  const [selectedNoteIds, selectedEmailIds, selectedDocumentIds] =
+    await Promise.all([
+      input.selectedNoteIds === undefined
+        ? Promise.resolve(undefined)
+        : validateSelectedNoteIdsForJob(input.jobId, input.selectedNoteIds),
+      input.selectedEmailIds === undefined
+        ? Promise.resolve(undefined)
+        : validateSelectedEmailIdsForJob(input.jobId, input.selectedEmailIds),
+      input.selectedDocumentIds === undefined
+        ? Promise.resolve(undefined)
+        : validateSelectedDocumentIdsForJob(
+            input.jobId,
+            input.selectedDocumentIds,
+          ),
+    ]);
   const thread = await jobChatRepo.updateThreadContext({
     jobId: input.jobId,
     threadId: input.threadId,
     selectedNoteIds,
     selectedEmailIds,
+    selectedDocumentIds,
   });
 
   if (!thread) {
@@ -465,6 +604,7 @@ export async function updateContextForJob(input: {
   jobId: string;
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
 }) {
   const thread = await ensureJobThread(input.jobId);
   const updatedThread = await updateThreadContext({
@@ -472,11 +612,13 @@ export async function updateContextForJob(input: {
     threadId: thread.id,
     selectedNoteIds: input.selectedNoteIds,
     selectedEmailIds: input.selectedEmailIds,
+    selectedDocumentIds: input.selectedDocumentIds,
   });
 
   return {
     selectedNoteIds: updatedThread.selectedNoteIds,
     selectedEmailIds: updatedThread.selectedEmailIds,
+    selectedDocumentIds: updatedThread.selectedDocumentIds,
   };
 }
 
@@ -524,6 +666,7 @@ export async function listMessagesForJob(input: {
   branches: BranchInfo[];
   selectedNoteIds: string[];
   selectedEmailIds: string[];
+  selectedDocumentIds: string[];
 }> {
   const thread = await ensureJobThread(input.jobId);
   const messages = await jobChatRepo.getActivePathFromRoot(thread.id);
@@ -533,6 +676,7 @@ export async function listMessagesForJob(input: {
     branches,
     selectedNoteIds: thread.selectedNoteIds,
     selectedEmailIds: thread.selectedEmailIds,
+    selectedDocumentIds: thread.selectedDocumentIds,
   };
 }
 
@@ -549,6 +693,7 @@ async function runAssistantReply(
 
   const activeRun = await jobChatRepo.getActiveRunForThread(options.threadId);
   if (activeRun) {
+    await refundGhostwriterUsage(options.usageReservation);
     throw conflict("A chat generation is already running for this thread");
   }
 
@@ -557,6 +702,7 @@ async function runAssistantReply(
       options.jobId,
       thread.selectedNoteIds,
       thread.selectedEmailIds,
+      thread.selectedDocumentIds,
     ),
     options.llmConfig ?? resolveLlmRuntimeSettings(),
     buildConversationMessages(options.threadId, options.parentMessageId),
@@ -575,6 +721,7 @@ async function runAssistantReply(
       requestId,
     });
   } catch (error) {
+    await refundGhostwriterUsage(options.usageReservation);
     if (isRunningRunUniqueConstraintError(error)) {
       throw conflict("A chat generation is already running for this thread");
     }
@@ -599,6 +746,7 @@ async function runAssistantReply(
       errorCode: "INTERNAL_ERROR",
       errorMessage: "Failed to create assistant message",
     });
+    await refundGhostwriterUsage(options.usageReservation);
     throw error;
   }
 
@@ -651,6 +799,14 @@ async function runAssistantReply(
               },
             ]
           : []),
+        ...(context.selectedDocumentsSnapshot
+          ? [
+              {
+                role: "system" as const,
+                content: context.selectedDocumentsSnapshot,
+              },
+            ]
+          : []),
         ...history,
         {
           role: "user",
@@ -668,12 +824,21 @@ async function runAssistantReply(
       if (controller.signal.aborted) {
         throw requestTimeout("Chat generation was cancelled");
       }
-      throw upstreamError("LLM generation failed", {
+      throw upstreamError(`LLM generation failed: ${llmResult.error}`, {
         reason: llmResult.error,
       });
     }
 
-    const finalText = (llmResult.data.response || "").trim();
+    if (!llmResult.data || typeof llmResult.data.response !== "string") {
+      throw upstreamError(
+        "LLM response structure was invalid: missing 'response' property",
+        {
+          received: llmResult.data,
+        },
+      );
+    }
+
+    const finalText = llmResult.data.response.trim();
     const chunks = chunkText(finalText);
 
     for (const chunk of chunks) {
@@ -689,6 +854,7 @@ async function runAssistantReply(
           errorCode: "REQUEST_TIMEOUT",
           errorMessage: "Generation cancelled by user",
         });
+        await settleGhostwriterUsage(options.usageReservation, 0);
         options.stream?.onCancelled({ runId: run.id, message: cancelled });
         return {
           runId: run.id,
@@ -719,6 +885,7 @@ async function runAssistantReply(
       status: "completed",
     });
 
+    await settleGhostwriterUsage(options.usageReservation, 1);
     options.stream?.onCompleted({
       runId: run.id,
       message: completedMessage,
@@ -739,6 +906,15 @@ async function runAssistantReply(
       ? "Generation cancelled by user"
       : appError.message || "Generation failed";
 
+    if (!isCancelled) {
+      logger.error("Job chat generation failed", {
+        jobId: options.jobId,
+        threadId: options.threadId,
+        runId: run.id,
+        error: appError,
+      });
+    }
+
     const failedMessage = await jobChatRepo.updateMessage(assistantMessage.id, {
       content: accumulated,
       status: isCancelled ? "cancelled" : "failed",
@@ -753,6 +929,7 @@ async function runAssistantReply(
     });
 
     if (isCancelled) {
+      await settleGhostwriterUsage(options.usageReservation, 0);
       options.stream?.onCancelled({ runId: run.id, message: failedMessage });
       return {
         runId: run.id,
@@ -768,6 +945,7 @@ async function runAssistantReply(
       requestId,
     });
 
+    await refundGhostwriterUsage(options.usageReservation);
     throw upstreamError(message, { runId: run.id });
   } finally {
     abortControllers.delete(run.id);
@@ -786,6 +964,7 @@ export async function sendMessage(input: {
   attachments?: readonly JobChatImageAttachment[];
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const content = input.content.trim();
@@ -797,63 +976,75 @@ export async function sendMessage(input: {
   if (!thread) {
     throw notFound("Thread not found for this job");
   }
-  if (
-    input.selectedNoteIds !== undefined ||
-    input.selectedEmailIds !== undefined
-  ) {
-    await updateThreadContext({
+  const llmConfig = await resolveAndValidateImageInput(input.attachments);
+  const usageReservation = await reserveGhostwriterUsageForThread(
+    input.threadId,
+  );
+
+  try {
+    if (
+      input.selectedNoteIds !== undefined ||
+      input.selectedEmailIds !== undefined ||
+      input.selectedDocumentIds !== undefined
+    ) {
+      await updateThreadContext({
+        jobId: input.jobId,
+        threadId: input.threadId,
+        selectedNoteIds: input.selectedNoteIds,
+        selectedEmailIds: input.selectedEmailIds,
+        selectedDocumentIds: input.selectedDocumentIds,
+      });
+    }
+
+    // Determine parent: last message on the current active path
+    const activePath = await jobChatRepo.getActivePathFromRoot(input.threadId);
+    const parentId =
+      activePath.length > 0 ? activePath[activePath.length - 1].id : null;
+
+    const userMessage = await jobChatRepo.createMessage({
+      threadId: input.threadId,
+      jobId: input.jobId,
+      role: "user",
+      content,
+      attachments: input.attachments,
+      status: "complete",
+      tokensIn: estimateTokenCount(content),
+      tokensOut: null,
+      parentMessageId: parentId,
+    });
+
+    // Update parent's activeChildId to point to this new user message
+    if (parentId) {
+      await jobChatRepo.setActiveChild(parentId, userMessage.id);
+    } else {
+      // First message in thread — set as active root
+      await jobChatRepo.setActiveRoot(input.threadId, userMessage.id);
+    }
+
+    const result = await runAssistantReply({
       jobId: input.jobId,
       threadId: input.threadId,
-      selectedNoteIds: input.selectedNoteIds,
-      selectedEmailIds: input.selectedEmailIds,
+      prompt: content,
+      attachments: input.attachments,
+      llmConfig,
+      usageReservation,
+      parentMessageId: userMessage.id,
+      stream: input.stream,
     });
+
+    // Update user message's activeChildId to point to the assistant reply
+    await jobChatRepo.setActiveChild(userMessage.id, result.messageId);
+
+    const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
+    return {
+      userMessage,
+      assistantMessage,
+      runId: result.runId,
+    };
+  } catch (error) {
+    await refundGhostwriterUsage(usageReservation);
+    throw error;
   }
-  const llmConfig = await resolveAndValidateImageInput(input.attachments);
-
-  // Determine parent: last message on the current active path
-  const activePath = await jobChatRepo.getActivePathFromRoot(input.threadId);
-  const parentId =
-    activePath.length > 0 ? activePath[activePath.length - 1].id : null;
-
-  const userMessage = await jobChatRepo.createMessage({
-    threadId: input.threadId,
-    jobId: input.jobId,
-    role: "user",
-    content,
-    attachments: input.attachments,
-    status: "complete",
-    tokensIn: estimateTokenCount(content),
-    tokensOut: null,
-    parentMessageId: parentId,
-  });
-
-  // Update parent's activeChildId to point to this new user message
-  if (parentId) {
-    await jobChatRepo.setActiveChild(parentId, userMessage.id);
-  } else {
-    // First message in thread — set as active root
-    await jobChatRepo.setActiveRoot(input.threadId, userMessage.id);
-  }
-
-  const result = await runAssistantReply({
-    jobId: input.jobId,
-    threadId: input.threadId,
-    prompt: content,
-    attachments: input.attachments,
-    llmConfig,
-    parentMessageId: userMessage.id,
-    stream: input.stream,
-  });
-
-  // Update user message's activeChildId to point to the assistant reply
-  await jobChatRepo.setActiveChild(userMessage.id, result.messageId);
-
-  const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
-  return {
-    userMessage,
-    assistantMessage,
-    runId: result.runId,
-  };
 }
 
 export async function sendMessageForJob(input: {
@@ -862,6 +1053,7 @@ export async function sendMessageForJob(input: {
   attachments?: readonly JobChatImageAttachment[];
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const thread = await ensureJobThread(input.jobId);
@@ -872,6 +1064,7 @@ export async function sendMessageForJob(input: {
     attachments: input.attachments,
     selectedNoteIds: input.selectedNoteIds,
     selectedEmailIds: input.selectedEmailIds,
+    selectedDocumentIds: input.selectedDocumentIds,
     stream: input.stream,
   });
 }
@@ -882,22 +1075,12 @@ export async function regenerateMessage(input: {
   assistantMessageId: string;
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const thread = await jobChatRepo.getThreadForJob(input.jobId, input.threadId);
   if (!thread) {
     throw notFound("Thread not found for this job");
-  }
-  if (
-    input.selectedNoteIds !== undefined ||
-    input.selectedEmailIds !== undefined
-  ) {
-    await updateThreadContext({
-      jobId: input.jobId,
-      threadId: input.threadId,
-      selectedNoteIds: input.selectedNoteIds,
-      selectedEmailIds: input.selectedEmailIds,
-    });
   }
 
   const target = await jobChatRepo.getMessageById(input.assistantMessageId);
@@ -941,28 +1124,51 @@ export async function regenerateMessage(input: {
   if (!parentUserMessage) {
     throw badRequest("Could not find a user message to regenerate from");
   }
+  const usageReservation = await reserveGhostwriterUsageForThread(
+    input.threadId,
+  );
 
-  // Create a new sibling assistant message with the same parent (the user message)
-  const result = await runAssistantReply({
-    jobId: input.jobId,
-    threadId: input.threadId,
-    prompt: parentUserMessage.content,
-    attachments: parentUserMessage.attachments,
-    replaceMessageId: target.id,
-    version: (target.version || 1) + 1,
-    parentMessageId: parentUserMessage.id,
-    stream: input.stream,
-  });
+  try {
+    if (
+      input.selectedNoteIds !== undefined ||
+      input.selectedEmailIds !== undefined ||
+      input.selectedDocumentIds !== undefined
+    ) {
+      await updateThreadContext({
+        jobId: input.jobId,
+        threadId: input.threadId,
+        selectedNoteIds: input.selectedNoteIds,
+        selectedEmailIds: input.selectedEmailIds,
+        selectedDocumentIds: input.selectedDocumentIds,
+      });
+    }
 
-  // Update parent's activeChildId to the new assistant message (switch to new branch)
-  await jobChatRepo.setActiveChild(parentUserMessage.id, result.messageId);
+    // Create a new sibling assistant message with the same parent (the user message)
+    const result = await runAssistantReply({
+      jobId: input.jobId,
+      threadId: input.threadId,
+      prompt: parentUserMessage.content,
+      attachments: parentUserMessage.attachments,
+      replaceMessageId: target.id,
+      version: (target.version || 1) + 1,
+      parentMessageId: parentUserMessage.id,
+      usageReservation,
+      stream: input.stream,
+    });
 
-  const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
+    // Update parent's activeChildId to the new assistant message (switch to new branch)
+    await jobChatRepo.setActiveChild(parentUserMessage.id, result.messageId);
 
-  return {
-    runId: result.runId,
-    assistantMessage,
-  };
+    const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
+
+    return {
+      runId: result.runId,
+      assistantMessage,
+    };
+  } catch (error) {
+    await refundGhostwriterUsage(usageReservation);
+    throw error;
+  }
 }
 
 export async function regenerateMessageForJob(input: {
@@ -970,6 +1176,7 @@ export async function regenerateMessageForJob(input: {
   assistantMessageId: string;
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const thread = await ensureJobThread(input.jobId);
@@ -979,6 +1186,7 @@ export async function regenerateMessageForJob(input: {
     assistantMessageId: input.assistantMessageId,
     selectedNoteIds: input.selectedNoteIds,
     selectedEmailIds: input.selectedEmailIds,
+    selectedDocumentIds: input.selectedDocumentIds,
     stream: input.stream,
   });
 }
@@ -991,6 +1199,7 @@ export async function editMessage(input: {
   attachments?: readonly JobChatImageAttachment[];
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const content = input.content.trim();
@@ -1001,17 +1210,6 @@ export async function editMessage(input: {
   const thread = await jobChatRepo.getThreadForJob(input.jobId, input.threadId);
   if (!thread) {
     throw notFound("Thread not found for this job");
-  }
-  if (
-    input.selectedNoteIds !== undefined ||
-    input.selectedEmailIds !== undefined
-  ) {
-    await updateThreadContext({
-      jobId: input.jobId,
-      threadId: input.threadId,
-      selectedNoteIds: input.selectedNoteIds,
-      selectedEmailIds: input.selectedEmailIds,
-    });
   }
   const llmConfig = await resolveAndValidateImageInput(input.attachments);
 
@@ -1027,48 +1225,74 @@ export async function editMessage(input: {
   if (target.role !== "user") {
     throw badRequest("Only user messages can be edited");
   }
+  const usageReservation = await reserveGhostwriterUsageForThread(
+    input.threadId,
+  );
 
-  // Create a new sibling user message (same parent as the original)
-  const newUserMessage = await jobChatRepo.createMessage({
-    threadId: input.threadId,
-    jobId: input.jobId,
-    role: "user",
-    content,
-    attachments: input.attachments,
-    status: "complete",
-    tokensIn: estimateTokenCount(content),
-    tokensOut: null,
-    parentMessageId: target.parentMessageId,
-  });
+  try {
+    if (
+      input.selectedNoteIds !== undefined ||
+      input.selectedEmailIds !== undefined ||
+      input.selectedDocumentIds !== undefined
+    ) {
+      await updateThreadContext({
+        jobId: input.jobId,
+        threadId: input.threadId,
+        selectedNoteIds: input.selectedNoteIds,
+        selectedEmailIds: input.selectedEmailIds,
+        selectedDocumentIds: input.selectedDocumentIds,
+      });
+    }
 
-  // Update the grandparent's activeChildId to point to the new user message
-  if (target.parentMessageId) {
-    await jobChatRepo.setActiveChild(target.parentMessageId, newUserMessage.id);
-  } else {
-    // Editing a root message — set the new message as active root
-    await jobChatRepo.setActiveRoot(input.threadId, newUserMessage.id);
+    // Create a new sibling user message (same parent as the original)
+    const newUserMessage = await jobChatRepo.createMessage({
+      threadId: input.threadId,
+      jobId: input.jobId,
+      role: "user",
+      content,
+      attachments: input.attachments,
+      status: "complete",
+      tokensIn: estimateTokenCount(content),
+      tokensOut: null,
+      parentMessageId: target.parentMessageId,
+    });
+
+    // Update the grandparent's activeChildId to point to the new user message
+    if (target.parentMessageId) {
+      await jobChatRepo.setActiveChild(
+        target.parentMessageId,
+        newUserMessage.id,
+      );
+    } else {
+      // Editing a root message — set the new message as active root
+      await jobChatRepo.setActiveRoot(input.threadId, newUserMessage.id);
+    }
+
+    // Generate assistant reply as a child of the new user message
+    const result = await runAssistantReply({
+      jobId: input.jobId,
+      threadId: input.threadId,
+      prompt: content,
+      attachments: input.attachments,
+      llmConfig,
+      usageReservation,
+      parentMessageId: newUserMessage.id,
+      stream: input.stream,
+    });
+
+    // Update new user message's activeChildId to the assistant reply
+    await jobChatRepo.setActiveChild(newUserMessage.id, result.messageId);
+
+    const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
+    return {
+      userMessage: newUserMessage,
+      assistantMessage,
+      runId: result.runId,
+    };
+  } catch (error) {
+    await refundGhostwriterUsage(usageReservation);
+    throw error;
   }
-
-  // Generate assistant reply as a child of the new user message
-  const result = await runAssistantReply({
-    jobId: input.jobId,
-    threadId: input.threadId,
-    prompt: content,
-    attachments: input.attachments,
-    llmConfig,
-    parentMessageId: newUserMessage.id,
-    stream: input.stream,
-  });
-
-  // Update new user message's activeChildId to the assistant reply
-  await jobChatRepo.setActiveChild(newUserMessage.id, result.messageId);
-
-  const assistantMessage = await jobChatRepo.getMessageById(result.messageId);
-  return {
-    userMessage: newUserMessage,
-    assistantMessage,
-    runId: result.runId,
-  };
 }
 
 export async function editMessageForJob(input: {
@@ -1078,6 +1302,7 @@ export async function editMessageForJob(input: {
   attachments?: readonly JobChatImageAttachment[];
   selectedNoteIds?: readonly string[];
   selectedEmailIds?: readonly string[];
+  selectedDocumentIds?: readonly string[];
   stream?: GenerateReplyOptions["stream"];
 }) {
   const thread = await ensureJobThread(input.jobId);
@@ -1089,6 +1314,7 @@ export async function editMessageForJob(input: {
     attachments: input.attachments,
     selectedNoteIds: input.selectedNoteIds,
     selectedEmailIds: input.selectedEmailIds,
+    selectedDocumentIds: input.selectedDocumentIds,
     stream: input.stream,
   });
 }

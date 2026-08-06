@@ -29,6 +29,8 @@ export const EXTRACTOR_SOURCE_IDS = [
   "seek",
   "naukri",
   "everjobs",
+  "fiveamsat",
+  "wazzuf",
   "manual",
 ] as const;
 
@@ -128,6 +130,8 @@ export const EXTRACTOR_SOURCE_METADATA: Record<
     category: "pipeline",
   },
   everjobs: { label: "Ever Jobs", order: 185, category: "pipeline" },
+  fiveamsat: { label: "Khamsat", order: 109, category: "pipeline" },
+  wazzuf: { label: "WUZZUF", order: 110, category: "pipeline" },
   manual: { label: "Manual", order: 190, category: "manual" },
 };
 
