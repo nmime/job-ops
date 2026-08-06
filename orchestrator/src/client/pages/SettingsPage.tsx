@@ -1242,6 +1242,7 @@ export const SettingsPage: React.FC = () => {
         captchaSolverAutoSolveEnabled: nullIfSame(
           data.captchaSolverAutoSolveEnabled,
           envSettings.fullAuto.captchaSolverAutoSolveEnabled.default,
+        ),
         typstTheme: nullIfSame(
           data.typstTheme,
           reactiveResume.typstTheme.default,
@@ -1613,8 +1614,6 @@ export const SettingsPage: React.FC = () => {
                 : "Configured",
               variant: "outline" as const,
             }
-          envSettings.readable.adzunaAppId
-          ? { label: "Configured", variant: "outline" as const }
           : null;
       case "display":
         return { label: "Active", variant: "secondary" as const };

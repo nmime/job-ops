@@ -329,6 +329,7 @@ export const createAppSettings = (
   adzunaAppKeyHint: null,
   apifyTokenHint: null,
   captchaSolverApiKeyHint: null,
+  basicAuthPasswordHint: null,
   webhookSecretHint: null,
   backupEnabled: { value: false, default: false, override: null },
   backupHour: { value: 3, default: 3, override: null },
