@@ -4,6 +4,19 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startServer, stopServer } from "./test-utils";
 
+vi.mock("@server/services/auto-apply", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@server/services/auto-apply")>();
+  return {
+    ...actual,
+    sendAutoApplication: vi.fn().mockResolvedValue({
+      recipient: "jobs@example.com",
+      method: "email",
+      subject: "Application",
+    }),
+  };
+});
+
 describe.sequential("Jobs API routes", () => {
   let server: Server;
   let baseUrl: string;

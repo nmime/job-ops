@@ -32,3 +32,6 @@ tmp/
 
 # Runtime storage artifacts
 orchestrator/storage
+
+# freelance E2E evidence
+orchestrator/e2e-evidence/

@@ -467,7 +467,9 @@ describe("JobDetailPanel", () => {
       within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),
     ).toBeDisabled();
     expect(
-      screen.getByText("Regenerate the stale resume PDF before auto-applying."),
+      screen.getAllByText(
+        "Regenerate the stale resume PDF before auto-applying.",
+      )[0],
     ).toBeInTheDocument();
     fireEvent.click(
       within(getApplyPanel()).getByRole("button", { name: /auto-apply/i }),

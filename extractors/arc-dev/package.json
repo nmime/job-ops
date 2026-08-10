@@ -1,0 +1,12 @@
+{
+  "name": "arc-dev-extractor",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Arc.dev freelance provider",
+  "dependencies": {
+    "job-ops-shared": "file:../../shared",
+    "freelance-shared": "file:../freelance-shared"
+  },
+  "devDependencies": { "@types/node": "^24.0.0", "typescript": "~5.9.0" },
+  "scripts": { "check:types": "tsc --noEmit" }
+}

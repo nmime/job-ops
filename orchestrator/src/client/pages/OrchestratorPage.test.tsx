@@ -22,6 +22,7 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
 });
 
 vi.mock("../api", () => ({
+  hasAuthenticatedSession: vi.fn().mockReturnValue(true),
   updateSettings: vi.fn().mockResolvedValue({}),
   runPipeline: vi.fn().mockResolvedValue({ message: "ok" }),
   planPipelineSearch: vi.fn().mockResolvedValue({}),

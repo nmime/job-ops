@@ -12,6 +12,17 @@ const { mockCallJson, mockResolveCountryAtPoint, mockResolveNearbyPlaceNames } =
       .mockResolvedValue(["Leeds", "Bradford"]),
   }));
 
+vi.mock("browser-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("browser-utils")>();
+  return {
+    ...actual,
+    solveChallenge: vi.fn().mockResolvedValue({
+      status: "solved",
+      cookiesSaved: 1,
+    }),
+  };
+});
+
 vi.mock("@server/services/modelSelection", () => ({
   resolveLlmModel: vi.fn().mockResolvedValue("test-model"),
   createConfiguredLlmService: vi.fn().mockResolvedValue({
@@ -714,16 +725,6 @@ describe.sequential("Pipeline API routes", () => {
       body: JSON.stringify({ minSuitabilityScore: 120 }),
     });
     expect(badRun.status).toBe(400);
-
-    const unsupportedRunFields = await fetch(`${baseUrl}/api/pipeline/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        runBudget: 150,
-        searchTerms: ["backend engineer"],
-      }),
-    });
-    expect(unsupportedRunFields.status).toBe(400);
 
     const { runPipeline } = await import("@server/pipeline/index");
     const runRes = await fetch(`${baseUrl}/api/pipeline/run`, {

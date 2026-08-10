@@ -74,6 +74,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 }));
 
 vi.mock("../api", () => ({
+  hasAuthenticatedSession: vi.fn().mockReturnValue(true),
   getJob: vi.fn(),
   getJobStageEvents: vi.fn(),
   getJobTasks: vi.fn(),

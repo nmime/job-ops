@@ -4,6 +4,7 @@ export * from "./chat";
 export * from "./design-resume";
 export * from "./design-resume-jake";
 export * from "./extractors";
+export * from "./freelance";
 export * from "./jobs";
 export * from "./pipeline";
 export * from "./post-application";

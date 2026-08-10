@@ -1042,11 +1042,6 @@ export const settingsRegistry = {
     envKey: "CAPTCHA_SOLVER_API_KEY",
     schema: z.string().trim().max(2000),
   },
-  basicAuthPassword: {
-    kind: "secret" as const,
-    envKey: "BASIC_AUTH_PASSWORD",
-    schema: z.string().trim().max(2000),
-  },
   webhookSecret: {
     kind: "secret" as const,
     envKey: "WEBHOOK_SECRET",
