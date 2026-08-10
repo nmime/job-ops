@@ -7,7 +7,14 @@ import {
   getFreelanceRateLimit,
   isFreelanceApplyEnabled,
 } from "./apply-adapter";
-import { __setFreelanceRegistryForTests } from "./registry";
+import type {
+  FreelancePlatformId,
+  FreelanceProviderManifest,
+} from "@shared/types/freelance";
+import {
+  type FreelanceProviderRegistry,
+  __setFreelanceRegistryForTests,
+} from "./registry";
 
 vi.mock("@infra/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -136,28 +143,31 @@ describe("buildDeterministicProposal", () => {
 });
 
 describe("applyToFreelanceGig", () => {
-  const fakeProvider = (applyImpl?: ReturnType<typeof vi.fn>) => ({
-    manifests: new Map([
-      [
-        "upwork" as const,
-        {
-          id: "upwork" as const,
-          displayName: "Upwork",
-          kind: "freelance-marketplace",
-          findGigs: vi.fn(),
-          applyToGig:
-            applyImpl ??
-            vi.fn(async (ctx: { dryRun: boolean }) => ({
-              platform: "upwork" as const,
-              mode: ctx.dryRun ? ("dry_run" as const) : ("submit" as const),
-              status: ctx.dryRun ? ("skipped" as const) : ("submitted" as const),
-            })),
-        },
-      ],
-    ]),
-    availablePlatforms: ["upwork" as const],
-    failed: [],
-  });
+  const fakeProvider = (
+    applyImpl?: ReturnType<typeof vi.fn>,
+  ): FreelanceProviderRegistry => {
+    const manifest = {
+      id: "upwork",
+      displayName: "Upwork",
+      kind: "freelance-marketplace",
+      findGigs: vi.fn(),
+      applyToGig:
+        applyImpl ??
+        vi.fn(async (ctx: { dryRun: boolean }) => ({
+          platform: "upwork" as const,
+          mode: ctx.dryRun ? ("dry_run" as const) : ("submit" as const),
+          status: ctx.dryRun ? ("skipped" as const) : ("submitted" as const),
+        })),
+    } as unknown as FreelanceProviderManifest;
+
+    return {
+      manifests: new Map<FreelancePlatformId, FreelanceProviderManifest>([
+        ["upwork", manifest],
+      ]),
+      availablePlatforms: ["upwork"],
+      failed: [],
+    };
+  };
 
   it("defaults to dry-run and still produces a proposal", async () => {
     __setFreelanceRegistryForTests(fakeProvider());
