@@ -1,10 +1,10 @@
 import { reportProgress, stubNotFound } from "freelance-shared";
 import type {
+  CreateGigInput,
   FreelanceApplyContext,
   FreelanceApplyResult,
   FreelanceFinderContext,
   FreelanceFinderResult,
-  CreateGigInput,
 } from "job-ops-shared/types/freelance";
 
 const PLATFORM = "freelancer" as const;
@@ -176,7 +176,9 @@ async function postBid(
     throw new Error(`Freelancer bid HTTP ${res.status}: ${text.slice(0, 200)}`);
   }
   const json = (await res.json()) as { result?: { id?: number } };
-  return { bidId: json.result?.id != null ? String(json.result.id) : undefined };
+  return {
+    bidId: json.result?.id != null ? String(json.result.id) : undefined,
+  };
 }
 
 /**

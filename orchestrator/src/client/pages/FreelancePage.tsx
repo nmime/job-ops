@@ -1,3 +1,16 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Briefcase,
+  DollarSign,
+  FileText,
+  Loader2,
+  Play,
+  RefreshCw,
+  ShieldCheck,
+  TrendingUp,
+} from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 import {
   type FreelanceGigItem,
   getFreelanceGigs,
@@ -18,19 +31,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Briefcase,
-  DollarSign,
-  FileText,
-  Loader2,
-  Play,
-  RefreshCw,
-  ShieldCheck,
-  TrendingUp,
-} from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
 
 const DEFAULT_SKILLS = [
   "TypeScript",
@@ -145,9 +145,7 @@ export function FreelancePage() {
           <ShieldCheck className="h-6 w-6 shrink-0 text-amber-600" />
           <div className="text-sm">
             <span className="font-semibold">
-              {stats?.autobidEnabled
-                ? "Auto-bid enabled"
-                : "Dry-run mode"}
+              {stats?.autobidEnabled ? "Auto-bid enabled" : "Dry-run mode"}
             </span>{" "}
             — proposals are generated but{" "}
             {stats?.autobidEnabled ? "will be submitted" : "not submitted"}{" "}
@@ -321,9 +319,7 @@ export function FreelancePage() {
                     <Badge variant={p.available ? "default" : "outline"}>
                       {p.available ? "live" : "no-creds"}
                     </Badge>
-                    {p.applyEnabled && (
-                      <Badge variant="secondary">apply</Badge>
-                    )}
+                    {p.applyEnabled && <Badge variant="secondary">apply</Badge>}
                   </div>
                 </div>
               ))}
@@ -341,17 +337,12 @@ export function FreelancePage() {
                 </p>
               ) : (
                 proposals.slice(0, 8).map((proposal) => (
-                  <div
-                    key={proposal.id}
-                    className="rounded border p-2 text-xs"
-                  >
+                  <div key={proposal.id} className="rounded border p-2 text-xs">
                     <div className="flex items-center justify-between">
                       <Badge variant="outline">{proposal.platform}</Badge>
                       <Badge
                         variant={
-                          proposal.mode === "dry_run"
-                            ? "secondary"
-                            : "default"
+                          proposal.mode === "dry_run" ? "secondary" : "default"
                         }
                       >
                         {proposal.mode}
@@ -385,9 +376,7 @@ export function FreelancePage() {
                   <div key={platform} className="space-y-1">
                     <div className="flex justify-between text-sm">
                       <span className="capitalize">{platform}</span>
-                      <span className="font-medium">
-                        ${amount.toFixed(2)}
-                      </span>
+                      <span className="font-medium">${amount.toFixed(2)}</span>
                     </div>
                     <Progress value={(amount / max) * 100} />
                   </div>

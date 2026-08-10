@@ -12,14 +12,14 @@ import {
   upsertGig,
 } from "@server/repositories/freelance";
 import {
-  isFreelanceApplyEnabled,
-  buildDeterministicProposal,
-} from "@server/services/freelance/apply-adapter";
-import {
   isFreelanceAutobidEnabled,
-  runAggregatorCycle,
   resolveEnabledPlatforms,
+  runAggregatorCycle,
 } from "@server/services/freelance/aggregator";
+import {
+  buildDeterministicProposal,
+  isFreelanceApplyEnabled,
+} from "@server/services/freelance/apply-adapter";
 import {
   computeDedupHash,
   heuristicGigScore,
@@ -135,8 +135,8 @@ freelanceRouter.post(
         return fail(res, toAppError(new Error("Gig not found")));
       }
 
-      const profileSkills = ((req.body ?? {}) as { profileSkills?: string[] })
-        .profileSkills ?? [];
+      const profileSkills =
+        ((req.body ?? {}) as { profileSkills?: string[] }).profileSkills ?? [];
 
       const draft = buildDeterministicProposal({
         gigId: gig.id,

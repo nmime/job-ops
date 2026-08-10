@@ -17,7 +17,10 @@ const { freelanceGigs, freelanceProposals, freelanceEarnings } = schema;
 export type GigRow = typeof freelanceGigs.$inferSelect;
 
 export async function upsertGig(
-  input: CreateGigInput & { dedupHash: string; suitabilityScore?: number | null },
+  input: CreateGigInput & {
+    dedupHash: string;
+    suitabilityScore?: number | null;
+  },
 ): Promise<{ gig: GigRow; created: boolean }> {
   const tenantId = getActiveTenantId();
   const existing = db
@@ -87,15 +90,24 @@ export async function upsertGig(
     updatedAt: now,
   };
   db.insert(freelanceGigs).values(row).run();
-  return { gig: db.select().from(freelanceGigs).where(eq(freelanceGigs.id, id)).get() as GigRow, created: true };
+  return {
+    gig: db
+      .select()
+      .from(freelanceGigs)
+      .where(eq(freelanceGigs.id, id))
+      .get() as GigRow,
+    created: true,
+  };
 }
 
-export async function listGigs(options: {
-  status?: FreelanceGigStatus;
-  platform?: FreelancePlatformId;
-  minScore?: number;
-  limit?: number;
-} = {}): Promise<GigRow[]> {
+export async function listGigs(
+  options: {
+    status?: FreelanceGigStatus;
+    platform?: FreelancePlatformId;
+    minScore?: number;
+    limit?: number;
+  } = {},
+): Promise<GigRow[]> {
   const tenantId = getActiveTenantId();
   const conditions = [eq(freelanceGigs.tenantId, tenantId)];
   if (options.status) conditions.push(eq(freelanceGigs.status, options.status));
@@ -126,9 +138,7 @@ export async function updateGigStatus(
     .run();
 }
 
-export async function countGigsByStatus(): Promise<
-  Record<string, number>
-> {
+export async function countGigsByStatus(): Promise<Record<string, number>> {
   const tenantId = getActiveTenantId();
   const rows = db
     .select({

@@ -1183,7 +1183,9 @@ export const freelanceGigs = sqliteTable(
     dedupHash: text("dedup_hash").notNull(),
     status: text("status").notNull().default("discovered"),
     suitabilityScore: integer("suitability_score"),
-    discoveredAt: text("discovered_at").notNull().default(sql`(datetime('now'))`),
+    discoveredAt: text("discovered_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
     updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
   },
   (table) => ({
