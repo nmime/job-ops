@@ -13,6 +13,36 @@ const MODULE_RELATIVE_EXTRACTORS_ROOT = resolve(
 
 const MANIFEST_CANDIDATES = ["manifest.ts", "src/manifest.ts"] as const;
 
+/**
+ * Directories that are freelance-aggregator providers, not job-pipeline
+ * extractors. Their manifests expose findGigs/applyToGig (a different contract
+ * than ExtractorManifest.run) and declare gig sources that must not be registered
+ * as job sources (remoteok/weworkremotely would collide with the remoteapis
+ * job extractor). The freelance registry loads them separately.
+ */
+const FREELANCE_PROVIDER_DIRS = new Set([
+  "aggregator-core",
+  "arc-dev",
+  "braintrust",
+  "contra",
+  "fiverr",
+  "flexjobs",
+  "freelancer",
+  "freelancermap",
+  "freelance-shared",
+  "gun-io",
+  "guru",
+  "malt",
+  "peopleperhour",
+  "remoteok",
+  "toptal",
+  "turing",
+  "upwork",
+  "wantapply",
+  "weworkremotely",
+  "wellfound",
+]);
+
 async function fileExists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -63,6 +93,7 @@ export async function discoverManifestPaths(
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (FREELANCE_PROVIDER_DIRS.has(entry.name)) continue;
     for (const candidate of MANIFEST_CANDIDATES) {
       const fullPath = join(root, entry.name, candidate);
       if (await fileExists(fullPath)) {
