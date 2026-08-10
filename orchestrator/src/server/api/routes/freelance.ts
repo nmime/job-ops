@@ -20,10 +20,7 @@ import {
   buildDeterministicProposal,
   isFreelanceApplyEnabled,
 } from "@server/services/freelance/apply-adapter";
-import {
-  computeDedupHash,
-  heuristicGigScore,
-} from "@server/services/freelance/dedupe";
+import { computeDedupHash } from "@server/services/freelance/dedupe";
 import { getFreelanceProviderRegistry } from "@server/services/freelance/registry";
 import type { FreelancePlatformId } from "@shared/types/freelance";
 import { type Request, type Response, Router } from "express";
