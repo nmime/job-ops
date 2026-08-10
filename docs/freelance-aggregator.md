@@ -113,3 +113,57 @@ To make the aggregator actually earn, per platform:
 
 Until step 1 is done by the account owner, no automation can bid on your behalf —
 these platforms require *your* authenticated identity.
+
+## App integration (v2)
+
+The aggregator is no longer a standalone script — it is wired into the orchestrator.
+
+### Database
+Three tenant-scoped tables (`orchestrator/src/server/db/schema.ts`, created by `npm run db:migrate`):
+`freelance_gigs`, `freelance_proposals`, `freelance_earnings`.
+
+### API (`/api/freelance`, auth required)
+| Method + path | Purpose |
+| --- | --- |
+| `GET /platforms` | 18 providers, availability, `autobidEnabled` |
+| `POST /run` | discover -> dedupe -> score -> persist a cycle |
+| `GET /gigs?minScore=&limit=` | scored gig feed, newest first |
+| `POST /gigs/:id/propose` | draft a proposal (dry-run unless every gate is open) |
+| `GET /proposals` | proposal history |
+| `GET /stats` | dashboard counters + earnings summary |
+| `GET /earnings` | recorded earnings |
+
+### UI
+`/freelance` (nav: "Freelance") renders stats cards, a dry-run safety banner, the
+scored gig feed with a min-score slider and per-gig propose button, platform
+status, proposals, and earnings.
+
+### Autonomous worker
+`startFreelanceWorkerService()` runs at server boot but stays **off** unless
+`JOBOPS_FREELANCE_WORKER_ENABLED=true`. It runs non-overlapping cycles on
+`JOBOPS_FREELANCE_WORKER_INTERVAL_MINUTES` (default 60).
+
+### Provider registry isolation
+Freelance providers live in `extractors/<platform>/` but use the
+`findGigs`/`applyToGig` contract, not `ExtractorManifest.run`. They are excluded
+from the job-extractor scan via `FREELANCE_PROVIDER_DIRS` in
+`orchestrator/src/server/extractors/discovery.ts` — without this the `remoteok`
+and `weworkremotely` gig sources collide with the `remoteapis` job extractor and
+crash startup with `DuplicateSourceProviderError`.
+
+## Money path (what actually earns)
+
+Discovery is live and credential-free on **Freelancer.com, RemoteOK and
+WeWorkRemotely**. Only **Freelancer.com** has a real submit adapter
+(`POST https://www.freelancer.com/api/projects/0.1/bids/`). To let it place real
+bids, all three gates must be open:
+
+```
+JOBOPS_FREELANCE_FREELANCER_API_KEY=<your OAuth token>
+JOBOPS_FREELANCE_FREELANCER_APPLY_ENABLED=true
+FREELANCE_AUTOBID_ENABLED=true
+```
+
+With any gate closed the pipeline still discovers, scores and drafts proposals,
+but returns `mode: "dry_run"` and submits nothing. The other 15 credentialed
+platforms return a structured "not configured" result by design.
