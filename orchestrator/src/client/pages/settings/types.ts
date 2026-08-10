@@ -1,6 +1,8 @@
 import type {
   ChatStyleLanguageMode,
   ChatStyleManualLanguage,
+  LlmPurposeApiKeyHints,
+  LlmPurposeOverrides,
 } from "@shared/types.js";
 
 export type EffectiveDefault<T> = {
@@ -15,12 +17,15 @@ export type ModelValues = EffectiveDefault<string> & {
   llmProvider: string;
   llmBaseUrl: string;
   llmApiKeyHint: string | null;
+  llmPurposeOverrides: LlmPurposeOverrides;
+  llmPurposeApiKeyHints: LlmPurposeApiKeyHints;
 };
 
 export type WebhookValues = EffectiveDefault<string>;
 export type DisplayValues = {
   showSponsorInfo: EffectiveDefault<boolean>;
   renderMarkdownInJobDescriptions: EffectiveDefault<boolean>;
+  autoTailorOnManualImport: EffectiveDefault<boolean>;
 };
 export type ChatValues = {
   tone: EffectiveDefault<string>;
@@ -38,17 +43,13 @@ export type EnvSettingsValues = {
   readable: {
     ukvisajobsEmail: string;
     adzunaAppId: string;
-    basicAuthUser: string;
-    basicAuthPassword: string;
   };
   private: {
     ukvisajobsPasswordHint: string | null;
     adzunaAppKeyHint: string | null;
-    basicAuthPasswordHint: string | null;
     webhookSecretHint: string | null;
     captchaSolverApiKeyHint: string | null;
   };
-  basicAuthActive: boolean;
   fullAuto: {
     enabled: EffectiveDefault<boolean>;
     browserSubmitEnabled: EffectiveDefault<boolean>;

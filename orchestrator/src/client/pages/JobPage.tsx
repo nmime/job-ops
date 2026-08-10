@@ -534,7 +534,6 @@ export const JobPage: React.FC = () => {
   const isDiscovered = job?.status === "discovered";
   const isReady = job?.status === "ready";
   const isApplied = job?.status === "applied";
-  const isInProgress = job?.status === "in_progress";
   const autoApplyRecipient = job ? resolveAutoApplyRecipient(job) : null;
   const hasCaptchaSignal = job
     ? containsCaptchaSignal(job.applicationLink) ||

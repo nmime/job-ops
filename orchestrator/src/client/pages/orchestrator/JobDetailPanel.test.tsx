@@ -457,6 +457,9 @@ describe("JobDetailPanel", () => {
         selectedJob={stalePdfJob}
         onSelectJobId={vi.fn()}
         onJobUpdated={vi.fn().mockResolvedValue(undefined)}
+        selectedJobListItem={null}
+        selectedJobLoadState="idle"
+        onRetrySelectedJob={vi.fn()}
       />,
     );
 
@@ -487,6 +490,9 @@ describe("JobDetailPanel", () => {
         selectedJob={noRecipientJob}
         onSelectJobId={vi.fn()}
         onJobUpdated={vi.fn().mockResolvedValue(undefined)}
+        selectedJobListItem={null}
+        selectedJobLoadState="idle"
+        onRetrySelectedJob={vi.fn()}
       />,
     );
 

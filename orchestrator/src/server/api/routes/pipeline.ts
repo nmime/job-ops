@@ -495,32 +495,6 @@ pipelineRouter.get(
 /**
  * POST /api/pipeline/run - Trigger the pipeline manually
  */
-const runPipelineSchema = z
-  .object({
-    topN: z.number().min(1).max(50).optional(),
-    minSuitabilityScore: z.number().min(0).max(100).optional(),
-    sources: z
-      .array(
-        z.enum(
-          PIPELINE_EXTRACTOR_SOURCE_IDS as [
-            (typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number],
-            ...(typeof PIPELINE_EXTRACTOR_SOURCE_IDS)[number][],
-          ],
-        ),
-      )
-      .min(1)
-      .optional(),
-    country: z.string().trim().optional(),
-    cityLocations: z.array(z.string().trim().min(1)).optional(),
-    workplaceTypes: z
-      .array(z.enum(WORKPLACE_TYPE_VALUES))
-      .min(1)
-      .max(3)
-      .optional(),
-    searchScope: z.enum(LOCATION_SEARCH_SCOPE_VALUES).optional(),
-    matchStrictness: z.enum(LOCATION_MATCH_STRICTNESS_VALUES).optional(),
-  })
-  .strict();
 const runPipelineSchema = z.object({
   topN: z.number().min(1).max(50).optional(),
   minSuitabilityScore: z.number().min(0).max(100).optional(),

@@ -1104,7 +1104,10 @@ describe.sequential("Pipeline API routes", () => {
       resolved: true,
       remaining: 0,
     });
-    vi.mocked(solveChallenge).mockResolvedValueOnce({ status: "solved" });
+    vi.mocked(solveChallenge).mockResolvedValueOnce({
+      status: "solved",
+      cookiesSaved: 1,
+    });
 
     const res = await fetch(`${baseUrl}/api/pipeline/solve-challenge`, {
       method: "POST",

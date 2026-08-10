@@ -720,7 +720,6 @@ const getDerivedSettings = (settings: AppSettings | null) => {
         webhookSecretHint: settings?.webhookSecretHint ?? null,
         captchaSolverApiKeyHint: settings?.captchaSolverApiKeyHint ?? null,
       },
-      basicAuthActive: settings?.basicAuthActive ?? false,
       fullAuto: {
         enabled: {
           effective: settings?.jobopsFullAutoEnabled?.value ?? false,
@@ -781,6 +780,10 @@ const getDerivedSettings = (settings: AppSettings | null) => {
       blockedCompanyKeywords: {
         effective: settings?.blockedCompanyKeywords?.value ?? [],
         default: settings?.blockedCompanyKeywords?.default ?? [],
+      },
+      scoringInstructions: {
+        effective: settings?.scoringInstructions?.value ?? "",
+        default: settings?.scoringInstructions?.default ?? "",
       },
     },
     promptTemplates: {
@@ -1606,7 +1609,6 @@ export const SettingsPage: React.FC = () => {
       case "environment":
         return envSettings.readable.ukvisajobsEmail ||
           envSettings.readable.adzunaAppId ||
-          envSettings.basicAuthActive ||
           envSettings.fullAuto.enabled.effective
           ? {
               label: envSettings.fullAuto.enabled.effective

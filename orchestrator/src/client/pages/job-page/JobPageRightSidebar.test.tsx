@@ -43,6 +43,8 @@ function renderRightSidebar(overrides: Parameters<typeof createJob>[0] = {}) {
       job={job}
       tasks={[]}
       jobLink={job.jobUrl}
+      onAutoApply={vi.fn()}
+      autoApplyDisabledReason={null}
       isDiscovered={job.status === "discovered"}
       isReady={job.status === "ready"}
       isApplied={job.status === "applied"}

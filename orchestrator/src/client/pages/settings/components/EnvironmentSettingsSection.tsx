@@ -7,11 +7,12 @@ import type { UpdateSettingsInput } from "@shared/settings-schema.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type React from "react";
 import { useState } from "react";
-import { useFormContext } from "react-hook-form";
+import { Controller, useFormContext, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { showErrorToast } from "@/client/lib/error-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 
@@ -237,13 +238,14 @@ export const EnvironmentSettingsSection: React.FC<
 > = ({ values, isLoading, isSaving, layoutMode }) => {
   const {
     register,
+    control,
     formState: { errors },
   } = useFormContext<UpdateSettingsInput>();
   const { private: privateValues } = values;
 
-  const isBasicAuthEnabled = watch("enableBasicAuth");
   const isFullAutoEnabled =
-    watch("jobopsFullAutoEnabled") ?? values.fullAuto.enabled.effective;
+    useWatch({ control, name: "jobopsFullAutoEnabled" }) ??
+    values.fullAuto.enabled.effective;
 
   return (
     <SettingsSectionFrame

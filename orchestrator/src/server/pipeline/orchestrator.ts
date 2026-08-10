@@ -459,58 +459,6 @@ export async function runPipeline(
           });
         }
 
-          progressHelpers.challengeRequired(pendingChallenges);
-
-          // Block until all challenges are resolved by the solve-challenge API.
-          // The Promise is resolved by `resolvePipelineChallenge()`, which is
-          // called from the POST /api/pipeline/solve-challenge endpoint (4d).
-          // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
-          // and ensureNotCancelled() fires after the Promise resolves.
-          const challengedSources = pendingChallenges.flatMap((c) => c.sources);
-
-          await new Promise<void>((resolve) => {
-            tenantState.activeChallengeState = {
-              challenges: new Map(
-                pendingChallenges.map((c) => [c.extractorId, c]),
-              ),
-              resolve,
-            };
-          });
-          tenantState.activeChallengeState = null;
-
-          ensureNotCancelled(tenantId);
-
-          // Re-run only the extractors that had challenges
-          pipelineLogger.info("Challenges resolved, re-running extractors", {
-            sources: challengedSources,
-          });
-
-          const retryConfig = { ...mergedConfig, sources: challengedSources };
-          const retryResult = await discoverJobsStep({
-            mergedConfig: retryConfig,
-            shouldCancel: () =>
-              getPipelineState(tenantId).cancelRequestedAt !== null,
-          });
-
-          discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
-          sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
-          pendingChallenges = retryResult.pendingChallenges;
-
-          // If the retry itself hits challenges again (e.g. cookie expired
-          // between solve and retry), we don't loop — just continue with whatever
-          // the first run discovered.  The user will see partial results and can
-          // re-run the pipeline.
-          if (retryResult.pendingChallenges.length > 0) {
-            pipelineLogger.warn(
-              "Retry after challenge still has challenges — continuing with partial results",
-              {
-                retryPendingChallenges: retryResult.pendingChallenges.map(
-                  (c) => c.extractorId,
-                ),
-              },
-            );
-          }
-
           progressHelpers.crawlingComplete(discoveredJobs.length);
         }
       }
@@ -596,14 +544,8 @@ export async function runPipeline(
           jobsToProcess,
           processJob,
           shouldCancel: () =>
-            getPipelineState(tenantId).cancelRequestedAt !== null,
+            getPipelineState(scopeKey).cancelRequestedAt !== null,
         });
-      const { processedCount } = await processJobsStep({
-        jobsToProcess,
-        processJob,
-        shouldCancel: () =>
-          getPipelineState(scopeKey).cancelRequestedAt !== null,
-      });
       jobsProcessed = processedCount;
 
       resultSummary = updatePipelineRunResultSummary(resultSummary, {
