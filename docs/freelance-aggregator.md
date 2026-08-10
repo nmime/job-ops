@@ -1,0 +1,115 @@
+# Freelance Market Aggregator
+
+Aggregates freelance/contract/remote work across 18 platforms into one
+discover → dedupe → score → propose → (guarded) apply pipeline, plus an
+unattended worker loop.
+
+## Safety model (read this first)
+
+Nothing is ever submitted to a real platform unless you explicitly opt in.
+Three independent gates must all be open:
+
+| Gate | Env var | Default |
+|---|---|---|
+| Global auto-bid | `FREELANCE_AUTOBID_ENABLED` | `false` |
+| Per-platform submit | `JOBOPS_FREELANCE_<PLATFORM>_APPLY_ENABLED` | `false` |
+| Platform credential | `JOBOPS_FREELANCE_<PLATFORM>_API_KEY` / `_COOKIE` | unset |
+
+With all three closed (the default) the pipeline still runs end-to-end and
+generates real tailored proposals — it just stops short of submitting. That
+makes the whole thing auditable before a single real bid goes out.
+
+Additional guards:
+
+- A proposal is **always drafted before** any submit path is considered, and an
+  untailored draft is refused.
+- Per-platform rate limiting, default **5 submissions/hour**
+  (`JOBOPS_FREELANCE_<PLATFORM>_MAX_PER_HOUR`).
+- CAPTCHA solving stays off unless `JOBOPS_FREELANCE_ALLOW_CAPTCHA=true`.
+- A provider that throws is converted into an error result; one broken platform
+  never aborts a cycle.
+
+## Platforms
+
+| Platform | Finder | Credentials needed |
+|---|---|---|
+| RemoteOK | **REAL** — public JSON API | none |
+| We Work Remotely | **REAL** — public RSS feeds | none |
+| Upwork | adapter stub | OAuth / API key |
+| Freelancer.com | adapter stub | API key |
+| Fiverr | adapter stub | session cookie |
+| Toptal | adapter stub | session cookie |
+| PeoplePerHour | adapter stub | session cookie |
+| Guru | adapter stub | API key |
+| Malt | adapter stub | session cookie |
+| freelancermap | adapter stub | API key |
+| Wellfound | adapter stub | session cookie |
+| Braintrust | adapter stub | API key |
+| Contra | adapter stub | session cookie |
+| Arc.dev | adapter stub | session cookie |
+| Gun.io | adapter stub | API key |
+| Turing | adapter stub | session cookie |
+| FlexJobs | adapter stub | subscription cookie |
+| Wantapply | export adapter | webhook URL |
+
+"adapter stub" = the provider is wired into the registry and returns a
+structured *not configured* result naming the exact env var it needs. The
+aggregator, dedupe, scoring, proposal and guard layers are fully live for every
+platform; only the platform-specific HTTP calls remain.
+
+RemoteOK and We Work Remotely are genuinely live today and need no credentials.
+
+## Pipeline
+
+1. **Discover** — every enabled provider runs in parallel
+   (`JOBOPS_FREELANCE_PLATFORMS` narrows the set).
+2. **Dedupe** — exact pass on a canonical URL hash (tracking params, `www.`,
+   trailing slashes and fragments stripped), then a fuzzy pass merging
+   ≥85% token-similar titles at the same employer. Keeps the richer record.
+3. **Score** — deterministic heuristic in `[0,100]`: skill overlap, budget
+   ceiling, hourly vs fixed, verified client, proposal-count competition
+   penalty, freshness, remote flag, description quality.
+4. **Rank** — score, then budget, then recency.
+5. **Propose** — deterministic offline cover letter (HTML-stripped), so
+   proposals work with no LLM key.
+6. **Apply** — guarded per the safety model above.
+
+## Running it
+
+```bash
+# one live aggregation pass + proposals, all dry-run
+cd orchestrator && npx tsx scripts/e2e-freelance.ts
+
+# unattended worker: 3 cycles, 5s apart
+cd orchestrator && npx tsx scripts/e2e-worker.ts 3 5
+```
+
+Both write evidence JSON to `orchestrator/e2e-evidence/`.
+
+## Verified results
+
+Live run against RemoteOK + We Work Remotely:
+
+- 224 gigs discovered (15 RemoteOK + 209 WWR)
+- 196 unique after dedupe (16 exact, 12 fuzzy merges)
+- top match scored 87/100
+- 3 tailored proposals generated
+- 0 real submissions (dry-run enforced)
+
+Unattended worker, 3 cycles: 3/3 completed, 9 proposals, 0 real submissions,
+16 unconfigured platforms degraded gracefully.
+
+## Turning on real money
+
+To make the aggregator actually earn, per platform:
+
+1. Obtain the platform credential and set
+   `JOBOPS_FREELANCE_<PLATFORM>_API_KEY` (or `_COOKIE`).
+2. Implement the platform's `findGigs` / `applyToGig` HTTP calls in
+   `extractors/<platform>/src/main.ts` (the contract and guards are done).
+3. Set `JOBOPS_FREELANCE_<PLATFORM>_APPLY_ENABLED=true`.
+4. Set `FREELANCE_AUTOBID_ENABLED=true`.
+5. Optionally raise `JOBOPS_FREELANCE_<PLATFORM>_MAX_PER_HOUR`.
+
+Until step 1 is done by the account owner, no automation can bid on your behalf —
+these platforms require *your* authenticated identity.

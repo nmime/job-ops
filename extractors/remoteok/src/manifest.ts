@@ -3,7 +3,10 @@ import type { FreelanceProviderManifest } from "job-ops-shared/types/freelance";
 import { findRemoteOkGigs } from "./main";
 
 export const manifest: FreelanceProviderManifest &
-  Pick<ExtractorManifest, "providesSources" | "requiredEnvVars" | "capabilities"> = {
+  Pick<
+    ExtractorManifest,
+    "providesSources" | "requiredEnvVars" | "capabilities"
+  > = {
   id: "remoteok",
   displayName: "RemoteOK",
   kind: "remote-job-board",

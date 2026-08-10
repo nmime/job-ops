@@ -14,7 +14,8 @@
       "!!**/.venv",
       "!!.claude",
       "!!data",
-      "!!storage"
+      "!!storage",
+      "!**/e2e-evidence"
     ]
   },
   "css": {

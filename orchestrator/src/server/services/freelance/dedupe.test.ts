@@ -51,8 +51,12 @@ describe("computeDedupHash", () => {
 
   it("collapses tracking-param variants of one URL", () => {
     expect(
-      computeDedupHash(gig({ gigUrl: "https://example.com/jobs/1?utm_source=a" })),
-    ).toBe(computeDedupHash(gig({ gigUrl: "https://www.example.com/jobs/1/" })));
+      computeDedupHash(
+        gig({ gigUrl: "https://example.com/jobs/1?utm_source=a" }),
+      ),
+    ).toBe(
+      computeDedupHash(gig({ gigUrl: "https://www.example.com/jobs/1/" })),
+    );
   });
 
   it("separates genuinely different postings", () => {
@@ -77,7 +81,10 @@ describe("dedupeGigs", () => {
     const result = dedupeGigs([
       gig(),
       gig({ platform: "weworkremotely" }),
-      gig({ gigUrl: "https://example.com/jobs/2", title: "Rust Systems Engineer" }),
+      gig({
+        gigUrl: "https://example.com/jobs/2",
+        title: "Rust Systems Engineer",
+      }),
     ]);
     expect(result.unique).toHaveLength(2);
     expect(result.duplicatesRemoved).toBe(1);
@@ -165,8 +172,14 @@ describe("rankGigs", () => {
 
   it("breaks score ties with the higher budget", () => {
     const ranked = rankGigs([
-      { ...gig({ gigUrl: "https://a.com/1", budgetMax: 100 }), suitabilityScore: 80 },
-      { ...gig({ gigUrl: "https://a.com/2", budgetMax: 900 }), suitabilityScore: 80 },
+      {
+        ...gig({ gigUrl: "https://a.com/1", budgetMax: 100 }),
+        suitabilityScore: 80,
+      },
+      {
+        ...gig({ gigUrl: "https://a.com/2", budgetMax: 900 }),
+        suitabilityScore: 80,
+      },
     ]);
     expect(ranked[0].budgetMax).toBe(900);
   });

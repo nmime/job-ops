@@ -22,7 +22,11 @@
       "@career-boards/workday": ["../career-boards/workday/src/index.ts"],
       "@career-boards/workday/*": ["../career-boards/workday/src/*"],
       "@career-boards/greenhouse": ["../career-boards/greenhouse/src/index.ts"],
-      "@career-boards/greenhouse/*": ["../career-boards/greenhouse/src/*"]
+      "@career-boards/greenhouse/*": ["../career-boards/greenhouse/src/*"],
+      "remoteok-extractor/*": ["../extractors/remoteok/*"],
+      "remoteapis-extractor/*": ["../extractors/remoteapis/*"],
+      "weworkremotely-extractor/*": ["../extractors/weworkremotely/*"],
+      "freelance-shared": ["../extractors/freelance-shared/src/index.ts"]
     }
   },
   "include": ["src/**/*", "scripts/**/*", "../career-boards/**/*.ts"],

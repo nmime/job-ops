@@ -1,7 +1,7 @@
 import { logger } from "@infra/logger";
 import {
-  FREELANCE_PLATFORM_IDS,
   type CreateGigInput,
+  FREELANCE_PLATFORM_IDS,
   type FreelanceAggregatorCycleResult,
   type FreelanceFinderContext,
   type FreelancePlatformId,
@@ -59,7 +59,12 @@ export function resolveEnabledPlatforms(
 async function runFinder(
   manifest: FreelanceProviderManifest,
   options: AggregatorRunOptions,
-): Promise<{ platform: FreelancePlatformId; success: boolean; gigs: CreateGigInput[]; error?: string }> {
+): Promise<{
+  platform: FreelancePlatformId;
+  success: boolean;
+  gigs: CreateGigInput[];
+  error?: string;
+}> {
   const platform = manifest.id;
   options.onProgress?.({ platform, phase: "start" });
 

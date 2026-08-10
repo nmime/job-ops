@@ -507,8 +507,7 @@ export const settingsRegistry = {
   typstTheme: {
     kind: "typed" as const,
     schema: z.enum(TYPST_THEME_VALUES),
-    default: (): TypstTheme =>
-      "classic",
+    default: (): TypstTheme => "classic",
     parse: parseTypstThemeOrNull,
     serialize: (value: TypstTheme | null | undefined): string | null =>
       value ?? null,

@@ -397,67 +397,67 @@ export async function runPipeline(
           pipelineLogger.info("Challenges detected, pausing pipeline", {
             challenges: challengeSummary,
           });
-        progressHelpers.challengeRequired(pendingChallenges);
+          progressHelpers.challengeRequired(pendingChallenges);
 
-        // Block until all challenges are resolved by the solve-challenge API.
-        // The Promise is resolved by `resolvePipelineChallenge()`, which is
-        // called from the POST /api/pipeline/solve-challenge endpoint (4d).
-        // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
-        // and ensureNotCancelled() fires after the Promise resolves.
-        const challengedSources = pendingChallenges.flatMap((c) => c.sources);
+          // Block until all challenges are resolved by the solve-challenge API.
+          // The Promise is resolved by `resolvePipelineChallenge()`, which is
+          // called from the POST /api/pipeline/solve-challenge endpoint (4d).
+          // Cancellation still works: the cancel endpoint sets cancelRequestedAt,
+          // and ensureNotCancelled() fires after the Promise resolves.
+          const challengedSources = pendingChallenges.flatMap((c) => c.sources);
 
-        await new Promise<void>((resolve) => {
-          tenantState.activeChallengeState = {
-            challenges: new Map(
-              pendingChallenges.map((c) => [c.extractorId, c]),
-            ),
-            resolve,
-          };
-        });
-        tenantState.activeChallengeState = null;
+          await new Promise<void>((resolve) => {
+            tenantState.activeChallengeState = {
+              challenges: new Map(
+                pendingChallenges.map((c) => [c.extractorId, c]),
+              ),
+              resolve,
+            };
+          });
+          tenantState.activeChallengeState = null;
 
-        ensureNotCancelled(scopeKey);
+          ensureNotCancelled(scopeKey);
 
-        // Re-run only the extractors that had challenges
-        pipelineLogger.info("Challenges resolved, re-running extractors", {
-          sources: challengedSources,
-        });
-
-        const retryConfig = { ...mergedConfig, sources: challengedSources };
-        const retryResult = await discoverJobsStep({
-          mergedConfig: retryConfig,
-          includeWatchlist: false,
-          preserveFanout: true,
-          fanoutSeedJobs: discoveredJobs,
-          shouldCancel: () =>
-            getPipelineState(scopeKey).cancelRequestedAt !== null,
-        });
-
-        discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
-        sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
-        pendingChallenges = retryResult.pendingChallenges;
-
-        // If the retry itself hits challenges again (e.g. no reusable cookie was
-        // persisted, or the cookie was rejected), keep partial results only when
-        // something useful was discovered. Otherwise stop loudly instead of
-        // presenting a successful zero-job run.
-        if (retryResult.pendingChallenges.length > 0) {
-          const message = buildRepeatedChallengeMessage({
-            challenges: retryResult.pendingChallenges,
-            sourceErrors: retryResult.sourceErrors,
+          // Re-run only the extractors that had challenges
+          pipelineLogger.info("Challenges resolved, re-running extractors", {
+            sources: challengedSources,
           });
 
-          if (discoveredJobs.length === 0) {
-            throw new Error(message);
+          const retryConfig = { ...mergedConfig, sources: challengedSources };
+          const retryResult = await discoverJobsStep({
+            mergedConfig: retryConfig,
+            includeWatchlist: false,
+            preserveFanout: true,
+            fanoutSeedJobs: discoveredJobs,
+            shouldCancel: () =>
+              getPipelineState(scopeKey).cancelRequestedAt !== null,
+          });
+
+          discoveredJobs = [...discoveredJobs, ...retryResult.discoveredJobs];
+          sourceErrors = [...sourceErrors, ...retryResult.sourceErrors];
+          pendingChallenges = retryResult.pendingChallenges;
+
+          // If the retry itself hits challenges again (e.g. no reusable cookie was
+          // persisted, or the cookie was rejected), keep partial results only when
+          // something useful was discovered. Otherwise stop loudly instead of
+          // presenting a successful zero-job run.
+          if (retryResult.pendingChallenges.length > 0) {
+            const message = buildRepeatedChallengeMessage({
+              challenges: retryResult.pendingChallenges,
+              sourceErrors: retryResult.sourceErrors,
+            });
+
+            if (discoveredJobs.length === 0) {
+              throw new Error(message);
+            }
+
+            pipelineLogger.warn(message, {
+              retryPendingChallenges: retryResult.pendingChallenges.map(
+                (c) => c.extractorId,
+              ),
+              retrySourceErrors: retryResult.sourceErrors,
+            });
           }
-
-          pipelineLogger.warn(message, {
-            retryPendingChallenges: retryResult.pendingChallenges.map(
-              (c) => c.extractorId,
-            ),
-            retrySourceErrors: retryResult.sourceErrors,
-          });
-        }
 
           progressHelpers.crawlingComplete(discoveredJobs.length);
         }

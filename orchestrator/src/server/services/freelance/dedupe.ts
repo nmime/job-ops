@@ -39,7 +39,10 @@ export function canonicalizeUrl(rawUrl: string): string {
 export function computeDedupHash(gig: CreateGigInput): string {
   const url = canonicalizeUrl(gig.gigUrl);
   const key = `${normalizeForCompare(gig.title)}|${normalizeForCompare(gig.clientOrEmployer)}`;
-  return createHash("sha256").update(`${url}::${key}`).digest("hex").slice(0, 32);
+  return createHash("sha256")
+    .update(`${url}::${key}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
 /** Levenshtein-lite similarity in [0,1] over token sets. */
@@ -141,7 +144,9 @@ export function heuristicGigScore(
     .toLowerCase();
 
   // Skill overlap is the strongest signal.
-  const skills = profileSkills.map((skill) => skill.toLowerCase()).filter(Boolean);
+  const skills = profileSkills
+    .map((skill) => skill.toLowerCase())
+    .filter(Boolean);
   if (skills.length > 0) {
     const hits = skills.filter((skill) => haystack.includes(skill)).length;
     score += Math.min(35, Math.round((hits / skills.length) * 35) + hits * 3);
@@ -175,9 +180,9 @@ export function heuristicGigScore(
 }
 
 /** Sort scored gigs best-first, tie-broken by budget then freshness. */
-export function rankGigs<T extends { suitabilityScore: number | null } & CreateGigInput>(
-  gigs: T[],
-): T[] {
+export function rankGigs<
+  T extends { suitabilityScore: number | null } & CreateGigInput,
+>(gigs: T[]): T[] {
   return [...gigs].sort((a, b) => {
     const scoreDiff = (b.suitabilityScore ?? 0) - (a.suitabilityScore ?? 0);
     if (scoreDiff !== 0) return scoreDiff;

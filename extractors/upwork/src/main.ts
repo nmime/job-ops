@@ -24,8 +24,11 @@ const ENV_PREFIX = "JOBOPS_FREELANCE_UPWORK";
 export async function findUpworkGigs(
   ctx: FreelanceFinderContext,
 ): Promise<FreelanceFinderResult> {
-  const apiKey = ctx.settings[`${ENV_PREFIX}_API_KEY`] ?? process.env[`${ENV_PREFIX}_API_KEY`];
-  const cookie = ctx.settings[`${ENV_PREFIX}_COOKIE`] ?? process.env[`${ENV_PREFIX}_COOKIE`];
+  const apiKey =
+    ctx.settings[`${ENV_PREFIX}_API_KEY`] ??
+    process.env[`${ENV_PREFIX}_API_KEY`];
+  const cookie =
+    ctx.settings[`${ENV_PREFIX}_COOKIE`] ?? process.env[`${ENV_PREFIX}_COOKIE`];
 
   if (!apiKey && !cookie) {
     reportProgress(ctx, `${PLATFORM}: no credentials configured, skipping`);
@@ -35,7 +38,10 @@ export async function findUpworkGigs(
     });
   }
 
-  reportProgress(ctx, `${PLATFORM}: credentials present but adapter not implemented`);
+  reportProgress(
+    ctx,
+    `${PLATFORM}: credentials present but adapter not implemented`,
+  );
   return stubNotFound({
     platform: PLATFORM,
     message: `${PLATFORM}: credentialed finder adapter not implemented yet`,

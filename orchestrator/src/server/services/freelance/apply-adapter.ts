@@ -28,8 +28,14 @@ export function getFreelanceRateLimit(
   platformId: string,
   env: NodeJS.ProcessEnv = process.env,
 ): { maxPerHour: number; windowMs: number } {
-  const parsed = Number.parseInt(env[envKey(platformId, "MAX_PER_HOUR")] ?? "", 10);
-  const windowParsed = Number.parseInt(env.JOBOPS_FREELANCE_WINDOW_MS ?? "", 10);
+  const parsed = Number.parseInt(
+    env[envKey(platformId, "MAX_PER_HOUR")] ?? "",
+    10,
+  );
+  const windowParsed = Number.parseInt(
+    env.JOBOPS_FREELANCE_WINDOW_MS ?? "",
+    10,
+  );
   return {
     maxPerHour: Number.isFinite(parsed) && parsed > 0 ? parsed : 5,
     windowMs:
@@ -79,7 +85,12 @@ function stripHtml(text: string): string {
 }
 
 function firstSentence(text: string): string {
-  return stripHtml(text).split(/[.!?]\s/)[0]?.trim().slice(0, 240) ?? "";
+  return (
+    stripHtml(text)
+      .split(/[.!?]\s/)[0]
+      ?.trim()
+      .slice(0, 240) ?? ""
+  );
 }
 
 /**

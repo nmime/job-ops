@@ -26,7 +26,10 @@ async function loadManifest(
   try {
     const mod = (await import(
       /* @vite-ignore */ `${id}-extractor/src/manifest.ts`
-    )) as { manifest?: FreelanceProviderManifest; default?: FreelanceProviderManifest };
+    )) as {
+      manifest?: FreelanceProviderManifest;
+      default?: FreelanceProviderManifest;
+    };
     const manifest = mod.manifest ?? mod.default ?? null;
     if (!manifest) {
       return { manifest: null, error: "package exports no manifest" };

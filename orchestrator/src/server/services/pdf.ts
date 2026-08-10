@@ -244,7 +244,6 @@ function renderRxResumePdf(
   return runRxResumePdfQueued(() => renderRxResumePdfImpl(args));
 }
 
-
 function classifyPdfGenerationError(error: unknown): AppErrorCode {
   if (error instanceof AppError) {
     return error.code;

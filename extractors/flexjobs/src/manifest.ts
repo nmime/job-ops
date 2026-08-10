@@ -1,9 +1,12 @@
 import type { ExtractorManifest } from "job-ops-shared/types/extractors";
 import type { FreelanceProviderManifest } from "job-ops-shared/types/freelance";
-import { findFlexjobsGigs, applyToFlexjobsGig } from "./main";
+import { applyToFlexjobsGig, findFlexjobsGigs } from "./main";
 
 export const manifest: FreelanceProviderManifest &
-  Pick<ExtractorManifest, "providesSources" | "requiredEnvVars" | "capabilities"> = {
+  Pick<
+    ExtractorManifest,
+    "providesSources" | "requiredEnvVars" | "capabilities"
+  > = {
   id: "flexjobs",
   displayName: "FlexJobs",
   kind: "remote-job-board",

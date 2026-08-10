@@ -1055,13 +1055,6 @@ const containsCaptchaSignal = (value: string | null | undefined): boolean => {
   );
 };
 
-const toTimestamp = (value: string) => {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return Math.floor(date.getTime() / 1000);
-};
-
 const mergeEvents = (events: StageEvent[], pending: StageEvent | null) => {
   if (!pending) return events;
   if (events.some((event) => event.id === pending.id)) return events;

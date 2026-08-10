@@ -13,7 +13,7 @@ import { join } from "node:path";
 import {
   runFreelanceWorker,
   type WorkerCycleReport,
-} from "../src/server/services/freelance/worker";
+} from "@server/services/freelance/worker";
 
 const OUT_DIR = join(process.cwd(), "e2e-evidence");
 

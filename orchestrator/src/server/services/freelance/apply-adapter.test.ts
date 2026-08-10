@@ -1,3 +1,7 @@
+import type {
+  FreelancePlatformId,
+  FreelanceProviderManifest,
+} from "@shared/types/freelance";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetFreelanceRateLimits,
@@ -7,13 +11,9 @@ import {
   getFreelanceRateLimit,
   isFreelanceApplyEnabled,
 } from "./apply-adapter";
-import type {
-  FreelancePlatformId,
-  FreelanceProviderManifest,
-} from "@shared/types/freelance";
 import {
-  type FreelanceProviderRegistry,
   __setFreelanceRegistryForTests,
+  type FreelanceProviderRegistry,
 } from "./registry";
 
 vi.mock("@infra/logger", () => ({

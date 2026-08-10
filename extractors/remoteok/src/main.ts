@@ -69,7 +69,10 @@ export async function findRemoteOkGigs(
   reportProgress(ctx, "Fetching RemoteOK API", REMOTEOK_API);
   try {
     const res = await fetchWithTimeout(REMOTEOK_API, 20_000, {
-      headers: { "User-Agent": FREELANCE_USER_AGENT, Accept: "application/json" },
+      headers: {
+        "User-Agent": FREELANCE_USER_AGENT,
+        Accept: "application/json",
+      },
     });
     if (!res.ok) {
       return {

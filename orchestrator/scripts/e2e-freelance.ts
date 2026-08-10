@@ -9,21 +9,21 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { findRemoteOkGigs } from "../../extractors/remoteok/src/main";
-import { findWwrGigs } from "../../extractors/weworkremotely/src/main";
+import {
+  applyToFreelanceGig,
+  buildDeterministicProposal,
+} from "@server/services/freelance/apply-adapter";
 import {
   dedupeGigs,
   heuristicGigScore,
   rankGigs,
-} from "../src/server/services/freelance/dedupe";
-import {
-  applyToFreelanceGig,
-  buildDeterministicProposal,
-} from "../src/server/services/freelance/apply-adapter";
+} from "@server/services/freelance/dedupe";
 import type {
   CreateGigInput,
   FreelanceFinderContext,
-} from "../../shared/src/types/freelance";
+} from "@shared/types/freelance";
+import { findRemoteOkGigs } from "remoteok-extractor/src/main";
+import { findWwrGigs } from "weworkremotely-extractor/src/main";
 
 const OUT_DIR = join(process.cwd(), "e2e-evidence");
 
@@ -118,7 +118,9 @@ async function main(): Promise<void> {
   }
 
   // ---- PHASE 5: GUARDED APPLY (dry-run) ----
-  console.log("\nPHASE 5: guarded apply — expecting DRY-RUN (no env flags set)");
+  console.log(
+    "\nPHASE 5: guarded apply — expecting DRY-RUN (no env flags set)",
+  );
   const applies = [];
   for (const gig of ranked.slice(0, 3)) {
     const result = await applyToFreelanceGig({
