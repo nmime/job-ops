@@ -20,6 +20,7 @@ import {
 import { attachChallengeViewerUpgradeProxy } from "./services/challenge-viewer";
 import { initializeDemoModeServices } from "./services/demo-mode";
 import { applyStoredEnvOverrides } from "./services/envSettings";
+import { startFreelanceWorkerService } from "./services/freelance-service";
 import { initializeHistoricalServerEventReplaySafely } from "./services/historical-product-analytics";
 import { initialize as initializeVisaSponsors } from "./services/visa-sponsors/index";
 
@@ -165,6 +166,14 @@ async function startServer() {
       startAutonomousAutoApplyService();
     } catch (error) {
       logger.warn("Failed to initialize autonomous auto-apply service", {
+        error: sanitizeUnknown(error),
+      });
+    }
+
+    try {
+      startFreelanceWorkerService();
+    } catch (error) {
+      logger.warn("Failed to initialize freelance worker service", {
         error: sanitizeUnknown(error),
       });
     }

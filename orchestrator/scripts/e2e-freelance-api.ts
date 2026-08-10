@@ -4,10 +4,10 @@
  * Boots the real server, hits real endpoints + real external APIs. No mocks.
  */
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Server } from "node:http";
-import { closeDb } from "../src/server/db";
+import { join } from "node:path";
 import { createApp } from "../src/server/app";
+import { closeDb } from "../src/server/db";
 
 const OUT_DIR = join(process.cwd(), "e2e-evidence");
 
@@ -40,7 +40,9 @@ async function main(): Promise<void> {
     console.log(`server: ${baseUrl}\n`);
 
     const get = async (path: string) => {
-      const res = await fetch(`${baseUrl}/api${path}`, { headers: authHeaders });
+      const res = await fetch(`${baseUrl}/api${path}`, {
+        headers: authHeaders,
+      });
       const body = (await res.json()) as { ok: boolean; data?: unknown };
       return body.data as Record<string, unknown>;
     };
@@ -68,15 +70,26 @@ async function main(): Promise<void> {
       profileSkills: ["TypeScript", "React", "Node.js"],
       minScore: 40,
       platforms: ["freelancer", "remoteok", "weworkremotely"],
-    })) as { ok: boolean; data?: {
-      discovered: number;
-      deduped: number;
-      enqueued: number;
-      persisted: { created: number; updated: number };
-      perPlatform: Array<{ platform: string; success: boolean; found: number; error?: string }>;
-    } };
-    const r = run.data!;
-    console.log(`\ndiscovery: discovered=${r.discovered} enqueued=${r.enqueued}`);
+    })) as {
+      ok: boolean;
+      data?: {
+        discovered: number;
+        deduped: number;
+        enqueued: number;
+        persisted: { created: number; updated: number };
+        perPlatform: Array<{
+          platform: string;
+          success: boolean;
+          found: number;
+          error?: string;
+        }>;
+      };
+    };
+    if (!run.data) throw new Error("run returned no data");
+    const r = run.data;
+    console.log(
+      `\ndiscovery: discovered=${r.discovered} enqueued=${r.enqueued}`,
+    );
     console.log(
       `persisted: created=${r.persisted.created} updated=${r.persisted.updated}`,
     );
@@ -88,7 +101,12 @@ async function main(): Promise<void> {
 
     // 3. read persisted gigs
     const gigs = (await get("/freelance/gigs?limit=5")) as {
-      gigs: Array<{ id: string; title: string; platform: string; suitabilityScore: number | null }>;
+      gigs: Array<{
+        id: string;
+        title: string;
+        platform: string;
+        suitabilityScore: number | null;
+      }>;
       count: number;
     };
     console.log(`\npersisted gigs in DB: ${gigs.count}`);
@@ -102,16 +120,23 @@ async function main(): Promise<void> {
       const proposeRes = (await post(
         `/freelance/gigs/${gigs.gigs[0].id}/propose`,
         { profileSkills: ["TypeScript", "React"] },
-      )) as { ok: boolean; data?: { mode: string; proposal: { status: string; coverLetter: string } } };
+      )) as {
+        ok: boolean;
+        data?: {
+          mode: string;
+          proposal: { status: string; coverLetter: string };
+        };
+      };
+      if (!proposeRes.data) throw new Error("propose returned no data");
       proposal = {
-        mode: proposeRes.data!.mode,
-        status: proposeRes.data!.proposal.status,
+        mode: proposeRes.data.mode,
+        status: proposeRes.data.proposal.status,
       };
       console.log(
         `\nproposal: mode=${proposal.mode} status=${proposal.status}`,
       );
       console.log(
-        `  cover letter starts: ${proposeRes.data!.proposal.coverLetter.slice(0, 90)}...`,
+        `  cover letter starts: ${proposeRes.data.proposal.coverLetter.slice(0, 90)}...`,
       );
     }
 
