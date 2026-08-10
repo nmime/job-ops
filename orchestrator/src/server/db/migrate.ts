@@ -1716,6 +1716,101 @@ function seedLegacyOnboardingMigration(): void {
 
 console.log("🔐 Applying tenancy compatibility migrations...");
 ensureTenantColumns();
+
+// --- Freelance aggregator tables ---
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_gigs (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    platform TEXT NOT NULL,
+    source_gig_id TEXT,
+    title TEXT NOT NULL,
+    client_or_employer TEXT NOT NULL,
+    gig_url TEXT NOT NULL,
+    application_link TEXT,
+    budget TEXT,
+    budget_min REAL,
+    budget_max REAL,
+    budget_currency TEXT,
+    budget_interval TEXT,
+    deadline TEXT,
+    date_posted TEXT,
+    gig_description TEXT,
+    skills_required TEXT,
+    job_type TEXT,
+    is_remote INTEGER,
+    location TEXT,
+    duration TEXT,
+    proposal_count INTEGER,
+    verified_client INTEGER,
+    dedup_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'discovered',
+    suitability_score INTEGER,
+    discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+  )
+`);
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_freelance_gigs_tenant_dedup ON freelance_gigs(tenant_id, dedup_hash)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_gigs_status ON freelance_gigs(tenant_id, status)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_gigs_platform ON freelance_gigs(tenant_id, platform)",
+);
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_proposals (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    gig_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    source_gig_id TEXT,
+    cover_letter TEXT NOT NULL,
+    proposed_rate TEXT,
+    proposed_duration TEXT,
+    tailored INTEGER NOT NULL DEFAULT 1,
+    mode TEXT NOT NULL DEFAULT 'dry_run',
+    status TEXT NOT NULL DEFAULT 'drafted',
+    external_ref TEXT,
+    error TEXT,
+    generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    submitted_at TEXT,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (gig_id) REFERENCES freelance_gigs(id) ON DELETE CASCADE
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_proposals_gig ON freelance_proposals(tenant_id, gig_id)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_proposals_status ON freelance_proposals(tenant_id, status)",
+);
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_earnings (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+    gig_id TEXT,
+    platform TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'invoiced', 'paid', 'cancelled')),
+    paid_at TEXT,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+    FOREIGN KEY (gig_id) REFERENCES freelance_gigs(id) ON DELETE SET NULL
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_earnings_status ON freelance_earnings(tenant_id, status)",
+);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_freelance_earnings_platform ON freelance_earnings(tenant_id, platform)",
+);
+
 seedLegacyOwnerFromBasicAuth();
 ensurePrivateUserColumns();
 rebuildPostApplicationPrivateTables();

@@ -1150,3 +1150,131 @@ export type TracerLinkRow = typeof tracerLinks.$inferSelect;
 export type NewTracerLinkRow = typeof tracerLinks.$inferInsert;
 export type TracerClickEventRow = typeof tracerClickEvents.$inferSelect;
 export type NewTracerClickEventRow = typeof tracerClickEvents.$inferInsert;
+
+export const freelanceGigs = sqliteTable(
+  "freelance_gigs",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    sourceGigId: text("source_gig_id"),
+    title: text("title").notNull(),
+    clientOrEmployer: text("client_or_employer").notNull(),
+    gigUrl: text("gig_url").notNull(),
+    applicationLink: text("application_link"),
+    budget: text("budget"),
+    budgetMin: real("budget_min"),
+    budgetMax: real("budget_max"),
+    budgetCurrency: text("budget_currency"),
+    budgetInterval: text("budget_interval"),
+    deadline: text("deadline"),
+    datePosted: text("date_posted"),
+    gigDescription: text("gig_description"),
+    skillsRequired: text("skills_required"),
+    jobType: text("job_type"),
+    isRemote: integer("is_remote", { mode: "boolean" }),
+    location: text("location"),
+    duration: text("duration"),
+    proposalCount: integer("proposal_count"),
+    verifiedClient: integer("verified_client", { mode: "boolean" }),
+    dedupHash: text("dedup_hash").notNull(),
+    status: text("status").notNull().default("discovered"),
+    suitabilityScore: integer("suitability_score"),
+    discoveredAt: text("discovered_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    tenantDedupUnique: uniqueIndex("idx_freelance_gigs_tenant_dedup").on(
+      table.tenantId,
+      table.dedupHash,
+    ),
+    statusIndex: index("idx_freelance_gigs_status").on(
+      table.tenantId,
+      table.status,
+    ),
+    platformIndex: index("idx_freelance_gigs_platform").on(
+      table.tenantId,
+      table.platform,
+    ),
+  }),
+);
+
+export const freelanceProposals = sqliteTable(
+  "freelance_proposals",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    gigId: text("gig_id")
+      .notNull()
+      .references(() => freelanceGigs.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    sourceGigId: text("source_gig_id"),
+    coverLetter: text("cover_letter").notNull(),
+    proposedRate: text("proposed_rate"),
+    proposedDuration: text("proposed_duration"),
+    tailored: integer("tailored", { mode: "boolean" }).notNull().default(true),
+    mode: text("mode").notNull().default("dry_run"),
+    status: text("status").notNull().default("drafted"),
+    externalRef: text("external_ref"),
+    error: text("error"),
+    generatedAt: text("generated_at").notNull().default(sql`(datetime('now'))`),
+    submittedAt: text("submitted_at"),
+  },
+  (table) => ({
+    gigIndex: index("idx_freelance_proposals_gig").on(
+      table.tenantId,
+      table.gigId,
+    ),
+    statusIndex: index("idx_freelance_proposals_status").on(
+      table.tenantId,
+      table.status,
+    ),
+  }),
+);
+
+export const freelanceEarnings = sqliteTable(
+  "freelance_earnings",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .default("tenant_default")
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    gigId: text("gig_id").references(() => freelanceGigs.id, {
+      onDelete: "set null",
+    }),
+    platform: text("platform").notNull(),
+    amount: real("amount").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    status: text("status", {
+      enum: ["pending", "invoiced", "paid", "cancelled"],
+    })
+      .notNull()
+      .default("pending"),
+    paidAt: text("paid_at"),
+    recordedAt: text("recorded_at").notNull().default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    statusIndex: index("idx_freelance_earnings_status").on(
+      table.tenantId,
+      table.status,
+    ),
+    platformIndex: index("idx_freelance_earnings_platform").on(
+      table.tenantId,
+      table.platform,
+    ),
+  }),
+);
+
+export type FreelanceGigRow = typeof freelanceGigs.$inferSelect;
+export type NewFreelanceGigRow = typeof freelanceGigs.$inferInsert;
+export type FreelanceProposalRow = typeof freelanceProposals.$inferSelect;
+export type NewFreelanceProposalRow = typeof freelanceProposals.$inferInsert;
+export type FreelanceEarningRow = typeof freelanceEarnings.$inferSelect;
+export type NewFreelanceEarningRow = typeof freelanceEarnings.$inferInsert;
