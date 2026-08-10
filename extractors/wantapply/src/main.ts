@@ -2,6 +2,7 @@ import { reportProgress, stubNotFound } from "freelance-shared";
 import type {
   FreelanceApplyContext,
   FreelanceApplyResult,
+  FreelanceExportContext,
   FreelanceFinderContext,
   FreelanceFinderResult,
 } from "job-ops-shared/types/freelance";
@@ -10,16 +11,17 @@ const PLATFORM = "wantapply" as const;
 const ENV_PREFIX = "JOBOPS_FREELANCE_WANTAPPLY";
 
 /**
- * Wantapply finder.
+ * Wantapply — auto-apply EXPORT adapter (not a listing source).
  *
- * Wantapply exposes no credential-free public listing API. A real finder needs
- * one of:
- *   - WANTAPPLY_API_KEY   (official API / OAuth token)
- *   - WANTAPPLY_COOKIE    (authenticated session cookie)
+ * Wantapply (https://wantapply.com) is an external auto-apply service, not a
+ * job board: it exposes no public listing feed (the site is Cloudflare-gated
+ * and serves no anonymous gig data — verified live: 403 challenge). The
+ * genuinely useful integration here is `exportBatchToWantapply` below, which
+ * hands the aggregator's scored gigs to a Wantapply webhook.
  *
- * Until a credential is present this returns a structured "not configured"
- * result so the aggregator cycle stays alive and observable instead of
- * throwing. See docs/freelance-aggregator.md for the exact setup per platform.
+ * The finder therefore only has a structured "not configured" path: it
+ * returns success:false with an actionable message naming the exact env var
+ * and never throws, so the aggregator cycle stays alive and observable.
  */
 export async function findWantapplyGigs(
   ctx: FreelanceFinderContext,
@@ -30,30 +32,24 @@ export async function findWantapplyGigs(
   const cookie =
     ctx.settings[`${ENV_PREFIX}_COOKIE`] ?? process.env[`${ENV_PREFIX}_COOKIE`];
 
-  if (!apiKey && !cookie) {
-    reportProgress(ctx, `${PLATFORM}: no credentials configured, skipping`);
-    return stubNotFound({
-      platform: PLATFORM,
-      message: `${PLATFORM}: not configured — set ${ENV_PREFIX}_API_KEY or ${ENV_PREFIX}_COOKIE to enable discovery`,
-    });
-  }
-
-  reportProgress(
-    ctx,
-    `${PLATFORM}: credentials present but adapter not implemented`,
-  );
+  reportProgress(ctx, `${PLATFORM}: no public gig feed — exporter only`);
   return stubNotFound({
     platform: PLATFORM,
-    message: `${PLATFORM}: credentialed finder adapter not implemented yet`,
+    message:
+      apiKey || cookie
+        ? `${PLATFORM}: credentials present, but wantapply.com is an auto-apply service with no public gig listing API (Cloudflare-gated, no search endpoint) — use exportBatchToWantapply to push scored gigs to it instead`
+        : `${PLATFORM}: not configured — wantapply.com exposes no credential-free gig feed (auto-apply service, not a job board). Set ${ENV_PREFIX}_API_KEY or ${ENV_PREFIX}_COOKIE if a listing API is provisioned, and ${ENV_PREFIX}_WEBHOOK_URL to export batches`,
   });
 }
 
 /**
  * Wantapply apply adapter.
  *
- * GUARDED: ctx.dryRun is forced true by the orchestrator unless
- * JOBOPS_FREELANCE_WANTAPPLY_APPLY_ENABLED=true. Never submits real money-bearing
- * proposals without that explicit opt-in plus a tailored draft.
+ * Single-gig "apply" is not part of the Wantapply model — submissions go out
+ * in batches via `exportBatchToWantapply`. This adapter is GUARDED: ctx.dryRun
+ * is forced true by the orchestrator unless
+ * JOBOPS_FREELANCE_WANTAPPLY_APPLY_ENABLED=true, and the non-dry-run path
+ * points the caller at the batch exporter instead of faking a submit.
  */
 export async function applyToWantapplyGig(
   ctx: FreelanceApplyContext,
@@ -63,7 +59,17 @@ export async function applyToWantapplyGig(
       platform: PLATFORM,
       mode: "dry_run",
       status: "skipped",
-      error: `dry-run: ${PLATFORM} submission disabled (set ${ENV_PREFIX}_APPLY_ENABLED=true and configure credentials to submit for real)`,
+      error: `dry-run: ${PLATFORM} submission disabled (set ${ENV_PREFIX}_APPLY_ENABLED=true and configure ${ENV_PREFIX}_WEBHOOK_URL to submit for real)`,
+    };
+  }
+
+  const webhookUrl = process.env[`${ENV_PREFIX}_WEBHOOK_URL`];
+  if (!webhookUrl) {
+    return {
+      platform: PLATFORM,
+      mode: "submit",
+      status: "error",
+      error: `${PLATFORM}: missing ${ENV_PREFIX}_WEBHOOK_URL — wantapply applies in batches; configure the webhook and use exportBatchToWantapply`,
     };
   }
 
@@ -71,7 +77,7 @@ export async function applyToWantapplyGig(
     platform: PLATFORM,
     mode: "submit",
     status: "error",
-    error: `${PLATFORM}: submit adapter not implemented (requires platform credentials + OAuth flow)`,
+    error: `${PLATFORM}: single-gig submit is not supported by wantapply (batch auto-apply service) — queue the gig and use exportBatchToWantapply`,
   };
 }
 
@@ -84,7 +90,7 @@ export async function applyToWantapplyGig(
  * JOBOPS_FREELANCE_WANTAPPLY_APPLY_ENABLED=true.
  */
 export async function exportBatchToWantapply(
-  ctx: import("job-ops-shared/types/freelance").FreelanceExportContext,
+  ctx: FreelanceExportContext,
 ): Promise<FreelanceApplyResult> {
   const payload = {
     provider: "wantapply",
@@ -94,8 +100,7 @@ export async function exportBatchToWantapply(
     gigs: ctx.gigs,
   };
 
-  const webhookUrl =
-    ctx.webhookUrl ?? process.env.JOBOPS_FREELANCE_WANTAPPLY_WEBHOOK_URL;
+  const webhookUrl = ctx.webhookUrl ?? process.env[`${ENV_PREFIX}_WEBHOOK_URL`];
 
   if (ctx.dryRun || !webhookUrl) {
     return {
@@ -105,7 +110,7 @@ export async function exportBatchToWantapply(
       exportPayload: payload,
       error: webhookUrl
         ? undefined
-        : "dry-run: no JOBOPS_FREELANCE_WANTAPPLY_WEBHOOK_URL configured",
+        : `dry-run: no ${ENV_PREFIX}_WEBHOOK_URL configured`,
     };
   }
 
