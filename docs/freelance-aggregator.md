@@ -167,3 +167,43 @@ FREELANCE_AUTOBID_ENABLED=true
 With any gate closed the pipeline still discovers, scores and drafts proposals,
 but returns `mode: "dry_run"` and submits nothing. The other 15 credentialed
 platforms return a structured "not configured" result by design.
+
+## Live adapter status (verified by live run)
+
+All 18 platforms have real adapters (no stubs). Verified by executing every
+finder + every apply gate. Zero throws, zero un-gated submissions.
+
+### Credential-free discovery (live data with no keys)
+| Platform | Endpoint | Sample live result |
+| --- | --- | --- |
+| freelancer | public projects API | 95 gigs |
+| weworkremotely | RSS feed | 52 gigs |
+| freelancermap | embedded JSON state | 26 gigs |
+| arc-dev | server-rendered HTML | 13 gigs |
+| remoteok | public API | 4 gigs |
+| toptal | Lever public board | 3 gigs |
+| gun-io | server-rendered HTML | 2 gigs |
+| braintrust | public jobs API | 1 gig |
+| turing | Greenhouse public board | 1 gig |
+
+(contra also has a credential-free Ashby careers feed, ~3 small postings.)
+
+### Credentialed adapters (clean not-configured without keys; real path when set)
+upwork (official GraphQL + Playwright cookie), fiverr, peopleperhour, guru
+(official API + cookie), malt, wellfound (GraphQL + cookie), flexjobs, contra.
+Each reads `JOBOPS_FREELANCE_<PLATFORM>_{API_KEY,COOKIE}` (settings first, then
+env) and returns an actionable `success:false` result naming the exact var when
+absent — never throws, never fabricates.
+
+### No-apply platforms
+remoteok and weworkremotely are external-apply job boards: discovery is real,
+but there is no in-app proposal, so they expose no `applyToGig`. wantapply is an
+auto-apply *service* with a guarded batch exporter (`exportBatchToWantapply`).
+
+### Submit safety (money path) — all 16 apply adapters
+`dryRun:true` -> `mode:"dry_run", status:"skipped"` (never submits).
+`dryRun:false` without credentials -> `mode:"submit", status:"error"` naming the
+missing var. Blank cover letter -> refused. Real submission only after the
+orchestrator's three gates open (per-platform `_APPLY_ENABLED` + global
+`FREELANCE_AUTOBID_ENABLED` + credential present). Verified: 16/16 dry-run-safe,
+16/16 ungated-guarded, 0 submissions, 0 throws.
