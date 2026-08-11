@@ -62,7 +62,7 @@ export function startFreelanceWorkerService(): void {
           .map((t) => t.trim())
           .filter(Boolean),
         minScore: Number.parseInt(
-          process.env.JOBOPS_FREELANCE_MIN_SCORE ?? "50",
+          process.env.JOBOPS_FREELANCE_MIN_SCORE ?? "40",
           10,
         ),
         bidsPerCycle: Number.parseInt(

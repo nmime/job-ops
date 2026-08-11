@@ -50,7 +50,7 @@ function ScoreBadge({ score }: { score: number | null }) {
 
 export function FreelancePage() {
   const queryClient = useQueryClient();
-  const [minScore, setMinScore] = useState(50);
+  const [minScore, setMinScore] = useState(40);
 
   const statsQuery = useQuery({
     queryKey: ["freelance", "stats"],

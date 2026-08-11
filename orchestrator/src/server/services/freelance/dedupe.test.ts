@@ -116,6 +116,17 @@ describe("dedupeGigs", () => {
     expect(result.unique).toHaveLength(2);
   });
 
+  it("auto-resolves fuzzy conflicts only at the configured confidence", () => {
+    const candidates = [
+      gig({ title: "TypeScript React Engineer", gigUrl: "https://a.com/1" }),
+      gig({ title: "TypeScript React Developer", gigUrl: "https://b.com/2" }),
+    ];
+    expect(dedupeGigs(candidates).unique).toHaveLength(2);
+    expect(dedupeGigs(candidates, { fuzzyThreshold: 0.6 }).unique).toHaveLength(
+      1,
+    );
+  });
+
   it("handles an empty input", () => {
     expect(dedupeGigs([]).unique).toEqual([]);
   });

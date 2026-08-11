@@ -16,6 +16,7 @@ export interface AggregatorRunOptions {
   selectedCountry?: string;
   profileSkills?: string[];
   minScore?: number;
+  conflictAutoResolutionThreshold?: number;
   maxGigsPerPlatform?: number;
   shouldCancel?: () => boolean;
   onProgress?: (event: {
@@ -129,14 +130,25 @@ export async function runAggregatorCycle(
   );
 
   const allGigs = results.flatMap((result) => result.gigs);
-  const { unique, duplicatesRemoved, fuzzyMerges } = dedupeGigs(allGigs);
+  const conflictAutoResolutionThreshold =
+    options.conflictAutoResolutionThreshold ??
+    Number.parseInt(
+      process.env.JOBOPS_FREELANCE_CONFLICT_AUTO_RESOLUTION_THRESHOLD ?? "90",
+      10,
+    );
+  const { unique, duplicatesRemoved, fuzzyMerges } = dedupeGigs(allGigs, {
+    fuzzyThreshold:
+      Math.max(0, Math.min(100, conflictAutoResolutionThreshold)) / 100,
+  });
 
   const scored: AggregatedGig[] = unique.map((gig) => ({
     ...gig,
     suitabilityScore: heuristicGigScore(gig, options.profileSkills ?? []),
   }));
 
-  const minScore = options.minScore ?? 0;
+  const minScore =
+    options.minScore ??
+    Number.parseInt(process.env.JOBOPS_FREELANCE_MIN_SCORE ?? "40", 10);
   const ranked = rankGigs(scored).filter(
     (gig) => (gig.suitabilityScore ?? 0) >= minScore,
   );

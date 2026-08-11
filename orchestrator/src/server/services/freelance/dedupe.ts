@@ -72,7 +72,7 @@ export function dedupeGigs(
   gigs: CreateGigInput[],
   options: { fuzzyThreshold?: number } = {},
 ): DedupeResult {
-  const threshold = options.fuzzyThreshold ?? 0.85;
+  const threshold = options.fuzzyThreshold ?? 0.9;
   const byHash = new Map<string, CreateGigInput & { dedupHash: string }>();
   let duplicatesRemoved = 0;
 
