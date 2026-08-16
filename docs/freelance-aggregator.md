@@ -185,6 +185,7 @@ finder + every apply gate. Zero throws, zero un-gated submissions.
 | gun-io | server-rendered HTML | 2 gigs |
 | braintrust | public jobs API | 1 gig |
 | turing | Greenhouse public board | 1 gig |
+| wantapply | public JSON API (`/api/jobs`, Cloudflare-gated → stealth-browser fallback) | 2,315 tech listings |
 
 (contra also has a credential-free Ashby careers feed, ~3 small postings.)
 
@@ -196,9 +197,12 @@ env) and returns an actionable `success:false` result naming the exact var when
 absent — never throws, never fabricates.
 
 ### No-apply platforms
-remoteok and weworkremotely are external-apply job boards: discovery is real,
-but there is no in-app proposal, so they expose no `applyToGig`. wantapply is an
-auto-apply *service* with a guarded batch exporter (`exportBatchToWantapply`).
+remoteok, weworkremotely and wantapply are external-apply job boards:
+discovery is real, but every listing's Apply button redirects to the
+employer's own ATS form, so their `applyToGig` adapters are guarded and never
+submit or fake a submission in-platform. wantapply additionally keeps a
+guarded batch exporter (`exportBatchToWantapply`) for pushing scored gigs to
+an external auto-applier webhook.
 
 ### Submit safety (money path) — all 16 apply adapters
 `dryRun:true` -> `mode:"dry_run", status:"skipped"` (never submits).

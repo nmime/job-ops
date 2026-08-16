@@ -1,0 +1,88 @@
+[
+  {
+    "id": "1f7a1b47-e09d-44c9-847b-6ed11d1bfc15",
+    "title": "Chief Technology Officer (CTO)",
+    "description": "<h2><strong>About Kleos</strong></h2><p>Kleos is building a global platform for hiring, managing, and paying international teams. Our product combines global payroll, contractor management, payments, and compliance.</p><p>As Kleos expands across new markets, currencies, providers, and transaction flows, we are looking for a deeply technical, hands-on CTO to own the architecture and technical foundation of the product.</p><p>Kleos already has an established engineering and QA team responsible for building and developing the platform. We are not looking to add another management layer. We need a strong architect who can raise the technical bar, strengthen the existing team, and help us scale q",
+    "companyName": "Kleos",
+    "url": "chief-technology-officer-cto-at-kleos",
+    "levels": ["chief"],
+    "workplaceTypes": ["remote"],
+    "jobLocations": [],
+    "jobRegions": [],
+    "employmentTypes": ["fulltime"],
+    "relocationSupport": false,
+    "remote": true,
+    "salary": "",
+    "salaryCurrency": null,
+    "salaryMin": null,
+    "salaryMax": null,
+    "salaryUnit": null,
+    "validThrough": null,
+    "status": "published",
+    "tags": [],
+    "publishedAt": "2026-08-07T10:10:01.143Z",
+    "isPlus": false,
+    "isCreatedByRecruiter": true
+  },
+  {
+    "id": "7f64e4d6-0329-4ba4-a9a3-9577c1b2618b",
+    "title": "Junior Creative Motion Designer",
+    "description": "<ul><li><p><strong>Формат:</strong> Full-time</p></li><li><p><strong>Удаленно / Гибрид</strong> (будет огромным плюсом, если ты сможешь иногда заглядывать к нам в офис в Варшаве)</p></li></ul><p><strong>Процесс</strong>: Pre-screen с рекрутером → ТЗ → Интервью с Head of Production → Job offer</p><p></p><h1><strong>👋&nbsp;Про нас:</strong></h1><p><a rel=\"noopener noreferrer nofollow\" href=\"http://appercut.eu/\"><strong>Appercut</strong></a>&nbsp;– польская продуктовая IT компания, которая занимается созданием и развитием своих собственных мобильных приложений, которые используют миллионы пользователей по всему миру. Мы создаём продукты, которые помогают людям становиться лучше — и сами постоян",
+    "companyName": "Appercut",
+    "url": "junior-creative-motion-designer-at-appercut",
+    "levels": ["junior"],
+    "workplaceTypes": ["remote"],
+    "jobLocations": [],
+    "jobRegions": [],
+    "employmentTypes": ["fulltime"],
+    "relocationSupport": false,
+    "remote": true,
+    "salary": "$1100-1400 gross",
+    "salaryCurrency": null,
+    "salaryMin": null,
+    "salaryMax": null,
+    "salaryUnit": null,
+    "validThrough": null,
+    "status": "published",
+    "tags": [],
+    "publishedAt": "2026-08-11T08:23:13.141Z",
+    "isPlus": false,
+    "isCreatedByRecruiter": true
+  },
+  {
+    "id": "1b90d8d9-de46-4c6b-9970-15148b3195fa",
+    "title": "Backend Developer",
+    "description": "<p>Arival Bank International Corp. is a US-based digital bank licensed and regulated by OCIF. After obtaining our US-based banking license at the beginning of 2021, we officially went live in June 2021 and have onboarded 650+ B2B customers from over 60+ countries. Equipped with forward-thinking compliance, Arival is on a mission to become the go-to digital bank for corporate and institutional clients all over the world. We're actively growing our international team with offices in Puerto Rico, Europe, and Singapore, with over 60+ employees, and building many departments from the ground up.</p><p></p><p></p><p><strong>EVERYDAY TASKS:</strong></p><ul><li><p>Implementation of new functionality ",
+    "companyName": "Arival Bank",
+    "url": "backend-developer-at-arival-bank",
+    "levels": ["senior"],
+    "workplaceTypes": ["remote"],
+    "jobLocations": [
+      {
+        "iso2": "CY",
+        "name_en": "Cyprus",
+        "name_ru": "Кипр"
+      }
+    ],
+    "jobRegions": [
+      {
+        "name_en": "Worldwide",
+        "name_ru": "Весь мир"
+      }
+    ],
+    "employmentTypes": ["fulltime"],
+    "relocationSupport": false,
+    "remote": true,
+    "salary": "",
+    "salaryCurrency": null,
+    "salaryMin": null,
+    "salaryMax": null,
+    "salaryUnit": null,
+    "validThrough": null,
+    "status": "published",
+    "tags": [],
+    "publishedAt": "2026-07-29T17:58:49.796Z",
+    "isPlus": true,
+    "isCreatedByRecruiter": false
+  }
+]

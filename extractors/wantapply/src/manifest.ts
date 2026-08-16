@@ -13,7 +13,10 @@ export const manifest: FreelanceProviderManifest &
   > = {
   id: "wantapply",
   displayName: "Wantapply",
-  kind: "auto-apply-exporter",
+  // Real discovery via the public /api/jobs feed (Cloudflare-gated with a
+  // stealth-browser fallback); apply is external (employer ATS) and guarded;
+  // batch export to an auto-applier webhook is optional.
+  kind: "remote-job-board",
   providesSources: ["wantapply"],
   requiredEnvVars: [],
   capabilities: {},

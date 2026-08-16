@@ -314,10 +314,10 @@ export const FREELANCE_PLATFORM_METADATA: Record<
   },
   wantapply: {
     label: "Wantapply",
-    kind: "auto-apply-exporter",
+    kind: "remote-job-board",
     order: 18,
-    hasRealFinder: false,
-    applyArtifact: "export",
+    hasRealFinder: true,
+    applyArtifact: "application",
   },
   "aggregator-core": {
     label: "Freelance Aggregator Engine",
