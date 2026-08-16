@@ -18,6 +18,7 @@ import {
   getFreelanceProposals,
   getFreelanceStats,
   proposeFreelanceGig,
+  recordFreelanceEarning,
   runFreelanceCycle,
 } from "@/client/api/freelance";
 import { useQueryErrorToast } from "@/client/hooks/useQueryErrorToast";
@@ -30,7 +31,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const DEFAULT_SKILLS = [
   "TypeScript",
@@ -100,6 +110,34 @@ export function FreelancePage() {
       queryClient.invalidateQueries({ queryKey: ["freelance"] });
     },
     onError: () => toast.error("Proposal generation failed"),
+  });
+
+  const [earningPlatform, setEarningPlatform] = useState("");
+  const [earningAmount, setEarningAmount] = useState("");
+  const [earningStatus, setEarningStatus] = useState<
+    "pending" | "invoiced" | "paid" | "cancelled"
+  >("pending");
+
+  const recordEarningMutation = useMutation({
+    mutationFn: () => {
+      const amount = Number.parseFloat(earningAmount);
+      if (!earningPlatform || !Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Pick a platform and enter a positive amount");
+      }
+      return recordFreelanceEarning({
+        platform: earningPlatform,
+        amount,
+        status: earningStatus,
+      });
+    },
+    onSuccess: (data) => {
+      toast.success(
+        `Recorded $${data.earning.amount.toFixed(2)} (${data.earning.status}) on ${data.earning.platform}`,
+      );
+      setEarningAmount("");
+      queryClient.invalidateQueries({ queryKey: ["freelance"] });
+    },
+    onError: (error: Error) => toast.error(error.message),
   });
 
   const stats = statsQuery.data;
@@ -358,6 +396,86 @@ export function FreelancePage() {
           </Card>
         </div>
       </div>
+
+      {/* Record earning */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Record earning</CardTitle>
+          <CardDescription>
+            Log money earned from a gig into the ledger (manual entry —
+            platforms do not push payout webhooks).
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label>Platform</Label>
+              <Select
+                value={earningPlatform}
+                onValueChange={setEarningPlatform}
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue placeholder="Platform" />
+                </SelectTrigger>
+                <SelectContent>
+                  {platforms.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.displayName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Amount</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                className="w-28"
+                value={earningAmount}
+                onChange={(e) => setEarningAmount(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Status</Label>
+              <Select
+                value={earningStatus}
+                onValueChange={(value) =>
+                  setEarningStatus(
+                    value as "pending" | "invoiced" | "paid" | "cancelled",
+                  )
+                }
+              >
+                <SelectTrigger className="w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(["pending", "invoiced", "paid", "cancelled"] as const).map(
+                    (status) => (
+                      <SelectItem key={status} value={status}>
+                        {status}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              onClick={() => recordEarningMutation.mutate()}
+              disabled={recordEarningMutation.isPending}
+            >
+              {recordEarningMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <DollarSign className="mr-2 h-4 w-4" />
+              )}
+              Record
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Earnings by platform */}
       {stats && Object.keys(stats.earnings.byPlatform).length > 0 && (

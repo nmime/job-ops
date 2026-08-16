@@ -120,3 +120,31 @@ export async function proposeFreelanceGig(
     { method: "POST", body: JSON.stringify({ profileSkills }) },
   );
 }
+
+export interface FreelanceEarningItem {
+  id: string;
+  gigId: string | null;
+  platform: string;
+  amount: number;
+  currency: string;
+  status: "pending" | "invoiced" | "paid" | "cancelled";
+  paidAt: string | null;
+  recordedAt: string;
+}
+
+export interface FreelanceRecordEarningInput {
+  gigId?: string;
+  platform: string;
+  amount: number;
+  currency?: string;
+  status?: "pending" | "invoiced" | "paid" | "cancelled";
+}
+
+export async function recordFreelanceEarning(
+  input: FreelanceRecordEarningInput,
+): Promise<{ earning: FreelanceEarningItem }> {
+  return fetchApi<{ earning: FreelanceEarningItem }>("/freelance/earnings", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}

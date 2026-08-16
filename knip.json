@@ -41,6 +41,78 @@
     "extractors/ukvisajobs": {
       "entry": ["src/main.ts"],
       "project": ["src/**/*.ts"]
+    },
+    "extractors/upwork": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/freelancer": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/fiverr": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/toptal": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/peopleperhour": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/guru": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/malt": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/freelancermap": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/wellfound": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/braintrust": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/contra": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/arc-dev": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/gun-io": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/turing": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/flexjobs": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/wantapply": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/remoteok": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "extractors/weworkremotely": {
+      "entry": ["src/manifest.ts"],
+      "project": ["src/**/*.ts"]
     }
   }
 }

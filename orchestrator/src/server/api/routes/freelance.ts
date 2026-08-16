@@ -1,4 +1,4 @@
-import { toAppError } from "@infra/errors";
+import { badRequest, toAppError } from "@infra/errors";
 import { fail, ok } from "@infra/http";
 import {
   countGigsByStatus,
@@ -7,6 +7,7 @@ import {
   listEarnings,
   listGigs,
   listProposals,
+  recordEarning,
   saveProposal,
   updateGigStatus,
   upsertGig,
@@ -22,7 +23,10 @@ import {
 } from "@server/services/freelance/apply-adapter";
 import { computeDedupHash } from "@server/services/freelance/dedupe";
 import { getFreelanceProviderRegistry } from "@server/services/freelance/registry";
-import type { FreelancePlatformId } from "@shared/types/freelance";
+import {
+  FREELANCE_PLATFORM_IDS,
+  type FreelancePlatformId,
+} from "@shared/types/freelance";
 import { type Request, type Response, Router } from "express";
 
 export const freelanceRouter = Router();
@@ -200,6 +204,72 @@ freelanceRouter.get("/stats", async (_req: Request, res: Response) => {
       earnings,
       autobidEnabled: isFreelanceAutobidEnabled(),
     });
+  } catch (error) {
+    fail(res, toAppError(error));
+  }
+});
+
+/**
+ * POST /api/freelance/earnings — record a manual earnings entry in the ledger.
+ */
+freelanceRouter.post("/earnings", async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      gigId?: string;
+      platform?: string;
+      amount?: number;
+      currency?: string;
+      status?: "pending" | "invoiced" | "paid" | "cancelled";
+    };
+
+    const platform = body.platform as FreelancePlatformId | undefined;
+    if (
+      !platform ||
+      !FREELANCE_PLATFORM_IDS.includes(platform) ||
+      platform === "aggregator-core"
+    ) {
+      return fail(
+        res,
+        badRequest(
+          `platform must be one of: ${FREELANCE_PLATFORM_IDS.filter(
+            (id) => id !== "aggregator-core",
+          ).join(", ")}`,
+        ),
+      );
+    }
+    if (
+      typeof body.amount !== "number" ||
+      !Number.isFinite(body.amount) ||
+      body.amount <= 0
+    ) {
+      return fail(res, badRequest("amount must be a positive number"));
+    }
+    const validStatuses = ["pending", "invoiced", "paid", "cancelled"];
+    if (body.status != null && !validStatuses.includes(body.status)) {
+      return fail(
+        res,
+        badRequest(`status must be one of: ${validStatuses.join(", ")}`),
+      );
+    }
+
+    let gigId: string | undefined;
+    if (body.gigId) {
+      const gigs = await listGigs({ limit: 10000 });
+      if (!gigs.some((g) => g.id === body.gigId)) {
+        return fail(res, toAppError(new Error("Gig not found")));
+      }
+      gigId = body.gigId;
+    }
+
+    const earning = await recordEarning({
+      gigId,
+      platform,
+      amount: body.amount,
+      currency: body.currency,
+      status: body.status,
+    });
+
+    ok(res, { earning });
   } catch (error) {
     fail(res, toAppError(error));
   }
