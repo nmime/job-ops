@@ -93,7 +93,7 @@ async function scrapeMaltSearch(
       const anchors = document.querySelectorAll<HTMLAnchorElement>(
         'a[href*="/project/"], a[href*="/mission/"], a[href*="/job/"]',
       );
-      for (const anchor of anchors) {
+      for (const anchor of Array.from(anchors)) {
         const href = anchor.href;
         const idMatch = href.match(
           /(?:project|mission|job)[/=-]([A-Za-z0-9_-]+)/,

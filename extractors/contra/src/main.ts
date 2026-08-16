@@ -92,8 +92,9 @@ function jobToGig(job: AshbyJob): CreateGigInput {
     jobType: job.employmentType ?? undefined,
     isRemote:
       job.isRemote ??
-      job.workplaceType?.toLowerCase() === "remote" ??
-      undefined,
+      (job.workplaceType
+        ? job.workplaceType.toLowerCase() === "remote"
+        : undefined),
     location:
       job.location ??
       job.secondaryLocations

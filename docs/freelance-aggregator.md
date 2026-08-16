@@ -31,33 +31,33 @@ Additional guards:
 
 ## Platforms
 
+All 18 platforms have real adapters (no stubs) — verified by executing every
+finder and every apply gate; see [Live adapter status](#live-adapter-status-verified-by-live-run).
+
 | Platform | Finder | Credentials needed |
 |---|---|---|
-| RemoteOK | **REAL** — public JSON API | none |
-| We Work Remotely | **REAL** — public RSS feeds | none |
-| Upwork | adapter stub | OAuth / API key |
-| Freelancer.com | adapter stub | API key |
-| Fiverr | adapter stub | session cookie |
-| Toptal | adapter stub | session cookie |
-| PeoplePerHour | adapter stub | session cookie |
-| Guru | adapter stub | API key |
-| Malt | adapter stub | session cookie |
-| freelancermap | adapter stub | API key |
-| Wellfound | adapter stub | session cookie |
-| Braintrust | adapter stub | API key |
-| Contra | adapter stub | session cookie |
-| Arc.dev | adapter stub | session cookie |
-| Gun.io | adapter stub | API key |
-| Turing | adapter stub | session cookie |
-| FlexJobs | adapter stub | subscription cookie |
-| Wantapply | export adapter | webhook URL |
+| RemoteOK | **REAL** — public JSON API | none (no in-app apply) |
+| We Work Remotely | **REAL** — public RSS feeds | none (no in-app apply) |
+| Freelancer.com | **REAL** — public projects API | none for discovery; OAuth token to bid |
+| freelancermap | **REAL** — embedded JSON state | session cookie to apply |
+| Arc.dev | **REAL** — server-rendered HTML | session cookie to apply |
+| Toptal | **REAL** — Lever public board | session cookie to apply |
+| Gun.io | **REAL** — server-rendered HTML | API key to apply |
+| Braintrust | **REAL** — public jobs API | API key to apply |
+| Turing | **REAL** — Greenhouse public board | session cookie to apply |
+| Contra | **REAL** — Ashby careers feed | session cookie to apply |
+| Upwork | **REAL** — official GraphQL + cookie fallback | OAuth token or session cookie |
+| Fiverr | **REAL** — authenticated session | session cookie |
+| PeoplePerHour | **REAL** — authenticated session | session cookie |
+| Guru | **REAL** — official API + cookie | API key or session cookie |
+| Malt | **REAL** — authenticated session | session cookie |
+| Wellfound | **REAL** — GraphQL + cookie | session cookie |
+| FlexJobs | **REAL** — subscription session | subscription cookie |
+| Wantapply | export service | webhook URL (guarded batch exporter) |
 
-"adapter stub" = the provider is wired into the registry and returns a
-structured *not configured* result naming the exact env var it needs. The
-aggregator, dedupe, scoring, proposal and guard layers are fully live for every
-platform; only the platform-specific HTTP calls remain.
-
-RemoteOK and We Work Remotely are genuinely live today and need no credentials.
+A credentialed adapter with no credential set returns a structured *not
+configured* result naming the exact env var it needs — it never throws and
+never fabricates data.
 
 ## Pipeline
 
@@ -104,12 +104,11 @@ Unattended worker, 3 cycles: 3/3 completed, 9 proposals, 0 real submissions,
 To make the aggregator actually earn, per platform:
 
 1. Obtain the platform credential and set
-   `JOBOPS_FREELANCE_<PLATFORM>_API_KEY` (or `_COOKIE`).
-2. Implement the platform's `findGigs` / `applyToGig` HTTP calls in
-   `extractors/<platform>/src/main.ts` (the contract and guards are done).
-3. Set `JOBOPS_FREELANCE_<PLATFORM>_APPLY_ENABLED=true`.
-4. Set `FREELANCE_AUTOBID_ENABLED=true`.
-5. Optionally raise `JOBOPS_FREELANCE_<PLATFORM>_MAX_PER_HOUR`.
+   `JOBOPS_FREELANCE_<PLATFORM>_API_KEY` (or `_COOKIE`). The adapters are
+   already implemented in `extractors/<platform>/src/main.ts`.
+2. Set `JOBOPS_FREELANCE_<PLATFORM>_APPLY_ENABLED=true`.
+3. Set `FREELANCE_AUTOBID_ENABLED=true`.
+4. Optionally raise `JOBOPS_FREELANCE_<PLATFORM>_MAX_PER_HOUR`.
 
 Until step 1 is done by the account owner, no automation can bid on your behalf —
 these platforms require *your* authenticated identity.
@@ -130,6 +129,7 @@ Three tenant-scoped tables (`orchestrator/src/server/db/schema.ts`, created by `
 | `GET /gigs?minScore=&limit=` | scored gig feed, newest first |
 | `POST /gigs/:id/propose` | draft a proposal (dry-run unless every gate is open) |
 | `GET /proposals` | proposal history |
+| `POST /earnings` | record a manual earnings entry (platform, amount, status) |
 | `GET /stats` | dashboard counters + earnings summary |
 | `GET /earnings` | recorded earnings |
 
@@ -153,20 +153,31 @@ crash startup with `DuplicateSourceProviderError`.
 
 ## Money path (what actually earns)
 
-Discovery is live and credential-free on **Freelancer.com, RemoteOK and
-WeWorkRemotely**. Only **Freelancer.com** has a real submit adapter
-(`POST https://www.freelancer.com/api/projects/0.1/bids/`). To let it place real
-bids, all three gates must be open:
+Discovery is live and credential-free on 9 platforms (see the table above).
+Every credentialed platform ships a guarded submit adapter (16 apply paths,
+all dry-run-safe by default). To let any platform place real bids, all three
+gates must be open:
 
 ```
-JOBOPS_FREELANCE_FREELANCER_API_KEY=<your OAuth token>
-JOBOPS_FREELANCE_FREELANCER_APPLY_ENABLED=true
+JOBOPS_FREELANCE_<PLATFORM>_API_KEY=<your credential>   # or _COOKIE
+JOBOPS_FREELANCE_<PLATFORM>_APPLY_ENABLED=true
 FREELANCE_AUTOBID_ENABLED=true
 ```
 
+Freelancer.com is the most direct path to first revenue: its discovery needs
+no key and its submit adapter posts real bids via
+`POST https://www.freelancer.com/api/projects/0.1/bids/` once an OAuth token
+is set.
+
 With any gate closed the pipeline still discovers, scores and drafts proposals,
-but returns `mode: "dry_run"` and submits nothing. The other 15 credentialed
-platforms return a structured "not configured" result by design.
+but returns `mode: "dry_run"` and submits nothing. A credentialed platform
+without its credential set returns a structured "not configured" result naming
+the exact env var.
+
+Earnings are tracked in the `freelance_earnings` ledger via
+`POST /api/freelance/earnings` (or the "Record earning" card on the
+`/freelance` page) — platforms do not push payout webhooks, so entries are
+manual once a client pays.
 
 ## Live adapter status (verified by live run)
 
