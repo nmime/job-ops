@@ -87,7 +87,11 @@ export async function createApplicationEmailAttempt(input: {
     .from(applicationEmailAttempts)
     .where(eq(applicationEmailAttempts.id, id))
     .limit(1);
-  return mapRow(rows[0]!);
+  const row = rows[0];
+  if (!row) {
+    throw new Error(`application email attempt ${id} not found after insert`);
+  }
+  return mapRow(row);
 }
 
 export async function updateApplicationEmailAttemptStatus(input: {
