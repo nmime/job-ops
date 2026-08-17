@@ -238,6 +238,86 @@ describe("applyToFreelanceGig", () => {
     }
   });
 
+  it("does NOT consume budget when the provider fails (e.g. missing credential)", async () => {
+    const failing = vi.fn(
+      async () =>
+        ({
+          platform: "upwork" as const,
+          mode: "submit" as const,
+          status: "error" as const,
+          error: "missing JOBOPS_FREELANCE_UPWORK_API_KEY",
+        }),
+    );
+    __setFreelanceRegistryForTests(fakeProvider(failing));
+    const env = {
+      JOBOPS_FREELANCE_UPWORK_APPLY_ENABLED: "true",
+      JOBOPS_FREELANCE_UPWORK_MAX_PER_HOUR: "1",
+    };
+    const first = await applyToFreelanceGig({
+      gigId: "g1",
+      platform: "upwork",
+      gigDescription: "x",
+      env,
+    });
+    const second = await applyToFreelanceGig({
+      gigId: "g2",
+      platform: "upwork",
+      gigDescription: "x",
+      env,
+    });
+    // Both attempts reached the provider — the failed first attempt did not
+    // burn the only slot in the hourly budget.
+    expect(first.status).toBe("error");
+    expect(second.status).toBe("error");
+    expect(failing).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts exported batches against the budget too", async () => {
+    const exporting = vi.fn(
+      async () =>
+        ({
+          platform: "wantapply" as const,
+          mode: "submit" as const,
+          status: "exported" as const,
+        }),
+    );
+    __setFreelanceRegistryForTests({
+      manifests: new Map<FreelancePlatformId, FreelanceProviderManifest>([
+        [
+          "wantapply" as const,
+          {
+            id: "wantapply" as const,
+            displayName: "Wantapply",
+            kind: "freelance-marketplace",
+            findGigs: vi.fn(),
+            applyToGig: exporting,
+          },
+        ],
+      ]),
+      availablePlatforms: ["wantapply" as const],
+      failed: [],
+    });
+    const env = {
+      JOBOPS_FREELANCE_WANTAPPLY_APPLY_ENABLED: "true",
+      JOBOPS_FREELANCE_WANTAPPLY_MAX_PER_HOUR: "1",
+    };
+    const first = await applyToFreelanceGig({
+      gigId: "g1",
+      platform: "wantapply",
+      gigDescription: "x",
+      env,
+    });
+    const second = await applyToFreelanceGig({
+      gigId: "g2",
+      platform: "wantapply",
+      gigDescription: "x",
+      env,
+    });
+    expect(first.status).toBe("exported");
+    expect(second.status).toBe("skipped");
+    expect(second.error).toContain("rate-limited");
+  });
+
   it("returns an error result for an unregistered platform", async () => {
     __setFreelanceRegistryForTests({
       manifests: new Map(),

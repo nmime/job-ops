@@ -1,8 +1,14 @@
 import { logger } from "@infra/logger";
-import type {
-  FreelanceApplyResult,
-  FreelancePlatformId,
+import {
+  type FreelanceApplyResult,
+  type FreelancePlatformId,
 } from "@shared/types/freelance";
+import {
+  type GigRow,
+  saveProposal,
+  updateGigStatus,
+  upsertGig,
+} from "@server/repositories/freelance";
 import {
   type AggregatedGig,
   type AggregatorRunResult,
@@ -10,12 +16,14 @@ import {
   runAggregatorCycle,
 } from "./aggregator";
 import { applyToFreelanceGig } from "./apply-adapter";
+import { computeDedupHash } from "./dedupe";
 
 export interface WorkerCycleReport {
   cycle: number;
   startedAt: string;
   finishedAt: string;
   aggregate: Omit<AggregatorRunResult, "gigs">;
+  persisted: { created: number; updated: number };
   topGigs: Array<{
     platform: FreelancePlatformId;
     title: string;
@@ -87,6 +95,7 @@ export async function runWorkerCycle(
         enqueued: 0,
         perPlatform: [],
       },
+      persisted: { created: 0, updated: 0 },
       topGigs: [],
       applies: [],
       autobidEnabled,
@@ -95,24 +104,74 @@ export async function runWorkerCycle(
   }
 
   const { gigs, ...aggregate } = result;
+
+  // Persist every scored gig so the dashboard, stats and ledger reflect the
+  // unattended worker's work (same persistence contract as POST /run).
+  const persisted = { created: 0, updated: 0 };
+  const gigRows = new Map<string, GigRow>(); // dedupHash -> persisted row
+  for (const gig of gigs) {
+    try {
+      const result = await upsertGig({
+        ...gig,
+        dedupHash: computeDedupHash(gig),
+        suitabilityScore: gig.suitabilityScore ?? null,
+      });
+      if (result.created) persisted.created += 1;
+      else persisted.updated += 1;
+      gigRows.set(gig.dedupHash, result.gig);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`persist failed for ${gig.platform}/${gig.title}: ${message}`);
+    }
+  }
+
   const bidsPerCycle = options.bidsPerCycle ?? 3;
   const targets: AggregatedGig[] = gigs.slice(0, bidsPerCycle);
 
   const applies: FreelanceApplyResult[] = [];
   for (const gig of targets) {
     if (options.shouldStop?.()) break;
+    let applyResult: FreelanceApplyResult;
     try {
-      const applyResult = await applyToFreelanceGig({
+      applyResult = await applyToFreelanceGig({
         gigId: gig.dedupHash,
         platform: gig.platform,
         gigTitle: gig.title,
         gigDescription: gig.gigDescription ?? gig.title,
         profileSkills: options.profileSkills,
       });
-      applies.push(applyResult);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`apply failed for ${gig.platform}/${gig.title}: ${message}`);
+      continue;
+    }
+    applies.push(applyResult);
+
+    // Persist the proposal + advance gig status so the money path is fully
+    // observable in the UI/ledger, exactly like the manual API flow.
+    const row = gigRows.get(gig.dedupHash);
+    if (row) {
+      try {
+        await saveProposal({
+          gigId: row.id,
+          platform: gig.platform,
+          sourceGigId: gig.sourceGigId ?? undefined,
+          coverLetter: applyResult.proposalDraft?.coverLetter ?? "",
+          tailored: applyResult.proposalDraft?.tailored ?? false,
+          mode: applyResult.mode,
+          status: applyResult.status,
+          externalRef: applyResult.externalRef,
+          error: applyResult.error,
+        });
+        if (applyResult.status === "submitted" || applyResult.status === "exported") {
+          await updateGigStatus(row.id, "submitted");
+        } else if (applyResult.status !== "error") {
+          await updateGigStatus(row.id, "proposed");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`proposal persist failed for ${gig.platform}/${gig.title}: ${message}`);
+      }
     }
   }
 
@@ -122,6 +181,7 @@ export async function runWorkerCycle(
     startedAt,
     finishedAt,
     aggregate,
+    persisted,
     topGigs: targets.map((gig) => ({
       platform: gig.platform,
       title: gig.title,
@@ -138,6 +198,7 @@ export async function runWorkerCycle(
     cycle: cycleNumber,
     discovered: aggregate.discovered,
     enqueued: aggregate.enqueued,
+    persisted: persisted.created + persisted.updated,
     applies: applies.length,
     autobidEnabled,
   });

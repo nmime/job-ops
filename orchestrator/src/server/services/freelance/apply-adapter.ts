@@ -69,6 +69,24 @@ export function consumeRateLimit(
   return true;
 }
 
+/**
+ * Non-mutating check: true while the platform still has submission budget
+ * left in its window. Used BEFORE calling the provider so that attempts that
+ * fail (e.g. missing credential) do not burn the real-submission budget —
+ * only actual sends are counted, via `consumeRateLimit` after the provider
+ * reports `submitted`/`exported`.
+ */
+export function isWithinRateLimit(
+  platformId: string,
+  budget: { maxPerHour: number; windowMs: number },
+  now: number = Date.now(),
+): boolean {
+  const history = (rateBuckets.get(platformId) ?? []).filter(
+    (ts) => now - ts < budget.windowMs,
+  );
+  return history.length < budget.maxPerHour;
+}
+
 function stripHtml(text: string): string {
   return (text || "")
     .replace(/<br\s*\/?>/gi, " ")
@@ -186,7 +204,7 @@ export async function applyToFreelanceGig(
     };
   }
 
-  if (enabled && !consumeRateLimit(input.platform, rateBudget)) {
+  if (enabled && !isWithinRateLimit(input.platform, rateBudget)) {
     logger.warn("Freelance apply rate-limited", {
       platform: input.platform,
       maxPerHour: rateBudget.maxPerHour,
@@ -234,6 +252,14 @@ export async function applyToFreelanceGig(
 
   try {
     const result = await provider.applyToGig(ctx);
+    // Only submissions that actually went out count against the hourly
+    // budget — failed attempts (e.g. missing credential) must not burn it.
+    if (
+      enabled &&
+      (result.status === "submitted" || result.status === "exported")
+    ) {
+      consumeRateLimit(input.platform, rateBudget);
+    }
     return { ...result, proposalDraft };
   } catch (error) {
     return {
