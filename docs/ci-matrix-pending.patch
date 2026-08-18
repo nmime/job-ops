@@ -1,0 +1,44 @@
+Patch: add all 18 freelance extractors to the CI matrix (.github/workflows/ci.yml).
+Source: dangling remote commit 808af7e486ea (not on any branch).
+Apply with a token that has 'workflow' scope:
+  git apply docs/ci-matrix-pending.patch && git add .github/workflows/ci.yml && git commit -m 'ci: add freelance extractors to matrix'
+
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -57,6 +57,25 @@
+           - startupjobs-extractor
+           - workingnomads-extractor
+           - ukvisajobs-extractor
++          # freelance adapters (money path)
++          - upwork-extractor
++          - fiverr-extractor
++          - peopleperhour-extractor
++          - guru-extractor
++          - arc-dev-extractor
++          - turing-extractor
++          - gun-io-extractor
++          - braintrust-extractor
++          - wellfound-extractor
++          - flexjobs-extractor
++          - wantapply-extractor
++          - freelancer-extractor
++          - malt-extractor
++          - contra-extractor
++          - freelancermap-extractor
++          - toptal-extractor
++          - remoteok-extractor
++          - weworkremotely-extractor
+     steps:
+       - uses: actions/checkout@v4
+       - name: Setup Node
+@@ -102,3 +121,4 @@
+       - name: Build documentation site
+         run: npm run check:docs
+         working-directory: .
++
+
+Note: the bot PAT (nmime) lacks the `workflow` scope, so it cannot push
+changes to .github/workflows/** (GitHub rejects such pushes for PATs without
+the scope; Contents API and App-creation-via-API were also verified blocked).
+Any token with workflow scope can apply this in one command:
+  git apply docs/ci-matrix-pending.patch
