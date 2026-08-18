@@ -106,60 +106,34 @@ async function scrapeJobs(
     );
     await page
       .waitForSelector(
-        "li.job-list-item, [class*='job-list'] li, article, .job-card",
+        "a[href*='/freelance-jobs/'], li.job-list-item, [class*='job-list'] li, article, .job-card",
         { timeout: NAV_TIMEOUT_MS },
       )
       .catch(() => undefined);
-    const raw = await page.$$eval(
-      "li.job-list-item, [class*='job-list'] li, article.job-card, .job-card",
-      (cards) =>
-        cards.slice(0, 50).map((card) => {
-          const text = (el: Element | null) =>
-            el?.textContent?.trim() ?? undefined;
-          const anchor = card.querySelector(
-            "a[href*='/job/'], a[href*='freelance-job'], h2 a[href], h3 a[href]",
-          );
-          const href = anchor?.getAttribute("href") ?? "";
-          const proposals = text(
-            card.querySelector(
-              "[class*='proposal'], [class*='bids'], [class*='sent']",
-            ),
-          );
-          const proposalCount = proposals
-            ? Number(proposals.replace(/[^0-9]/g, ""))
-            : undefined;
-          return {
-            id:
-              href.match(/(\d{4,})/)?.[1] ??
-              href.replace(/[^A-Za-z0-9]/g, "").slice(0, 64),
-            title: text(anchor) ?? text(card.querySelector("h2, h3")) ?? "",
-            url: href.startsWith("http")
-              ? href
-              : href
-                ? `https://www.peopleperhour.com${href.startsWith("/") ? "" : "/"}${href}`
-                : "",
-            description: text(card.querySelector("[class*='description'], p")),
-            budgetText: text(
-              card.querySelector("[class*='budget'], [class*='price']"),
-            ),
-            location: text(
-              card.querySelector("[class*='location'], [class*='country']"),
-            ),
-            postedText: text(
-              card.querySelector("[class*='date'], [class*='posted'], time"),
-            ),
-            proposalCount:
-              proposalCount != null && Number.isFinite(proposalCount)
-                ? proposalCount
-                : undefined,
-            skills: Array.from(
-              card.querySelectorAll("[class*='skill'], [class*='tag']"),
-            )
-              .map((el) => el.textContent?.trim() ?? "")
-              .filter(Boolean),
-          };
-        }),
-    );
+    // IIFE string through page.evaluate: avoids both the tsx/esbuild __name
+    // decoration breaking Playwright function serialization and the fact that
+    // this Playwright version treats $$eval string args as bare expressions.
+    const raw = (await page.evaluate(`(() => {
+      const cards = Array.from(document.querySelectorAll("div[class*='item__container'], li.job-list-item, [class*='job-list'] li, article.job-card, .job-card")).slice(0, 50);
+      const text = (el) => (el && el.textContent ? el.textContent.trim() : undefined);
+      return cards.map((card) => {
+        const anchor = card.querySelector("a[href*='freelance-jobs/'], a[class*='item__url'], a[href*='/job/'], a[href*='freelance-job'], h2 a[href], h3 a[href]");
+        const href = anchor && anchor.getAttribute("href") ? anchor.getAttribute("href") : "";
+        const proposals = text(card.querySelector("[class*='proposal'], [class*='bids'], [class*='sent']"));
+        const proposalCount = proposals ? Number(proposals.replace(/[^0-9]/g, "")) : undefined;
+        return {
+          id: (href.match(/(\\d{4,})/) || [])[1] || href.replace(/[^A-Za-z0-9]/g, "").slice(0, 64),
+          title: text(anchor) || text(card.querySelector("h2, h3, h6")) || "",
+          url: href.startsWith("http") ? href : href ? "https://www.peopleperhour.com" + (href.startsWith("/") ? "" : "/") + href : "",
+          description: text(card.querySelector("[class*='description'], p")),
+          budgetText: text(card.querySelector("[class*='budget'], [class*='price']")),
+          location: text(card.querySelector("[class*='location'], [class*='country']")),
+          postedText: text(card.querySelector("[class*='date'], [class*='posted'], time")),
+          proposalCount: proposalCount != null && Number.isFinite(proposalCount) ? proposalCount : undefined,
+          skills: Array.from(card.querySelectorAll("[class*='skill'], [class*='tag']")).map((el) => (el.textContent || "").trim()).filter(Boolean),
+        };
+      });
+    })()`)) as PphJob[];
     return raw.filter((job) => job.title && job.url);
   } finally {
     if (browser) await browser.close();
