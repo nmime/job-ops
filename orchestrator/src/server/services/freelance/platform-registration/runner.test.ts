@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FREELANCER_FLOW } from "./freelancer-flow";
+import { PPH_FLOW } from "./pph-flow";
 import { renderValue, runFlow, validateFlow } from "./runner";
 import type { BrowserDriver } from "./types";
 
@@ -39,6 +40,25 @@ describe("runner", () => {
   it("validates the shipped freelancer flow", () => {
     const problems = validateFlow(FREELANCER_FLOW);
     expect(problems).toEqual([]);
+  });
+
+  it("validates the shipped peopleperhour flow", () => {
+    const problems = validateFlow(PPH_FLOW);
+    expect(problems).toEqual([]);
+    expect(PPH_FLOW.credentialEnvVar).toBe(
+      "JOBOPS_FREELANCE_PEOPLEPERHOUR_COOKIE",
+    );
+    expect(PPH_FLOW.steps.map((s) => s.id)).toEqual(
+      expect.arrayContaining([
+        "open-signup",
+        "add-skills",
+        "add-language",
+        "upload-profile-picture",
+        "submit-application",
+        "verify-email",
+        "capture-session-cookie",
+      ]),
+    );
   });
 
   it("detects structural problems in bad flows", () => {

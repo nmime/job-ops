@@ -1,8 +1,4 @@
-import type {
-  RegistrationStep,
-  RunContext,
-  RunResult,
-} from "./types";
+import type { RegistrationStep, RunContext, RunResult } from "./types";
 
 /** Substitute {{secret}} placeholders using the context's secret bag. */
 export function renderValue(

@@ -11,12 +11,13 @@ credentials into the auto-bid pipeline.
 | --- | --- |
 | `types.ts` | Flow spec + browser driver interfaces |
 | `freelancer-flow.ts` | Declarative Freelancer.com flow (the reference implementation) |
+| `pph-flow.ts` | Declarative PeoplePerHour flow (executed live 2026-08-17/18) |
 | `runner.ts` | Executes a flow against any driver; secret substitution; progress events |
 | `credential-store.ts` | `<DATA_DIR>/.credentials/<platform>.txt` read/write (0600), masking |
 | `env-writer.ts` | Pure `.env` text transforms (set/update/append, quoting rules) |
 | `email-links.ts` | One-time link extraction from registration emails (verify/reset) |
 
-Tests: colocated `*.test.ts` (21 tests). The runner is driven by a
+Tests: colocated `*.test.ts` (22 tests). The runner is driven by a
 `BrowserDriver` interface so the whole flow is testable without a browser.
 
 ## What is automated vs manual
@@ -33,6 +34,44 @@ Freelancer.com specifically:
 - **After payment verification** (~2 minutes, browser or API): create an app
   at <https://accounts.freelancer.com/settings/develop>, copy the access
   token into `JOBOPS_FREELANCE_FREELANCER_API_KEY`.
+
+PeoplePerHour specifically (executed live 2026-08-17/18, member_id 13763514):
+
+- **Automated**: signup via `/site/register#freelancer` → "SIGN UP WITH EMAIL"
+  → name/email/password, reCAPTCHA v2 auto-solved by the nopecha-solver
+  extension, member-application form (job title, bio, skills + language
+  select2 typeaheads driven by clicking rendered dropdown options, required
+  profile-picture upload), application submit, and email verification via the
+  "Activate your account" link (`/site/verifyEmail?id=…&verifycode=…`).
+- **Credential wired live**: session cookie (`PHPSESSID` + `aws-waf-token`)
+  stored in `JOBOPS_FREELANCE_PEOPLEPERHOUR_COOKIE`. **Discovery works
+  immediately** — the adapter drives Playwright in-process with the cookie and
+  pulls gigs every worker cycle.
+- **Manual (hard wall)**: marketplace access is gated behind a **paid
+  membership** at `/memberApplication/fastTrack` (SINGLE PLATFORM GBP
+  11.95/mo or TopAccess GBP 22.95/mo, both 12-month commitment). Needs real
+  payment credentials; phone verification may be requested at that step. Until
+  subscribed, the apply path no-ops cleanly (proposal button not found).
+
+## PPH operational notes (learned the hard way)
+
+1. **Direct egress only.** PPH is unreachable through the residential egress
+   proxy (`ERR_CONNECTION_CLOSED`) but returns 202 direct. Run its browser
+   instance with `AGENT_BROWSER_PROXY=` (empty) for a dedicated `HOME`.
+2. **Select2 typeaheads need a click, not Enter.** Skills/languages are backed
+   by `/member-application/suggestSkill` and `/member/LanguagesAutocomplete`.
+   Typing sets the search box; the rendered dropdown option must be CLICKED to
+   commit a selection (stored as ids in hidden inputs). Enter-key commits do
+   not stick.
+3. **The form re-renders on validation failure**, clearing DOM-set values and
+   file inputs. Set all values and submit in ONE synchronous pass
+   (`jQuery(form).off('submit')` then native `form.submit()`), re-attaching
+   the picture file in the same tick.
+4. **Discovery selectors track hashed CSS-module classes**
+   (`item__container` / `item__url` / `item__title`). The scraper uses a
+   string IIFE through `page.evaluate`, because tsx/esbuild injects a `__name`
+   helper into serialized `$$eval` callbacks that ReferenceErrors in the
+   browser and silently zeroes every cycle.
 
 ## Bot-detection notes (learned the hard way)
 
