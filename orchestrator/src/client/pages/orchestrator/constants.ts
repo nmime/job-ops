@@ -116,6 +116,14 @@ export interface SalaryFilter {
   max: number | null;
 }
 
+export type ScoreFilterMode = "any" | "has" | "missing";
+
+export interface ScoreFilter {
+  mode: ScoreFilterMode;
+  min: number | null;
+  max: number | null;
+}
+
 export type EmploymentType =
   | "full_time"
   | "part_time"
@@ -174,6 +182,7 @@ export interface JobFilters {
   sourceFilter: JobSource | "all";
   sponsorFilter: SponsorFilter;
   salaryFilter: SalaryFilter;
+  scoreFilter: ScoreFilter;
   postedWithinDays: number | null;
   employmentTypes: EmploymentType[];
   location: string;
