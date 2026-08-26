@@ -35,6 +35,8 @@ describe("orchestrator utils", () => {
     );
 
     expect(enabled).toEqual(expect.arrayContaining(credentialFree));
+  });
+
   it("enables workingnomads without credentials", () => {
     expect(getEnabledSources(createAppSettings())).toContain("workingnomads");
   });
