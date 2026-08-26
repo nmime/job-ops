@@ -837,11 +837,139 @@ async function findExternalApplyUrl(page: Page): Promise<string | null> {
     .catch(() => null);
 }
 
-async function openInitialApplyFlow(page: Page): Promise<Page> {
+
+function normalizeTitleText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&amp;/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function titleSimilarity(a: string, b: string): number {
+  const tokensA = new Set(normalizeTitleText(a).split(" ").filter(Boolean));
+  const tokensB = new Set(normalizeTitleText(b).split(" ").filter(Boolean));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let overlap = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) overlap += 1;
+  }
+  return overlap / Math.min(tokensA.size, tokensB.size);
+}
+
+async function clickJobListMatch(page: Page, job: Job): Promise<ClickOutcome | null> {
+  const applySelector =
+    'button:has-text("Apply"), a:has-text("Apply"), [role="button"]:has-text("Apply")';
+  const count = await page.locator(applySelector).count().catch(() => 0);
+  if (count < 2) return null;
+
+  const candidates: Array<{ title: string; index: number }> = [];
+  await page
+    .evaluate(
+      (selector: string) => {
+        const buttons = Array.from(
+          document.querySelectorAll<HTMLElement>(selector),
+        ).filter(
+          (el) =>
+            el.offsetParent !== null &&
+            (el as HTMLButtonElement).disabled !== true,
+        );
+        const results: Array<{ title: string; index: number }> = [];
+        buttons.forEach((button, index) => {
+          const label = (button.textContent || "").trim();
+          if (!/apply/i.test(label)) return;
+          let node: HTMLElement | null = button;
+          let title = "";
+          for (let depth = 0; depth < 6 && node; depth += 1) {
+            const heading = node.querySelector(
+              "h1, h2, h3, h4, h5, .job-title, [class*='title' i]",
+            );
+            const headingText = heading
+              ? (heading.textContent || "").trim()
+              : "";
+            if (headingText && headingText.length > 3 && headingText.length < 160) {
+              title = headingText;
+              break;
+            }
+            const previous = node.previousElementSibling;
+            if (previous) {
+              const previousText = (previous.textContent || "").trim();
+              if (
+                previousText.length > 10 &&
+                previousText.length < 160 &&
+                !/apply/i.test(previousText)
+              ) {
+                title = previousText;
+                break;
+              }
+            }
+            node = node.parentElement;
+          }
+          results.push({ title, index });
+        });
+        return results;
+      },
+      applySelector,
+    )
+    .then((found) => candidates.push(...found))
+    .catch(() => undefined);
+
+  const wanted = job.title || "";
+  let best: { title: string; index: number } | null = null;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    const score = candidate.title ? titleSimilarity(wanted, candidate.title) : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+  if (!best || bestScore < 0.5) return null;
+  logger.info("Job list apply button matched by title", {
+    jobId: job.id,
+    score: Number(bestScore.toFixed(2)),
+    cardTitle: best.title.slice(0, 80),
+  });
+  return await clickAndFollow(page.locator(applySelector).nth(best.index));
+}
+
+async function clickConsentBoxes(page: Page): Promise<void> {
+  const matches: number[] = (await page
+    .evaluate(
+      `(() => {
+        var labels = /agree|consent|privacy|data (protection|processing)|gdpr|terms|verarbeit|datenschutz|candidature|cgv/i;
+        var boxes = Array.from(document.querySelectorAll('input[type=checkbox]'));
+        var out = [];
+        boxes.forEach(function (box, index) {
+          if (box.checked || box.offsetParent === null) return;
+          var text = '';
+          var label = null;
+          if (box.id) label = document.querySelector('label[for="' + box.id + '"]');
+          if (!label && box.closest) label = box.closest('label');
+          if (label) text = (label.textContent || '');
+          if (!text && box.getAttribute('aria-label')) text = box.getAttribute('aria-label');
+          if (!text && box.parentElement) text = (box.parentElement.textContent || '').slice(0, 200);
+          if (labels.test(text)) out.push(index);
+        });
+        return out;
+      })()`,
+    ) as number[]) ?? [];
+  for (const index of matches.slice(0, 3)) {
+    const box = page.locator("input[type=checkbox]").nth(index);
+    await box.check({ timeout: 2_000 }).catch(() => undefined);
+  }
+}
+
+async function openInitialApplyFlow(page: Page, job: Job): Promise<Page> {
   let currentPage = page;
   for (let step = 0; step < 3; step += 1) {
     await dismissCookieOverlays(currentPage).catch(() => undefined);
     if (await hasApplicationFormSignal(currentPage)) return currentPage;
+    const jobListOutcome = await clickJobListMatch(currentPage, job);
+    if (jobListOutcome) {
+      currentPage = jobListOutcome.page;
+      continue;
+    }
     const externalUrl = await findExternalApplyUrl(currentPage);
     if (externalUrl) {
       await currentPage.goto(externalUrl, {
@@ -906,6 +1034,7 @@ async function clickSubmit(page: Page): Promise<ClickOutcome> {
 
   for (let step = 0; step < 6; step += 1) {
     await dismissCookieOverlays(currentPage).catch(() => undefined);
+    await clickConsentBoxes(currentPage).catch(() => undefined);
     const finalOutcome = await clickFirstMatching(currentPage, finalSelectors);
     if (finalOutcome) return finalOutcome;
 
@@ -922,28 +1051,62 @@ async function clickSubmit(page: Page): Promise<ClickOutcome> {
   return { clicked: clickedAny, page: currentPage };
 }
 
-async function hasSuccessSignal(page: Page): Promise<boolean> {
+async function hasSuccessSignal(
+  page: Page,
+  options: { hadForm?: boolean } = {},
+): Promise<boolean> {
+  const url = page.url().toLowerCase();
+  if (
+    /thank|success|confirm|applied|submitted|completed|receipt|vielen-dank|dank-fuer-ihre|merci/.test(
+      url,
+    )
+  ) {
+    return true;
+  }
   return await page
     .evaluate<boolean>(
-      `(() => {
+      `(hadForm) => {
       var text = document.body.innerText.toLowerCase();
       var signals = [
         "application submitted",
         "application received",
         "thank you for applying",
+        "thank you for your application",
         "thanks for applying",
         "your application has been submitted",
+        "your application was submitted",
         "we received your application",
+        "we've received your application",
         "successfully submitted",
         "submitted successfully",
         "application sent",
+        "application was sent",
         "application complete",
         "applied successfully",
         "we have received your application",
         "we'll be in touch",
+        "bewerbung erfolgreich",
+        "dank für ihre bewerbung",
+        "dank fuer ihre bewerbung",
+        "ihre bewerbung wurde übermittelt",
+        "merci pour votre candidature",
+        "votre candidature a bien été",
+        "candidature envoyée",
       ];
-      return signals.some(function (signal) { return text.includes(signal); });
-    })()`,
+      if (signals.some(function (signal) { return text.includes(signal); })) return true;
+      if (hadForm) {
+        var fields = document.querySelectorAll(
+          'input:not([type=hidden]):not([type=checkbox]):not([type=radio]), textarea, select'
+        ).length;
+        var submit = document.querySelectorAll(
+          'button[type=submit], input[type=submit]'
+        ).length;
+        var short = (document.body && document.body.innerText || '').length < 900;
+        if (fields < 2 && submit === 0 && short) return true;
+      }
+      return false;
+    })`,
+      options.hadForm === true,
     )
     .catch(() => false);
 }
@@ -1147,7 +1310,7 @@ export async function submitPortalApplication(
     await page
       .waitForLoadState("networkidle", { timeout: 15_000 })
       .catch(() => undefined);
-    page = await openInitialApplyFlow(page);
+    page = await openInitialApplyFlow(page, job);
     await installStealth(page).catch(() => undefined);
 
     const fieldsFilled = await fillApplicationForm(page, job, profile);
@@ -1175,6 +1338,9 @@ export async function submitPortalApplication(
       };
     }
 
+    const hadFormBeforeSubmit = await hasApplicationFormSignal(page).catch(
+      () => false,
+    );
     const submitOutcome = await clickSubmit(page);
     page = submitOutcome.page;
     const submitClicked = submitOutcome.clicked;
@@ -1183,7 +1349,7 @@ export async function submitPortalApplication(
       .catch(() => undefined);
     await page.waitForTimeout(3_000);
 
-    const success = await hasSuccessSignal(page);
+    const success = await hasSuccessSignal(page, { hadForm: hadFormBeforeSubmit });
     const blockingError = await hasBlockingErrorSignal(page);
     if (submitClicked && success) {
       return {
