@@ -25,8 +25,12 @@ const BROWSER_UA =
  * Results are filtered client-side against ctx.searchTerms on
  * title + role + skills.
  *
- * Applying is only possible from an authenticated Braintrust session, so the
- * submit path is gated on JOBOPS_FREELANCE_BRAINTRUST_COOKIE (or _API_KEY) and
+ * Applying is a vetted-network flow: Braintrust exposes no public apply
+ * endpoint and per-gig applications only exist inside an authenticated
+ * app.usebraintrust.com session. The adapter therefore does not attempt a
+ * per-gig submit — the guarded path returns an honest, machine-readable
+ * "skipped" (one-time network application, no per-gig bidding) — and is
+ * additionally gated on JOBOPS_FREELANCE_BRAINTRUST_COOKIE (or _API_KEY) and
  * on the orchestrator's dry-run gate.
  */
 
@@ -222,12 +226,19 @@ export async function findBraintrustGigs(
 }
 
 /**
- * Braintrust apply adapter.
+ * Braintrust apply adapter — HONEST vetted-network semantics.
+ *
+ * Braintrust is a vetted talent network: it exposes no public apply endpoint
+ * and per-gig applications are only possible inside an authenticated
+ * app.usebraintrust.com session, which this adapter does not drive (there is
+ * no public per-gig apply form to automate — inventing one would be a fake
+ * submission). The only apply path on the network is the one-time network
+ * application, so the guarded real-submit path reports a machine-readable
+ * "skipped" with that reason instead of a fake error or a fake "submitted".
  *
  * GUARDED: ctx.dryRun is forced true by the orchestrator unless
- * JOBOPS_FREELANCE_BRAINTRUST_APPLY_ENABLED=true. Braintrust has no public
- * apply endpoint — a real submit needs an authenticated session
- * (JOBOPS_FREELANCE_BRAINTRUST_COOKIE) and drives the job page with a browser.
+ * JOBOPS_FREELANCE_BRAINTRUST_APPLY_ENABLED=true, and the path beyond the
+ * guard still requires JOBOPS_FREELANCE_BRAINTRUST_API_KEY or _COOKIE.
  */
 export async function applyToBraintrustGig(
   ctx: FreelanceApplyContext,
@@ -253,21 +264,11 @@ export async function applyToBraintrustGig(
     };
   }
 
-  const profile = (ctx.profile ?? {}) as { coverLetter?: string };
-  const coverLetter = profile.coverLetter?.trim();
-  if (!coverLetter) {
-    return {
-      platform: PLATFORM,
-      mode: "submit",
-      status: "error",
-      error: `${PLATFORM}: no tailored cover letter in profile — refusing to submit an untailored application`,
-    };
-  }
-
   return {
     platform: PLATFORM,
     mode: "submit",
-    status: "error",
-    error: `${PLATFORM}: real submit requires the authenticated web flow (Braintrust exposes no public apply API); browser automation for the apply form is not wired up yet — apply manually at ${API_BASE}/jobs/${ctx.gigId}/`,
+    status: "skipped",
+    externalRef: ctx.gigId,
+    error: `${PLATFORM}: Vetted network: apply requires the one-time network application (no per-gig bidding)`,
   };
 }
