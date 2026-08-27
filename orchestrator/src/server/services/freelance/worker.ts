@@ -134,7 +134,10 @@ export async function runWorkerCycle(
     let applyResult: FreelanceApplyResult;
     try {
       applyResult = await applyToFreelanceGig({
-        gigId: gig.dedupHash,
+        // Adapters build apply URLs / API ids from this — use the platform's
+        // own gig id when the finder captured one, else fall back to the
+        // dedup hash (keeps legacy platforms working unchanged).
+        gigId: gig.sourceGigId || gig.dedupHash,
         platform: gig.platform,
         gigTitle: gig.title,
         gigDescription: gig.gigDescription ?? gig.title,

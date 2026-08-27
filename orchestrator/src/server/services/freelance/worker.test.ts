@@ -101,6 +101,15 @@ describe.sequential("Freelance worker persistence", () => {
     expect(report.applies).toHaveLength(2);
     expect(report.errors).toEqual([]);
 
+    // The apply context must carry the platform's real gig id
+    // (sourceGigId), never the 32-char dedup hash, and a non-null profile.
+    expect(
+      fake.applyToGig.mock.calls.map(([ctx]) => ctx.gigId).sort(),
+    ).toEqual(["u1", "u2"]);
+    expect(
+      fake.applyToGig.mock.calls.every(([ctx]) => ctx.profile !== null),
+    ).toBe(true);
+
     const { listGigs, listProposals } = await import(
       "../../repositories/freelance"
     );

@@ -6,6 +6,7 @@ import type {
   FreelancePlatformId,
   ProposalDraft,
 } from "@shared/types/freelance";
+import { getProfile } from "../profile";
 import { resolveFreelanceProvider } from "./registry";
 
 function envKey(platformId: string, suffix: string): string {
@@ -85,6 +86,34 @@ export function isWithinRateLimit(
     (ts) => now - ts < budget.windowMs,
   );
   return history.length < budget.maxPerHour;
+}
+
+/**
+ * Load the resume identity (name/email/headline) for the apply context.
+ *
+ * The unattended worker runs without a request scope and may have no resume
+ * configured, so a failure degrades to empty identity fields instead of
+ * breaking the apply path — the tailored cover letter itself is always
+ * generated locally and never depends on this lookup.
+ */
+async function loadResumeIdentity(): Promise<{
+  name: string;
+  email: string;
+  headline: string;
+}> {
+  try {
+    const profile = await getProfile();
+    return {
+      name: profile?.basics?.name ?? "",
+      email: profile?.basics?.email ?? "",
+      headline: profile?.basics?.headline ?? "",
+    };
+  } catch (error) {
+    logger.warn("Freelance apply: resume profile unavailable, continuing with empty identity", {
+      error,
+    });
+    return { name: "", email: "", headline: "" };
+  }
 }
 
 function stripHtml(text: string): string {
@@ -241,13 +270,23 @@ export async function applyToFreelanceGig(
     };
   }
 
+  // Real profile for the adapters: identity from the user's resume (when
+  // available), skills from the worker's input, and the generated cover
+  // letter — adapters that require a tailored letter read it from here.
+  const identity = await loadResumeIdentity();
   const ctx: FreelanceApplyContext = {
     platform: input.platform,
     gigId: input.gigId,
     dryRun: !enabled,
     allowCaptcha: env.JOBOPS_FREELANCE_ALLOW_CAPTCHA === "true",
     rateBudget,
-    profile: null,
+    profile: {
+      name: identity.name,
+      email: identity.email,
+      headline: identity.headline,
+      skills: input.profileSkills ?? [],
+      coverLetter: proposalDraft.coverLetter,
+    },
   };
 
   try {

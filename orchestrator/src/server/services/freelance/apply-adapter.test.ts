@@ -1,8 +1,11 @@
 import type {
+  FreelanceApplyContext,
   FreelancePlatformId,
   FreelanceProviderManifest,
 } from "@shared/types/freelance";
+import type { ResumeProfile } from "@shared/types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getProfile } from "../profile";
 import {
   __resetFreelanceRateLimits,
   applyToFreelanceGig,
@@ -20,9 +23,14 @@ vi.mock("@infra/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock("../profile", () => ({
+  getProfile: vi.fn(),
+}));
+
 beforeEach(() => {
   __resetFreelanceRateLimits();
   __setFreelanceRegistryForTests(null);
+  vi.mocked(getProfile).mockReset();
 });
 
 describe("isFreelanceApplyEnabled", () => {
@@ -373,5 +381,72 @@ describe("applyToFreelanceGig", () => {
     });
     expect(result.status).toBe("error");
     expect(result.error).toContain("provider exploded");
+  });
+
+  it("passes a real profile (resume identity + skills + generated cover letter) to the adapter", async () => {
+    vi.mocked(getProfile).mockResolvedValueOnce({
+      basics: {
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+        headline: "Software Engineer",
+      },
+    } as unknown as ResumeProfile);
+    const seen: unknown[] = [];
+    const capturing = vi.fn(async (ctx: FreelanceApplyContext) => {
+      seen.push(ctx.profile);
+      return {
+        platform: "upwork" as const,
+        mode: "dry_run" as const,
+        status: "skipped" as const,
+      };
+    });
+    __setFreelanceRegistryForTests(fakeProvider(capturing));
+    await applyToFreelanceGig({
+      gigId: "g1",
+      platform: "upwork",
+      gigTitle: "Build a scraper",
+      gigDescription: "We need a TypeScript scraper for job boards.",
+      profileSkills: ["TypeScript", "Scraping"],
+      env: {},
+    });
+    expect(capturing).toHaveBeenCalledTimes(1);
+    expect(seen[0]).toEqual({
+      name: "Ada Lovelace",
+      email: "ada@example.com",
+      headline: "Software Engineer",
+      skills: ["TypeScript", "Scraping"],
+      coverLetter: expect.stringContaining("Build a scraper"),
+    });
+  });
+
+  it("still builds a usable profile when no resume is configured", async () => {
+    vi.mocked(getProfile).mockRejectedValueOnce(
+      new Error("Base resume not configured"),
+    );
+    const seen: unknown[] = [];
+    const capturing = vi.fn(async (ctx: FreelanceApplyContext) => {
+      seen.push(ctx.profile);
+      return {
+        platform: "upwork" as const,
+        mode: "dry_run" as const,
+        status: "skipped" as const,
+      };
+    });
+    __setFreelanceRegistryForTests(fakeProvider(capturing));
+    const result = await applyToFreelanceGig({
+      gigId: "g1",
+      platform: "upwork",
+      gigDescription: "x",
+      profileSkills: ["TypeScript"],
+      env: {},
+    });
+    expect(result.status).toBe("skipped");
+    expect(seen[0]).toEqual({
+      name: "",
+      email: "",
+      headline: "",
+      skills: ["TypeScript"],
+      coverLetter: expect.any(String),
+    });
   });
 });
