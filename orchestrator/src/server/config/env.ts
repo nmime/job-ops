@@ -9,7 +9,7 @@ const candidates = [
 
 for (const envPath of candidates) {
   if (existsSync(envPath)) {
-    config({ path: envPath });
+    config({ path: envPath, quiet: true });
     break;
   }
 }

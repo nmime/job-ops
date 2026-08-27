@@ -21,8 +21,14 @@ import {
   buildDeterministicProposal,
   isFreelanceApplyEnabled,
 } from "@server/services/freelance/apply-adapter";
+import {
+  credentialStatus,
+  FREELANCE_CREDENTIAL_TABLE,
+  statusVerdict,
+} from "@server/services/freelance/credentials";
 import { computeDedupHash } from "@server/services/freelance/dedupe";
 import { getFreelanceProviderRegistry } from "@server/services/freelance/registry";
+import { verifyFreelanceAdapter } from "@server/services/freelance/verify";
 import {
   FREELANCE_PLATFORM_IDS,
   type FreelancePlatformId,
@@ -53,6 +59,94 @@ freelanceRouter.get("/platforms", async (_req: Request, res: Response) => {
     fail(res, toAppError(error));
   }
 });
+
+/**
+ * GET /api/freelance/adapters — pure status for all 18 adapters.
+ * No browser launches, no network calls: registry manifests + credential
+ * presence only. For a live dry-run check use POST /verify/:platform.
+ */
+freelanceRouter.get("/adapters", async (_req: Request, res: Response) => {
+  try {
+    const registry = await getFreelanceProviderRegistry();
+    const adapters = FREELANCE_PLATFORM_IDS.filter(
+      (id) => id !== "aggregator-core",
+    ).map((id) => {
+      const manifest = registry.manifests.get(id);
+      const table = FREELANCE_CREDENTIAL_TABLE[id];
+      const credential = credentialStatus(id);
+      return {
+        platform: id,
+        displayName: manifest?.displayName ?? table.displayName,
+        kind: manifest?.kind ?? "freelance-marketplace",
+        loaded: manifest !== undefined,
+        discovery: {
+          implemented: manifest
+            ? typeof manifest.findGigs === "function"
+            : false,
+        },
+        apply: {
+          supported: manifest
+            ? typeof manifest.applyToGig === "function"
+            : false,
+          kind: table.applyKind,
+        },
+        credential: {
+          envVars: credential.envVars,
+          format: credential.format,
+          configured: credential.configured,
+        },
+        applyEnabled: isFreelanceApplyEnabled(process.env, id),
+        // Status-level verdict (no discovery run): "not-applicable" for
+        // platforms without per-gig apply, "blocked" when the credential is
+        // missing, otherwise "verified" at status level.
+        verdict: statusVerdict(id),
+      };
+    });
+    ok(res, {
+      adapters,
+      note: "Status-level only (no discovery run). POST /api/freelance/verify/:platform for a live dry-run check.",
+    });
+  } catch (error) {
+    fail(res, toAppError(error));
+  }
+});
+
+/**
+ * POST /api/freelance/verify/:platform — full harness run for one platform:
+ * credential status + discovery (90s timeout) + dry-run apply. Real
+ * submission only when the request body is { "live": true }.
+ */
+freelanceRouter.post(
+  "/verify/:platform",
+  async (req: Request, res: Response) => {
+    try {
+      const platform = req.params.platform as FreelancePlatformId;
+      if (
+        !FREELANCE_PLATFORM_IDS.includes(platform) ||
+        platform === "aggregator-core"
+      ) {
+        return fail(
+          res,
+          badRequest(
+            `platform must be one of: ${FREELANCE_PLATFORM_IDS.filter(
+              (id) => id !== "aggregator-core",
+            ).join(", ")}`,
+          ),
+        );
+      }
+
+      const body = (req.body ?? {}) as { live?: boolean };
+      const report = await verifyFreelanceAdapter(platform, {
+        live: body.live === true,
+        discoveryTimeoutMs: 90_000,
+      });
+
+      ok(res, report);
+    } catch (error) {
+      fail(res, toAppError(error));
+    }
+  },
+);
 
 /**
  * GET /api/freelance/gigs — persisted gigs (filter by status/platform/minScore).
