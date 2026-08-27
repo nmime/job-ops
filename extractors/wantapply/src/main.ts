@@ -43,41 +43,30 @@ export async function findWantapplyGigs(
 }
 
 /**
- * Wantapply apply adapter.
+ * Wantapply apply adapter — deliberately NOT a submit path.
  *
- * Single-gig "apply" is not part of the Wantapply model — submissions go out
- * in batches via `exportBatchToWantapply`. This adapter is GUARDED: ctx.dryRun
- * is forced true by the orchestrator unless
- * JOBOPS_FREELANCE_WANTAPPLY_APPLY_ENABLED=true, and the non-dry-run path
- * points the caller at the batch exporter instead of faking a submit.
+ * WantApply is webhook-fed: there is no per-gig apply endpoint and no
+ * per-gig "apply" action to perform. Gigs are pushed OUT in batches via
+ * `exportBatchToWantapply` to JOBOPS_FREELANCE_WANTAPPLY_WEBHOOK_URL, and
+ * the external auto-apply service behind that webhook applies on the
+ * operator's behalf (applications are sent back through the provider's
+ * webhook, not by job-ops).
+ *
+ * This adapter therefore always returns a structured "not applicable"
+ * result: status "skipped" with a precise explanation. It is never an
+ * error (this is by design, not a failure), and it never returns a fake
+ * "submitted". The ctx.dryRun gate is kept for result-shape consistency —
+ * there is nothing to send in either mode.
  */
 export async function applyToWantapplyGig(
   ctx: FreelanceApplyContext,
 ): Promise<FreelanceApplyResult> {
-  if (ctx.dryRun) {
-    return {
-      platform: PLATFORM,
-      mode: "dry_run",
-      status: "skipped",
-      error: `dry-run: ${PLATFORM} submission disabled (set ${ENV_PREFIX}_APPLY_ENABLED=true and configure ${ENV_PREFIX}_WEBHOOK_URL to submit for real)`,
-    };
-  }
-
-  const webhookUrl = process.env[`${ENV_PREFIX}_WEBHOOK_URL`];
-  if (!webhookUrl) {
-    return {
-      platform: PLATFORM,
-      mode: "submit",
-      status: "error",
-      error: `${PLATFORM}: missing ${ENV_PREFIX}_WEBHOOK_URL — wantapply applies in batches; configure the webhook and use exportBatchToWantapply`,
-    };
-  }
-
   return {
     platform: PLATFORM,
-    mode: "submit",
-    status: "error",
-    error: `${PLATFORM}: single-gig submit is not supported by wantapply (batch auto-apply service) — queue the gig and use exportBatchToWantapply`,
+    mode: ctx.dryRun ? "dry_run" : "submit",
+    status: "skipped",
+    error:
+      "WantApply is webhook-fed: gigs arrive via JOBOPS_FREELANCE_WANTAPPLY_WEBHOOK_URL; applications are sent back through the provider's webhook (see exportBatch if present)",
   };
 }
 
