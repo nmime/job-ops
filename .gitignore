@@ -35,3 +35,4 @@ orchestrator/storage
 
 # freelance E2E evidence
 orchestrator/e2e-evidence/
+.local-creds

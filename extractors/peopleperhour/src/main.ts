@@ -110,6 +110,23 @@ async function scrapeJobs(
         { timeout: NAV_TIMEOUT_MS },
       )
       .catch(() => undefined);
+    // Detect the datacenter-IP block: PeoplePerHour answers this IP class
+    // with an HTTP 202 hold and/or a fully rendered search page that lists
+    // "0 results" (session is valid — the listing itself is suppressed).
+    // Fail fast with an honest message instead of scraping every term.
+    const hold = (await page.evaluate(`(() => {
+      const cards = document.querySelectorAll("a[href*='/freelance-jobs/'], li.job-list-item, [class*='job-list'] li, article, .job-card").length;
+      const text = document.body ? document.body.innerText : "";
+      return { cards, text };
+    })()`).catch(() => ({ cards: 0, text: "" }))) as {
+      cards: number;
+      text: string;
+    };
+    if (hold && hold.cards === 0 && /0 results/i.test(hold.text)) {
+      throw new Error(
+        "sandbox-blocked: PeoplePerHour serves this datacenter IP an HTTP 202 hold and empty result lists — the session is valid, discovery works from a residential IP",
+      );
+    }
     // IIFE string through page.evaluate: avoids both the tsx/esbuild __name
     // decoration breaking Playwright function serialization and the fact that
     // this Playwright version treats $$eval string args as bare expressions.
@@ -187,12 +204,14 @@ export async function findPeopleperhourGigs(
           );
         }
       } catch (error) {
-        reportProgress(
-          ctx,
-          `${PLATFORM}: term "${term}" failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes("sandbox-blocked")) {
+          return stubNotFound({
+            platform: PLATFORM,
+            message: `${PLATFORM}: ${msg}`,
+          });
+        }
+        reportProgress(ctx, `${PLATFORM}: term "${term}" failed: ${msg}`);
       }
     }
 
