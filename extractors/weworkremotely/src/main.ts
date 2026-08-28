@@ -231,12 +231,17 @@ function gigDedupHash(gig: CreateGigInput): string {
 }
 
 /**
- * Re-fetch the public WWR RSS feeds and return the listing whose dedup hash
- * matches gigId (the id the orchestrator passes as ctx.gigId).
+ * Re-fetch the public WWR RSS feeds and return the listing identified by
+ * gigId. The orchestrator passes ctx.gigId as the platform's own gig id —
+ * for WWR that is the listing URL (sourceGigId = item.link) — or, for
+ * legacy rows, the dedup hash. Match both shapes.
  */
 async function findPostingByGigId(
   gigId: string,
 ): Promise<CreateGigInput | null> {
+  const targetUrl = /^https?:\/\//i.test(gigId)
+    ? canonicalizeUrl(gigId)
+    : null;
   let lastError: string | null = null;
   for (const category of WWR_CATEGORY_FEEDS) {
     const url = `${WWR_BASE}/categories/${category}.rss`;
@@ -254,7 +259,9 @@ async function findPostingByGigId(
       const xml = await res.text();
       for (const item of parseRss(xml)) {
         const gig = toGig(item, category);
-        if (gig && gigDedupHash(gig) === gigId) return gig;
+        if (!gig) continue;
+        if (targetUrl && canonicalizeUrl(gig.gigUrl) === targetUrl) return gig;
+        if (gigDedupHash(gig) === gigId) return gig;
       }
     } catch (error) {
       lastError = `WWR feed ${category} failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -700,6 +707,82 @@ export async function findExternalApplyUrl(page: Page): Promise<string | null> {
     .catch(() => null);
 }
 
+/**
+ * WWR account-gate detection.
+ *
+ * Since mid-2026 WWR hides the employer apply link behind a free job-seeker
+ * account: on guest listing pages the "Apply now" control points at
+ * https://weworkremotely.com/job-seekers/account/register (not at the
+ * employer ATS). Filling that page would create a WWR account session, not
+ * submit an application — so the adapter must detect the gate and report it
+ * precisely instead of mis-filling the registration form.
+ *
+ * A signed-in session (JOBOPS_FREELANCE_WEWORKREMOTELY_COOKIES) lifts the
+ * gate: the listing then exposes the real employer ATS link.
+ */
+const WWR_HOST = "weworkremotely.com";
+
+export function isWwrAccountUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.replace(/^www\./, "") !== WWR_HOST) return false;
+    return /^\/(job-seekers\/account\/(register|sign[_-]?in)|account\/sign[_-]?in|register|sign[_-]?in|login)([/?#]|$)/i.test(
+      parsed.pathname,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * href of the first "Apply"-text link on the page (any host) — used to
+ * detect the account gate BEFORE clicking, so a guest session never
+ * navigates into the WWR registration flow.
+ */
+export async function firstApplyControlHref(page: Page): Promise<string | null> {
+  return await page
+    .evaluate<string | null>(
+      `(() => {
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
+      for (var i = 0; i < links.length; i += 1) {
+        var link = links[i];
+        var href = link.href || '';
+        if (!/^https?:/i.test(href)) continue;
+        var text = ((link.innerText || link.getAttribute('aria-label') || '') + ' ').trim();
+        if (/apply/i.test(text)) return href;
+      }
+      return null;
+    })()`,
+    )
+    .catch(() => null);
+}
+
+/**
+ * Signed-in WWR session cookies, when the operator exports them from a
+ * browser where a job-seeker account is logged in
+ * (name=value; name=value). Empty when unset — behavior unchanged.
+ */
+export function parseWwrSessionCookies(
+  env: NodeJS.ProcessEnv = process.env,
+): Array<{ name: string; value: string; domain: string; path: string }> {
+  const raw = (env[`${ENV_PREFIX}_COOKIES`] ?? "").trim();
+  if (!raw) return [];
+  const cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+  }> = [];
+  for (const part of raw.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (name) cookies.push({ name, value, domain: WWR_HOST, path: "/" });
+  }
+  return cookies;
+}
+
 export async function humanClick(locator: Locator): Promise<boolean> {
   try {
     const target = locator.first();
@@ -994,6 +1077,10 @@ export async function applyToWwrGig(
       const { chromium } = await import("playwright");
       browser = await chromium.launch({ headless: true, args: BROWSER_ARGS });
       const context = await browser.newContext({ userAgent: BROWSER_UA });
+      const sessionCookies = parseWwrSessionCookies();
+      if (sessionCookies.length > 0) {
+        await context.addCookies(sessionCookies).catch(() => undefined);
+      }
       let page = await context.newPage();
       await installStealth(page);
       page.setDefaultNavigationTimeout(30_000);
@@ -1008,11 +1095,27 @@ export async function applyToWwrGig(
 
       // Resolve the employer apply target: the listing URL itself when it is
       // already an ATS page, otherwise the external apply link or the apply
-      // button on the listing page.
+      // button on the listing page. WWR guest pages gate the real ATS link
+      // behind job-seeker registration — detect that precisely instead of
+      // navigating into (and mis-filling) the registration form.
       if (!ATS_PATTERN.test(posting.gigUrl)) {
+        const gateError = (gateUrl: string): FreelanceApplyResult => ({
+          platform: PLATFORM,
+          mode: "submit",
+          status: "drafted",
+          error:
+            `${PLATFORM}: listing is account-gated — "Apply now" opens the WWR ` +
+            `job-seeker registration page (${gateUrl}) instead of the employer ` +
+            `apply form; the real ATS link is only visible to a signed-in WWR ` +
+            `account. Set JOBOPS_FREELANCE_WEWORKREMOTELY_COOKIES (signed-in ` +
+            `session) to enable live submission`,
+        });
         let reached = await hasApplicationFormSignal(page);
         if (!reached) {
           const externalUrl = await findExternalApplyUrl(page);
+          if (externalUrl && isWwrAccountUrl(externalUrl)) {
+            return gateError(externalUrl);
+          }
           if (externalUrl) {
             await page.goto(externalUrl, {
               waitUntil: "domcontentloaded",
@@ -1023,8 +1126,17 @@ export async function applyToWwrGig(
               .catch(() => undefined);
             await installStealth(page).catch(() => undefined);
           } else {
+            const applyHref = await firstApplyControlHref(page);
+            if (applyHref && isWwrAccountUrl(applyHref)) {
+              return gateError(applyHref);
+            }
             const outcome = await clickFirstMatching(page, boardApplySelectors);
-            if (outcome) page = outcome.page;
+            if (outcome) {
+              page = outcome.page;
+              if (isWwrAccountUrl(page.url())) {
+                return gateError(page.url());
+              }
+            }
           }
           reached = await hasApplicationFormSignal(page);
         }
