@@ -13,3 +13,9 @@ for (const envPath of candidates) {
     break;
   }
 }
+
+// Apply credential-file fallbacks to the environment (files only fill
+// variables that are unset/empty; real env always wins).
+import { seedCredentialEnv } from "../services/freelance/credentials";
+
+seedCredentialEnv();

@@ -273,6 +273,10 @@ export function resolvePlatformCredentials(
   if (!entry || entry.envVars.length === 0) return out;
 
   const fileValue = loadCredentialFile(platform);
+  // The file holds the session Cookie header: apply it to the platform's
+  // _COOKIE variable when one exists, otherwise to the first variable.
+  const cookieIdx = entry.envVars.findIndex((n) => n.endsWith("_COOKIE"));
+  const fileIdx = cookieIdx >= 0 ? cookieIdx : 0;
   for (let i = 0; i < entry.envVars.length; i += 1) {
     const name = entry.envVars[i];
     const envValue = (process.env[name] ?? "").trim();
@@ -280,11 +284,32 @@ export function resolvePlatformCredentials(
       out[name] = envValue;
       continue;
     }
-    if (i === 0 && fileValue) {
+    if (i === fileIdx && fileValue) {
       out[name] = fileValue;
     }
   }
   return out;
+}
+
+/**
+ * Seed process.env from credential files, for variables that are unset or
+ * empty. Called once at process start (server + CLI) so adapters that read
+ * plain env see the file-backed values. Real env always wins. Never logs.
+ */
+export function seedCredentialEnv(): void {
+  for (const platform of Object.keys(FREELANCE_CREDENTIAL_TABLE) as FreelancePlatformId[]) {
+    const resolved = resolvePlatformCredentials(platform);
+    for (const name of Object.keys(resolved)) {
+      const current = (process.env[name] ?? "").trim();
+      if (!current) {
+        try {
+          process.env[name] = resolved[name];
+        } catch {
+          // non-configurable env in some runtimes; adapters fall back to files
+        }
+      }
+    }
+  }
 }
 
 export interface FreelanceCredentialStatus {
