@@ -184,8 +184,8 @@ function parseCookieHeader(
       const eq = pair.indexOf("=");
       if (eq <= 0) return null;
       return {
-        name: pair.slice(0, eq).trim(),
-        value: pair.slice(eq + 1).trim(),
+        name: pair.slice(0, eq).trim().replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)),
+        value: pair.slice(eq + 1).trim().replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)),
         domain,
         path: "/",
       };

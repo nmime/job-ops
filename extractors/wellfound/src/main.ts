@@ -93,8 +93,8 @@ function parseCookieHeader(
       const eq = pair.indexOf("=");
       if (eq <= 0) return null;
       return {
-        name: pair.slice(0, eq).trim(),
-        value: pair.slice(eq + 1).trim(),
+        name: pair.slice(0, eq).trim().replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)),
+        value: pair.slice(eq + 1).trim().replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)),
         domain,
         path: "/",
       };
@@ -302,7 +302,7 @@ export async function findWellfoundGigs(
     if (!gigs.length) {
       return stubNotFound({
         platform: PLATFORM,
-        message: `${PLATFORM}: GraphQL search returned no jobs — the ${ENV_PREFIX}_COOKIE session may be expired or Cloudflare is still challenging the requests; refresh the cookie from a logged-in wellfound.com browser session`,
+        message: `${PLATFORM}: GraphQL search returned no jobs — the ${ENV_PREFIX}_COOKIE session is Cloudflare-clearance (cf_clearance) bound to the residential IP it was issued from, so datacenter/egress IPs get HTTP 400. Refresh the cookie AND run discovery from the same egress network it was captured on, or set ${ENV_PREFIX}_API_KEY for a network-agnostic bearer path`,
       });
     }
 

@@ -9,7 +9,7 @@ import type {
 
 const PLATFORM = "malt" as const;
 const ENV_PREFIX = "JOBOPS_FREELANCE_MALT";
-const SEARCH_URL = "https://www.malt.fr/s";
+const SEARCH_URL = "https://www.malt.com/s";
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
@@ -21,7 +21,7 @@ const BROWSER_UA =
  * tries two real paths, in order:
  *
  *  1. Public HTML search page via a real browser (Playwright) — no
- *     credentials required. We load https://www.malt.fr/s?q=<term> and parse
+ *     credentials required. We load https://www.malt.com/s?q=<term> and parse
  *     project cards out of the rendered DOM / embedded JSON state.
  *  2. If the browser path is blocked or no browser is available, a clean
  *     structured not-configured result naming ${ENV_PREFIX}_COOKIE (the
@@ -41,7 +41,7 @@ type ParsedMaltProject = {
   gigDescription?: string;
 };
 
-/** Parse a raw `Cookie` header into Playwright cookie objects for malt.fr. */
+/** Parse a raw `Cookie` header into Playwright cookie objects for malt.com. */
 function parseMaltCookies(cookie: string): import("playwright").Cookie[] {
   return cookie
     .split(";")
@@ -52,7 +52,7 @@ function parseMaltCookies(cookie: string): import("playwright").Cookie[] {
             {
               name: name.trim(),
               value: rest.join("="),
-              domain: ".malt.fr",
+              domain: ".malt.com",
               path: "/",
               expires: -1,
               httpOnly: false,
@@ -165,7 +165,7 @@ export async function findMaltGigs(
             sourceGigId: id,
             title: project.title ?? "Untitled project",
             clientOrEmployer: project.clientOrEmployer ?? "Malt client",
-            gigUrl: project.gigUrl ?? "https://www.malt.fr/s",
+            gigUrl: project.gigUrl ?? "https://www.malt.com/s",
             applicationLink: project.gigUrl,
             location: project.location,
             datePosted: project.datePosted,
@@ -194,7 +194,7 @@ export async function findMaltGigs(
 
 /**
  * Malt's apply flow is "respond to a project": on the project page
- * (https://www.malt.fr/project/<id>) a logged-in freelancer sees an apply CTA
+ * (https://www.malt.com/project/<id>) a logged-in freelancer sees an apply CTA
  * ("Postuler" / "Apply") that opens a response composer — the cover letter
  * / offer that is posted into the project's conversation. There is no
  * separate application form.
@@ -384,7 +384,7 @@ export async function applyToMaltGig(
 
     const gigUrl = ctx.gigId.startsWith("http")
       ? ctx.gigId
-      : `https://www.malt.fr/project/${ctx.gigId}`;
+      : `https://www.malt.com/project/${ctx.gigId}`;
     const response = await page.goto(gigUrl, { waitUntil: "domcontentloaded" });
     if (!response || !response.ok()) {
       return {
