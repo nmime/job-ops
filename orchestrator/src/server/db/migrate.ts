@@ -1811,6 +1811,52 @@ sqlite.exec(
   "CREATE INDEX IF NOT EXISTS idx_freelance_earnings_platform ON freelance_earnings(tenant_id, platform)",
 );
 
+// --- Freelance profile campaign tables (docs/freelance-profile-campaign.md) ---
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_profiles (
+    platform TEXT PRIMARY KEY,
+    profile_url TEXT,
+    completeness TEXT,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    fields TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_profile_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target TEXT,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    evidence TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_profile_actions_platform_status ON freelance_profile_actions(platform, status)",
+);
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS freelance_profile_content (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL DEFAULT 'drafted',
+    external_ref TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    published_at TEXT
+  )
+`);
+sqlite.exec(
+  "CREATE INDEX IF NOT EXISTS idx_profile_content_platform_kind ON freelance_profile_content(platform, kind)",
+);
+sqlite.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_content_dedupe ON freelance_profile_content(platform, kind, coalesce(title, ''))",
+);
+
 seedLegacyOwnerFromBasicAuth();
 ensurePrivateUserColumns();
 rebuildPostApplicationPrivateTables();

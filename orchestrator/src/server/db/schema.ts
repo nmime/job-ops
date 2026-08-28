@@ -1274,9 +1274,85 @@ export const freelanceEarnings = sqliteTable(
   }),
 );
 
+// ---------------------------------------------------------------------------
+// Profile campaign (docs/freelance-profile-campaign.md)
+// Single-operator campaign for the user's own identity: platform is the PK.
+// ---------------------------------------------------------------------------
+
+export const PROFILE_FIELD_STATUSES = [
+  "pending",
+  "done",
+  "user_only",
+  "blocked",
+  "skipped",
+] as const;
+
+export const freelanceProfiles = sqliteTable(
+  "freelance_profiles",
+  {
+    platform: text("platform").primaryKey(),
+    profileUrl: text("profile_url"),
+    completeness: text("completeness"),
+    status: text("status").notNull().default("in_progress"),
+    /** JSON: field -> { value?, status, verified_at?, evidence? } */
+    fields: text("fields"),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
+  },
+);
+
+export const freelanceProfileActions = sqliteTable(
+  "freelance_profile_actions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    platform: text("platform").notNull(),
+    kind: text("kind").notNull(), // fill | post | publish | promote
+    target: text("target"),
+    payload: text("payload"), // JSON (e.g. mac operator step list)
+    status: text("status").notNull().default("pending"),
+    evidence: text("evidence"), // JSON or text: selector hit / API snippet
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    completedAt: text("completed_at"),
+  },
+  (table) => ({
+    platformStatusIndex: index("idx_profile_actions_platform_status").on(
+      table.platform,
+      table.status,
+    ),
+  }),
+);
+
+export const freelanceProfileContent = sqliteTable(
+  "freelance_profile_content",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    platform: text("platform").notNull(),
+    kind: text("kind").notNull(), // gig | post | portfolio_item | community_apply
+    title: text("title"),
+    status: text("status").notNull().default("drafted"),
+    externalRef: text("external_ref"),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    publishedAt: text("published_at"),
+  },
+  (table) => ({
+    platformKindIndex: index("idx_profile_content_platform_kind").on(
+      table.platform,
+      table.kind,
+    ),
+    dedupeIndex: uniqueIndex("idx_profile_content_dedupe").on(
+      table.platform,
+      table.kind,
+      table.title,
+    ),
+  }),
+);
+
 export type FreelanceGigRow = typeof freelanceGigs.$inferSelect;
 export type NewFreelanceGigRow = typeof freelanceGigs.$inferInsert;
 export type FreelanceProposalRow = typeof freelanceProposals.$inferSelect;
 export type NewFreelanceProposalRow = typeof freelanceProposals.$inferInsert;
 export type FreelanceEarningRow = typeof freelanceEarnings.$inferSelect;
 export type NewFreelanceEarningRow = typeof freelanceEarnings.$inferInsert;
+export type FreelanceProfileRow = typeof freelanceProfiles.$inferSelect;
+export type FreelanceProfileActionRow = typeof freelanceProfileActions.$inferSelect;
+export type FreelanceProfileContentRow =
+  typeof freelanceProfileContent.$inferSelect;

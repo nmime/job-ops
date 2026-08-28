@@ -27,6 +27,13 @@ import {
   statusVerdict,
 } from "@server/services/freelance/credentials";
 import { computeDedupHash } from "@server/services/freelance/dedupe";
+import {
+  type OperatorReport,
+  applyOperatorReport,
+  isProfilePlatform,
+  listMergedProfiles,
+  runProfileAction,
+} from "@server/services/freelance/profile";
 import { getFreelanceProviderRegistry } from "@server/services/freelance/registry";
 import { verifyFreelanceAdapter } from "@server/services/freelance/verify";
 import {
@@ -384,3 +391,110 @@ freelanceRouter.get("/earnings", async (req: Request, res: Response) => {
     fail(res, toAppError(error));
   }
 });
+
+// --- Profile campaign (docs/freelance-profile-campaign.md) -------------------------
+
+/**
+ * GET /api/freelance/profiles — campaign state for all 14 platforms
+ * (registry + DB): field-level state, pending operator steps, content rows.
+ * Optional ?platform=<id> filter.
+ */
+freelanceRouter.get("/profiles", async (req: Request, res: Response) => {
+  try {
+    const platform =
+      typeof req.query.platform === "string" && req.query.platform.trim()
+        ? req.query.platform.trim().toLowerCase()
+        : undefined;
+    if (platform && !isProfilePlatform(platform)) {
+      return fail(
+        res,
+        badRequest(
+          `platform must be one of: ${[
+            "upwork",
+            "freelancer",
+            "fiverr",
+            "toptal",
+            "turing",
+            "arc-dev",
+            "peopleperhour",
+            "guru",
+            "flexjobs",
+            "malt",
+            "wellfound",
+            "braintrust",
+            "contra",
+            "weworkremotely",
+          ].join(", ")}`,
+        ),
+      );
+    }
+    const profiles = listMergedProfiles(platform ? [platform] : undefined);
+    ok(res, {
+      profiles,
+      count: profiles.length,
+      note: "Field state is DB-backed; `user_only` fields (dob, phone, face_photo, street_address) are never autofilled.",
+    });
+  } catch (error) {
+    fail(res, toAppError(error));
+  }
+});
+
+/**
+ * POST /api/freelance/profiles/:platform/:action — run one campaign action
+ * through the platform's backend:
+ *   complete | post | publish | promote
+ *     api backend runs the idempotent fill scripts (re-read verified);
+ *     browser backends queue a pending operator step list.
+ *   record
+ *     operator-reported results from the browser_mac backend:
+ *     { completeness?, status?, fields?: {name: {status, value?, evidence?}},
+ *       completedActionIds?: number[], content?: [{kind, title, status, externalRef?}] }
+ */
+freelanceRouter.post(
+  "/profiles/:platform/:action",
+  async (req: Request, res: Response) => {
+    try {
+      const platform = String(req.params.platform ?? "").toLowerCase();
+      const action = String(req.params.action ?? "");
+      if (!isProfilePlatform(platform)) {
+        return fail(res, badRequest(`unknown profile platform: ${platform}`));
+      }
+
+      if (action === "record") {
+        const report = (req.body ?? {}) as OperatorReport;
+        if (
+          !report.fields &&
+          !report.completedActionIds &&
+          !report.content &&
+          !report.status &&
+          !report.completeness
+        ) {
+          return fail(
+            res,
+            badRequest(
+              "record requires at least one of: fields, completedActionIds, content, status, completeness",
+            ),
+          );
+        }
+        const { profile, updated } = applyOperatorReport(platform, report);
+        return ok(res, { profile, updated });
+      }
+
+      const actionKinds = ["complete", "post", "publish", "promote"] as const;
+      if (!actionKinds.includes(action as (typeof actionKinds)[number])) {
+        return fail(
+          res,
+          badRequest(`action must be one of: ${[...actionKinds, "record"].join(", ")}`),
+        );
+      }
+
+      const result = await runProfileAction(
+        platform,
+        action as (typeof actionKinds)[number],
+      );
+      ok(res, { result });
+    } catch (error) {
+      fail(res, toAppError(error));
+    }
+  },
+);

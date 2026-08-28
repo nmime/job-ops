@@ -98,11 +98,12 @@ describe("resolvePlatformCredentials", () => {
       "utf8",
     );
     process.env[UPWORK_COOKIE] = "env-cookie";
+    // The credential file holds the session Cookie header, so it targets the
+    // _COOKIE variable — env wins there, and the API_KEY var stays untouched.
     expect(resolvePlatformCredentials("upwork")).toEqual({
-      [UPWORK_API_KEY]: "file-primary",
       [UPWORK_COOKIE]: "env-cookie",
     });
-    // env present on the primary var → file ignored for it
+    // env present on the primary var → reported from env, file still ignored
     process.env[UPWORK_API_KEY] = "env-key";
     expect(resolvePlatformCredentials("upwork")).toEqual({
       [UPWORK_API_KEY]: "env-key",
