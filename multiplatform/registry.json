@@ -1,6 +1,6 @@
 {
  "version": 1,
- "updated": "2026-09-01T00:00:00Z",
+ "updated": "2026-09-01T20:35:00Z",
  "persona": {
   "name": "Nikita N0xeid",
   "location": "Falkenstein, Germany",
@@ -806,24 +806,6 @@
    "log": "/opt/job-ops/logs/lancers-orch.log",
    "proc_pattern": "lancers-worker.sh|lancers-apply|lancers-orchestrator.mjs",
    "worker_log": "/opt/job-ops/logs/lancers-worker.log"
-  },
-  "testdebug": {
-   "id": "testdebug",
-   "name": "Test",
-   "model": "apply",
-   "region": "Global",
-   "fee": "varies",
-   "url": "",
-   "notes": "",
-   "enabled": false,
-   "level": 0,
-   "orch": "platforms/testdebug/orch.sh",
-   "state": "/app/data/testdebug-state.json",
-   "queue": "/app/data/testdebug-queue.json",
-   "timer": "jobops-mp-orch.timer",
-   "log": "/opt/job-ops/logs/testdebug-orch.log",
-   "worker_log": "/opt/job-ops/logs/testdebug-worker.log",
-   "proc_pattern": "testdebug-worker.sh|testdebug-apply|testdebug-orchestrator.mjs"
   }
  }
 }
