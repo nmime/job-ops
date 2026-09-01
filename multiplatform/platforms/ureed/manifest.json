@@ -1,0 +1,12 @@
+{
+  "id": "ureed",
+  "name": "ureed",
+  "model": "apply",
+  "level": 0,
+  "enabled": false,
+  "account": { "email": null, "password": null, "verified": false, "notes": "create account: email-only if possible; rental SMS does NOT cover freelance platforms" },
+  "auth": { "method": "TODO (http|steel-browser)", "login_url": "" },
+  "discovery": { "endpoint": "TODO", "notes": "how to list actionable items (gigs to apply / services to post)" },
+  "action": { "endpoint": "TODO", "method": "TODO", "fields": "TODO", "notes": "the apply/post submission" },
+  "egress": "TODO (direct|proxy)"
+}
