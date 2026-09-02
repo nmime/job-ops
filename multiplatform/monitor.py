@@ -6,9 +6,12 @@ Generalizes the Contra monitor to the whole registry:
     - containers steel-browser, job-ops  (up?; auto docker start)
     - steel health (hardened + verified)
   TIMERS:
-    - jobops-contra-orch.timer  (Contra's own)
-    - jobops-mp-orch.timer      (dispatcher for all other enabled platforms)
+    - jobops-contra-orch.timer   (Contra's own)
+    - jobops-autonomous.timer    (the autonomous cycle; now runs the multi-platform pipeline)
     (active/enabled? last-fire age; auto enable/restart)
+  FREELANCE DB (the multi-platform pipeline state in jobs.db):
+    - per enabled platform: last platform_status audit (login / blocked / applied);
+      alert if enabled but never ran, or no audit for >2h
   PER PLATFORM (every registered platform that has a state file):
     - state applied/failed + failures in last hour
     - queue length (backed up?)
