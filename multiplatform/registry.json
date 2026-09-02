@@ -41,7 +41,7 @@
    "fee": "20%->12%->7.5%",
    "url": "https://kwork.com",
    "notes": "Fiverr-shaped: post kworks (services). Account created+verified (agent persona).",
-   "enabled": false,
+   "enabled": true,
    "level": 1,
    "orch": "platforms/kwork/orch.sh",
    "state": "/app/data/kwork-state.json",

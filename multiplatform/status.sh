@@ -45,6 +45,23 @@ print(f"platforms: {len(r['platforms'])} total | enabled={en} | by level: {dict(
 print("level key: 0=registered 1=account+auth 2=discovery 3=live action verified")
 PY
 
+echo "======================================================================"
+echo " freelance_* DB (job-ops multi-platform pipeline)"
+echo "======================================================================"
+docker exec -w /app/orchestrator job-ops node /app/orchestrator/scripts/multiplatform/db.cjs freelance-snapshot 2>/dev/null | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception as e: print('  (unavailable)'); sys.exit(0)
+per=d.get('per',{})
+print(f\"  sources={d.get('sources')} enabled={d.get('enabled')}\")
+for pid,info in per.items():
+    if not info.get('enabled'): continue
+    last=info.get('last') or {}
+    opps=info.get('opps') or {}
+    login=last.get('login') or {}
+    print(f\"  [{pid}] login={login.get('logged_in')} phone_verified={login.get('phone_verified')} blocked={last.get('blocked')} opps={opps} status={last.get('status')} at={last.get('at')}\")
+"
+
 if [ "${1:-}" = "--telegram" ]; then
   . "$MP/lib/notify.sh" 2>/dev/null || true
   # build a compact summary

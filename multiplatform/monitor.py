@@ -219,7 +219,7 @@ def react(out):
         rc, txt = sh("docker start job-ops 2>&1", timeout=120)
         alert("job-ops-down", f"job-ops was down; docker start -> rc={rc}: {txt.strip()[:200]}")
     # timers
-    for unit in ("jobops-contra-orch.timer", "jobops-mp-orch.timer"):
+    for unit in ("jobops-contra-orch.timer", "jobops-autonomous.timer"):
         key = unit.replace("jobops-", "").replace(".timer", "")
         if f"timer_{key}_active" not in c:
             continue
@@ -240,13 +240,47 @@ def react(out):
                 sh(f"kill -TERM {pidn} 2>&1", timeout=30)
                 alert(f"stuck-{pid}", f"killed stuck process {pidn} (running {secs}s)")
 
+def check_freelance_db(out, reg):
+    # Read the freelance_* DB (the multi-platform pipeline state) via the job-ops container.
+    rc, txt = sh("docker exec -w /app/orchestrator job-ops node /app/orchestrator/scripts/multiplatform/db.cjs freelance-snapshot 2>/dev/null", timeout=60)
+    d = jload(txt)
+    if not d or not isinstance(d, dict):
+        out["checks"]["freelance_db"] = False
+        return
+    out["checks"]["freelance_db"] = True
+    out["checks"]["freelance_sources"] = d.get("sources")
+    out["checks"]["freelance_enabled"] = d.get("enabled")
+    out["platforms_db"] = d.get("per", {})
+    for pid, info in d.get("per", {}).items():
+        if not info.get("enabled"):
+            continue
+        last = info.get("last") or {}
+        at = last.get("at")
+        age = None
+        if at:
+            try:
+                t = datetime.datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=datetime.timezone.utc)
+                age = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
+            except Exception:
+                pass
+        if age is None:
+            out["problems"].append(f"{pid}: enabled but never ran (no platform_status audit in DB)")
+        elif age > 2 * 3600:
+            out["problems"].append(f"{pid}: no platform_status audit in {int(age // 60)}m (multi-platform pipeline may not be running)")
+        if last.get("blocked"):
+            out["checks"][f"{pid}_blocked"] = last.get("blocked")
+
+
 def healthy(reg):
     out = {"time": now(), "problems": [], "checks": {}, "platforms": {}}
     check_global(out)
-    # timers: contra's own + the dispatcher (only if any non-contra platform enabled)
+    # timers: contra's own + the autonomous cycle (which now runs the multi-platform pipeline)
     check_timer(out, "jobops-contra-orch.timer")
     if any(p.get("enabled") and k != "contra" for k, p in reg["platforms"].items()):
-        check_timer(out, "jobops-mp-orch.timer")
+        check_timer(out, "jobops-autonomous.timer")
+    check_freelance_db(out, reg)
     for pid, p in reg["platforms"].items():
         check_platform(out, pid, p)
         out["platforms"][pid] = {

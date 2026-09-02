@@ -22,6 +22,54 @@ after(async () => {
   await rm(tempDir, { recursive: true, force: true });
 });
 
+function createAppliedJobsDb(jobs) {
+  const db = new Database(":memory:");
+  db.exec(`
+    create table stage_events (id text primary key, occurred_at integer, metadata text, outcome text);
+    create table jobs (
+      id text primary key,
+      tenant_id text,
+      title text,
+      employer text,
+      job_url text,
+      application_link text,
+      emails text,
+      status text,
+      outcome text,
+      applied_at text
+    );
+  `);
+  const insertJob = db.prepare(`
+    insert into jobs (
+      id,
+      tenant_id,
+      title,
+      employer,
+      job_url,
+      application_link,
+      emails,
+      status,
+      outcome,
+      applied_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const job of jobs) {
+    insertJob.run(
+      job.id,
+      job.tenant_id ?? "tenant_default",
+      job.title ?? "Software Engineer",
+      job.employer ?? "Example Employer",
+      job.job_url ?? `https://jobs.example/${job.id}`,
+      job.application_link ?? `https://jobs.example/${job.id}/apply`,
+      job.emails ?? "",
+      job.status ?? "applied",
+      job.outcome ?? null,
+      job.applied_at ?? "2026-06-07T02:00:00.000Z",
+    );
+  }
+  return db;
+}
+
 describe("jobops monitor artifact", () => {
   it("counts true portal submissions only from structured/exact metadata", async () => {
     const dbPath = join(tempDir, "jobs.db");
@@ -290,6 +338,117 @@ describe("jobops monitor artifact", () => {
     assert.equal(artifact.routeTaxonomy.rows[0].applied_portal_only, 0);
   });
 
+  it("uses ready-drain result id as row job id evidence", async () => {
+    const db = createAppliedJobsDb([
+      { id: "job-ready-drain-id", applied_at: "2026-06-07T02:00:00.000Z" },
+      { id: "job-portal-only", applied_at: "2026-06-07T02:01:00.000Z" },
+    ]);
+    const readyDrainResultPath = join(tempDir, "ready-drain-id-result.json");
+    await writeFile(
+      readyDrainResultPath,
+      JSON.stringify({
+        results: [{ id: "job-ready-drain-id", action: "email_sent" }],
+        stats: { emailSent: 1 },
+      }),
+    );
+
+    const artifact = await buildMonitorArtifact({
+      db,
+      dbPath: ":memory:",
+      readyDrainResultPath,
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+    db.close();
+
+    const emailRow = artifact.routeTaxonomy.rows.find(
+      (row) => row.job_id === "job-ready-drain-id",
+    );
+    const portalRow = artifact.routeTaxonomy.rows.find(
+      (row) => row.job_id === "job-portal-only",
+    );
+    assert.equal(artifact.counts.appliedEmailRoute, 1);
+    assert.equal(artifact.counts.appliedPortalOnly, 1);
+    assert.equal(emailRow.ready_drain_email_sent, 1);
+    assert.equal(emailRow.applied_email_route, 1);
+    assert.equal(emailRow.applied_portal_only, 0);
+    assert.equal(portalRow.ready_drain_email_sent, 0);
+    assert.equal(portalRow.applied_email_route, 0);
+    assert.equal(portalRow.applied_portal_only, 1);
+  });
+
+  it("does not blanket route rows from aggregate ready-drain emailSent", async () => {
+    const db = createAppliedJobsDb([
+      { id: "job-aggregate-one", applied_at: "2026-06-07T02:00:00.000Z" },
+      { id: "job-aggregate-two", applied_at: "2026-06-07T02:01:00.000Z" },
+    ]);
+    const readyDrainResultPath = join(
+      tempDir,
+      "ready-drain-aggregate-result.json",
+    );
+    await writeFile(
+      readyDrainResultPath,
+      JSON.stringify({
+        results: [],
+        stats: { emailSent: 1 },
+      }),
+    );
+
+    const artifact = await buildMonitorArtifact({
+      db,
+      dbPath: ":memory:",
+      readyDrainResultPath,
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+    db.close();
+
+    assert.equal(artifact.counts.appliedEmailRoute, 0);
+    assert.equal(artifact.counts.appliedPortalOnly, 2);
+    assert.equal(
+      artifact.routeTaxonomy.readyDrainAggregateFallback,
+      "disabled_no_row_identity",
+    );
+    assert.equal(
+      artifact.routeTaxonomy.rows.every(
+        (row) =>
+          row.ready_drain_email_sent === 0 && row.applied_email_route === 0,
+      ),
+      true,
+    );
+  });
+
+  it("does not classify non-mailto rows as email solely from aggregate ready-drain stats", async () => {
+    const db = createAppliedJobsDb([
+      {
+        id: "job-no-email-attempt",
+        application_link: "https://jobs.example/no-email-attempt/apply",
+      },
+    ]);
+    const readyDrainResultPath = join(
+      tempDir,
+      "ready-drain-aggregate-non-mailto.json",
+    );
+    await writeFile(
+      readyDrainResultPath,
+      JSON.stringify({ stats: { emailSent: 1 } }),
+    );
+
+    const artifact = await buildMonitorArtifact({
+      db,
+      dbPath: ":memory:",
+      readyDrainResultPath,
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+    db.close();
+
+    assert.equal(artifact.counts.appliedEmailRoute, 0);
+    assert.equal(artifact.counts.appliedPortalOnly, 1);
+    assert.equal(artifact.routeTaxonomy.rows[0].has_sent_email_attempt, 0);
+    assert.equal(artifact.routeTaxonomy.rows[0].application_link_is_mailto, 0);
+    assert.equal(artifact.routeTaxonomy.rows[0].ready_drain_email_sent, 0);
+    assert.equal(artifact.routeTaxonomy.rows[0].applied_email_route, 0);
+    assert.equal(artifact.routeTaxonomy.rows[0].applied_portal_only, 1);
+  });
+
   it("handles production summary tables while preserving query provenance", async () => {
     const db = new Database(":memory:");
     db.exec(`
@@ -325,6 +484,330 @@ describe("jobops monitor artifact", () => {
       artifact.summaryQueries.some((query) => query.skipped),
       false,
     );
+  });
+
+  it("separates latest-run counters, snapshot totals, deltas, redacted matrix, and CAPTCHA summary", async () => {
+    const dbPath = join(tempDir, "matrix-deltas.db");
+    const db = new Database(dbPath);
+    db.exec(`
+      create table stage_events (
+        id text primary key,
+        application_id text,
+        occurred_at integer,
+        metadata text,
+        outcome text
+      );
+      create table jobs (
+        id text primary key,
+        source text,
+        title text,
+        employer text,
+        job_url text,
+        job_url_direct text,
+        application_link text,
+        emails text,
+        status text,
+        outcome text,
+        applied_at text
+      );
+    `);
+    db.prepare(`
+      insert into jobs (
+        id,
+        source,
+        title,
+        employer,
+        job_url,
+        job_url_direct,
+        application_link,
+        emails,
+        status,
+        outcome,
+        applied_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "job-stage-captcha",
+      "linkedin",
+      "Secret Role Title",
+      "Secret Employer",
+      "https://www.linkedin.com/jobs/view/1",
+      "https://boards.greenhouse.io/example/jobs/1",
+      "https://boards.greenhouse.io/example/jobs/1",
+      "private@example.test",
+      "applied",
+      null,
+      "2026-06-07T03:00:00.000Z",
+    );
+    const insertStage = db.prepare(
+      "insert into stage_events (id, application_id, occurred_at, metadata, outcome) values (?, ?, ?, ?, ?)",
+    );
+    insertStage.run(
+      "submitted-1",
+      "job-stage-captcha",
+      1770000100,
+      JSON.stringify({ reasonCode: "portal_submitted" }),
+      null,
+    );
+    insertStage.run(
+      "submitted-2",
+      "job-stage-captcha",
+      1770000200,
+      JSON.stringify({ reasonCode: "portal_submitted" }),
+      null,
+    );
+    insertStage.run(
+      "needs-review-captcha",
+      "job-stage-captcha",
+      1770000300,
+      JSON.stringify({
+        portalOutcome: {
+          reasonCode: "portal_captcha_required",
+          status: "needs_review",
+          domain: "boards.greenhouse.io",
+          source: "linkedin",
+          liveSubmitAttempted: true,
+          submitClicked: false,
+          captchaAttempted: true,
+          captchaSolved: false,
+        },
+      }),
+      "needs_human",
+    );
+    insertStage.run(
+      "dry-run",
+      "job-stage-captcha",
+      1770000400,
+      JSON.stringify({ reasonCode: "portal_pre_submit_dry_run" }),
+      null,
+    );
+    db.close();
+
+    const readyDrainResultPath = join(
+      tempDir,
+      "ready-drain-matrix-result.json",
+    );
+    await writeFile(
+      readyDrainResultPath,
+      JSON.stringify({
+        startedAt: "2026-06-07T04:00:00.000Z",
+        finishedAt: "2026-06-07T04:05:00.000Z",
+        stats: { processed: 2, errors: 0 },
+        results: [
+          {
+            jobId: "job-stage-captcha",
+            action: "portal_submitted",
+            source: "linkedin",
+            domain: "https://boards.greenhouse.io/example/jobs/1",
+            blockerReason: "portal_submitted",
+            captcha: { attempted: true, solved: true, costUsd: 1.25 },
+          },
+          {
+            action: "needs_portal_session",
+            sourceBucket: "indeed",
+            atsDomain: "https://tenant.myworkdayjobs.com/job/1",
+            blocker_reason: "portal_session_required",
+          },
+        ],
+      }),
+    );
+    const previousArtifactPath = join(
+      tempDir,
+      "previous-monitor-artifact.json",
+    );
+    await writeFile(
+      previousArtifactPath,
+      JSON.stringify({
+        generatedAt: "2026-06-07T02:00:00.000Z",
+        runId: "previous-run",
+        snapshotTotals: {
+          counts: {
+            truePortalSubmitted: 1,
+            portalNeedsReview: 0,
+            portalDryRunNoSubmit: 0,
+            appliedEmailRoute: 0,
+            appliedPortalOnly: 0,
+          },
+        },
+        sourceDomainBlockerMatrix: {
+          snapshotTotals: [
+            {
+              sourceBucket: "linkedin",
+              domainBucket: "greenhouse.io",
+              blockerReasonBucket: "portal_captcha_required",
+              count: 1,
+            },
+          ],
+        },
+      }),
+    );
+
+    const artifact = await buildMonitorArtifact({
+      dbPath,
+      readyDrainResultPath,
+      previousArtifactPath,
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+
+    assert.equal(artifact.counts.truePortalSubmitted, 2);
+    assert.equal(artifact.counts.portalNeedsReview, 2);
+    assert.equal(artifact.counts.portalDryRunNoSubmit, 1);
+    assert.deepEqual(artifact.snapshotTotals.counts, {
+      truePortalSubmitted: 2,
+      portalNeedsReview: 1,
+      portalDryRunNoSubmit: 1,
+      appliedEmailRoute: 0,
+      appliedPortalOnly: 1,
+    });
+    assert.equal(artifact.latestRun.available, true);
+    assert.equal(artifact.latestRun.counts.truePortalSubmitted, 1);
+    assert.equal(artifact.latestRun.counts.portalNeedsReview, 1);
+    assert.deepEqual(artifact.latestRun.captcha, {
+      available: true,
+      attempts: 1,
+      successes: 1,
+      failures: 0,
+      costUsd: 1.25,
+    });
+    assert.equal(artifact.snapshotTotals.captcha.available, true);
+    assert.equal(artifact.snapshotTotals.captcha.attempts, 1);
+    assert.equal(artifact.snapshotTotals.captcha.failures, 1);
+    assert.equal(artifact.deltasSincePrevious.available, true);
+    assert.equal(artifact.deltasSincePrevious.counts.truePortalSubmitted, 1);
+    assert.equal(artifact.deltasSincePrevious.counts.portalNeedsReview, 1);
+    assert.equal(artifact.deltasSincePrevious.counts.portalDryRunNoSubmit, 1);
+    assert.deepEqual(artifact.deltasSincePrevious.sourceDomainBlockerMatrix, [
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_dry_run_no_submit",
+        delta: 1,
+      },
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_submitted",
+        delta: 2,
+      },
+    ]);
+    assert.deepEqual(artifact.sourceDomainBlockerMatrix.latestRun, [
+      {
+        sourceBucket: "indeed",
+        domainBucket: "workday",
+        blockerReasonBucket: "portal_session_required",
+        count: 1,
+      },
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_submitted",
+        count: 1,
+      },
+    ]);
+    assert.deepEqual(artifact.sourceDomainBlockerMatrix.snapshotTotals, [
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_submitted",
+        count: 2,
+      },
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_captcha_required",
+        count: 1,
+      },
+      {
+        sourceBucket: "linkedin",
+        domainBucket: "greenhouse.io",
+        blockerReasonBucket: "portal_dry_run_no_submit",
+        count: 1,
+      },
+    ]);
+    assert.equal(
+      JSON.stringify(artifact.sourceDomainBlockerMatrix).includes(
+        "Secret Role Title",
+      ),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(artifact.sourceDomainBlockerMatrix).includes(
+        "Secret Employer",
+      ),
+      false,
+    );
+    assert.equal(
+      JSON.stringify(artifact.sourceDomainBlockerMatrix).includes(
+        "private@example.test",
+      ),
+      false,
+    );
+  });
+
+  it("counts explicit ready-drain needs_review actions in query, latest-run, and legacy aggregate counts", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      create table stage_events (id text primary key, occurred_at integer, metadata text, outcome text);
+    `);
+
+    const readyDrainResultPath = join(
+      tempDir,
+      "ready-drain-needs-review-result.json",
+    );
+    await writeFile(
+      readyDrainResultPath,
+      JSON.stringify({
+        stats: { portalNeedsReview: 1 },
+        results: [
+          {
+            id: "ready-drain-needs-review-1",
+            jobId: "job-needs-review-1",
+            action: "needs_review",
+          },
+        ],
+      }),
+    );
+
+    const artifact = await buildMonitorArtifact({
+      db,
+      dbPath: ":memory:",
+      readyDrainResultPath,
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+    db.close();
+
+    const needsReviewQuery = artifact.queries.find(
+      (query) => query.category === "ready_drain_portal_needs_review_actions",
+    );
+    assert.equal(needsReviewQuery?.count, 1);
+    assert.equal(artifact.latestRun.counts.portalNeedsReview, 1);
+    assert.equal(artifact.snapshotTotals.counts.portalNeedsReview, 0);
+    assert.equal(artifact.counts.portalNeedsReview, 1);
+  });
+
+  it("remains backward-compatible when ready-drain and previous artifacts are absent", async () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      create table stage_events (id text primary key, occurred_at integer, metadata text, outcome text);
+    `);
+
+    const artifact = await buildMonitorArtifact({
+      db,
+      dbPath: ":memory:",
+      env: { JOBOPS_SKIP_PUBLIC_HEALTH_CHECK: "1" },
+    });
+    db.close();
+
+    assert.equal(artifact.latestRun.available, false);
+    assert.equal(artifact.latestRun.counts.truePortalSubmitted, 0);
+    assert.deepEqual(artifact.latestRun.captcha, { available: false });
+    assert.deepEqual(artifact.sourceDomainBlockerMatrix.latestRun, []);
+    assert.deepEqual(artifact.sourceDomainBlockerMatrix.snapshotTotals, []);
+    assert.equal(artifact.deltasSincePrevious.available, false);
+    assert.equal(
+      artifact.deltasSincePrevious.reason,
+      "previous artifact not found",
+    );
+    assert.equal(Object.hasOwn(artifact.latestRun.captcha, "costUsd"), false);
   });
 
   it("resolves public health URL from explicit env, public base URL, then local fallback", () => {

@@ -291,6 +291,16 @@ run_health_summary() {
     "$CONTAINER" sh -lc "cd /app/orchestrator && node '$container_script'"
 }
 
+run_multiplatform() {
+  local run_script="$ROOT/multiplatform/run.sh"
+  if [ -x "$run_script" ]; then
+    "$run_script" 2>&1 | tail -n 40
+    return 0
+  fi
+  echo "multiplatform/run.sh not found; skipping multi-platform step"
+  return 0
+}
+
 STATUS="success"
 run_step ensure_container ensure_container || STATUS="partial"
 make_cleanup_script
@@ -303,6 +313,7 @@ if run_step pipeline_idle_wait wait_for_pipeline_idle; then
 else
   STATUS="partial"
 fi
+run_step multiplatform run_multiplatform || STATUS="partial"
 run_step health_summary run_health_summary || STATUS="partial"
 write_final_status "$STATUS"
 echo "[$(date -Is)] jobops autonomous run $RUN_ID finished status=$STATUS"

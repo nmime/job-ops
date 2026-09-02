@@ -233,6 +233,631 @@ function countActions(results = []) {
   return counts;
 }
 
+function numericStat(stats, keys) {
+  for (const key of keys) {
+    if (Object.hasOwn(stats, key)) {
+      const value = Number(stats[key]);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
+function numericOrZero(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function countMatchingActions(actionCounts, actions) {
+  return actions.reduce((sum, action) => sum + (actionCounts[action] ?? 0), 0);
+}
+
+const READY_DRAIN_DRY_RUN_NO_SUBMIT_ACTIONS = [
+  "portal_pre_submit_dry_run",
+  "no_submit_button",
+  "no_submit_control",
+  "portal_no_submit",
+];
+
+const READY_DRAIN_NEEDS_REVIEW_ACTIONS = [
+  "needs_portal_session",
+  "portal_needs_review",
+  "needs_review",
+  "skipped_no_route",
+];
+
+function buildReadyDrainLatestRun(readyDrainResultPath, readyDrainLogPath) {
+  const readyDrain = readJsonIfPresent(readyDrainResultPath);
+  const results = Array.isArray(readyDrain?.results) ? readyDrain.results : [];
+  const stats = readyDrain?.stats ?? {};
+  const actionCounts = countActions(results);
+  const portalSubmittedActions =
+    actionCounts.portal_submitted ??
+    numericStat(stats, ["portalSubmitted", "portal_submitted"]) ??
+    0;
+  const portalNeedsReview = results.length
+    ? countMatchingActions(actionCounts, READY_DRAIN_NEEDS_REVIEW_ACTIONS)
+    : (numericStat(stats, ["portalNeedsReview", "portal_needs_review"]) ?? 0);
+  const portalDryRunNoSubmit = countMatchingActions(
+    actionCounts,
+    READY_DRAIN_DRY_RUN_NO_SUBMIT_ACTIONS,
+  );
+
+  return {
+    available: Boolean(readyDrain),
+    source: {
+      type: "json",
+      path: readyDrainResultPath,
+      logPath: readyDrainLogPath,
+    },
+    startedAt: readyDrain?.startedAt ?? null,
+    finishedAt: readyDrain?.finishedAt ?? null,
+    counts: {
+      truePortalSubmitted: portalSubmittedActions,
+      portalSubmittedActions,
+      portalNeedsReview,
+      portalDryRunNoSubmit,
+      emailSent:
+        actionCounts.email_sent ??
+        numericStat(stats, ["emailSent", "sentEmail", "email_sent"]) ??
+        0,
+      resolvedEmail:
+        numericStat(stats, ["resolvedEmail", "resolved_email"]) ?? 0,
+      processed: numericStat(stats, ["processed"]) ?? results.length,
+      errors: numericStat(stats, ["errors"]) ?? actionCounts.error ?? 0,
+      skippedNoRoute:
+        actionCounts.skipped_no_route ??
+        numericStat(stats, ["skippedNoRoute", "skipped_no_route"]) ??
+        0,
+    },
+    actionCounts,
+  };
+}
+
+function directNumericField(object, keys) {
+  if (!object || typeof object !== "object") {
+    return { present: false, value: 0 };
+  }
+  for (const key of keys) {
+    if (Object.hasOwn(object, key)) {
+      const value = Number(object[key]);
+      if (Number.isFinite(value)) return { present: true, value };
+    }
+  }
+  return { present: false, value: 0 };
+}
+
+function directBooleanField(object, keys) {
+  if (!object || typeof object !== "object") return null;
+  for (const key of keys) {
+    if (Object.hasOwn(object, key)) return Boolean(object[key]);
+  }
+  return null;
+}
+
+function mergeCaptchaSummary(summary, captcha) {
+  summary.available ||= captcha.available;
+  summary.attempts += captcha.attempts;
+  summary.successes += captcha.successes;
+  summary.failures += captcha.failures;
+  if (captcha.costUsd !== null) {
+    summary.costUsd = (summary.costUsd ?? 0) + captcha.costUsd;
+  }
+}
+
+function captchaFromStats(stats = {}) {
+  const attempts = directNumericField(stats, [
+    "captchaAttempts",
+    "captchaAttempted",
+    "captcha_attempts",
+    "captcha_attempted",
+  ]);
+  const successes = directNumericField(stats, [
+    "captchaSuccesses",
+    "captchaSolved",
+    "captcha_successes",
+    "captcha_solved",
+  ]);
+  const failures = directNumericField(stats, [
+    "captchaFailures",
+    "captchaFailed",
+    "captcha_failures",
+    "captcha_failed",
+  ]);
+  const cost = directNumericField(stats, [
+    "captchaCostUsd",
+    "captcha_cost_usd",
+    "captchaCost",
+    "captcha_cost",
+  ]);
+  return {
+    available:
+      attempts.present || successes.present || failures.present || cost.present,
+    attempts: attempts.value,
+    successes: successes.value,
+    failures: failures.value,
+    costUsd: cost.present ? cost.value : null,
+  };
+}
+
+function captchaFromObject(value = {}) {
+  const captcha =
+    value?.captcha && typeof value.captcha === "object" ? value.captcha : {};
+  const attempted = directBooleanField(value, [
+    "captchaAttempted",
+    "captcha_attempted",
+  ]);
+  const nestedAttempted = directBooleanField(captcha, [
+    "attempted",
+    "captchaAttempted",
+  ]);
+  const solved = directBooleanField(value, ["captchaSolved", "captcha_solved"]);
+  const nestedSolved = directBooleanField(captcha, [
+    "solved",
+    "success",
+    "succeeded",
+    "captchaSolved",
+  ]);
+  const failed = directBooleanField(value, ["captchaFailed", "captcha_failed"]);
+  const nestedFailed = directBooleanField(captcha, ["failed", "failure"]);
+  const cost = directNumericField(value, [
+    "captchaCostUsd",
+    "captcha_cost_usd",
+  ]);
+  const nestedCost = directNumericField(captcha, [
+    "costUsd",
+    "cost_usd",
+    "cost",
+  ]);
+  const finalAttempted = attempted ?? nestedAttempted;
+  const finalSolved = solved ?? nestedSolved;
+  const finalFailed = failed ?? nestedFailed;
+  const hasCost = cost.present || nestedCost.present;
+
+  return {
+    available:
+      finalAttempted !== null ||
+      finalSolved !== null ||
+      finalFailed !== null ||
+      hasCost,
+    attempts: finalAttempted ? 1 : 0,
+    successes: finalSolved ? 1 : 0,
+    failures: finalFailed || (finalAttempted && finalSolved === false) ? 1 : 0,
+    costUsd: hasCost ? cost.value + nestedCost.value : null,
+  };
+}
+
+function finalizeCaptchaSummary(summary) {
+  if (!summary.available) return { available: false };
+  const finalized = {
+    available: true,
+    attempts: summary.attempts,
+    successes: summary.successes,
+    failures: summary.failures,
+  };
+  if (summary.costUsd !== null && Number.isFinite(summary.costUsd)) {
+    finalized.costUsd = summary.costUsd;
+  }
+  return finalized;
+}
+
+function buildReadyDrainCaptchaSummary(readyDrainResultPath) {
+  const readyDrain = readJsonIfPresent(readyDrainResultPath);
+  const summary = {
+    available: false,
+    attempts: 0,
+    successes: 0,
+    failures: 0,
+    costUsd: null,
+  };
+  mergeCaptchaSummary(summary, captchaFromStats(readyDrain?.stats ?? {}));
+  for (const result of readyDrain?.results ?? []) {
+    mergeCaptchaSummary(summary, captchaFromObject(result));
+  }
+  return finalizeCaptchaSummary(summary);
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildStageCaptchaSummary(db) {
+  const summary = {
+    available: false,
+    attempts: 0,
+    successes: 0,
+    failures: 0,
+    costUsd: null,
+  };
+  if (!tableExists(db, "stage_events")) return finalizeCaptchaSummary(summary);
+  const rows = db.prepare("select metadata from stage_events").all();
+  for (const row of rows) {
+    const metadata = parseJsonObject(row.metadata);
+    if (!metadata?.portalOutcome) continue;
+    mergeCaptchaSummary(summary, captchaFromObject(metadata.portalOutcome));
+  }
+  return finalizeCaptchaSummary(summary);
+}
+
+function safeBucket(value, fallback = "unknown") {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!raw) return fallback;
+  const withoutSecret = raw.replaceAll(
+    /token=[^&\s]+|key=[^&\s]+|secret=[^&\s]+/g,
+    "redacted",
+  );
+  const bucket = withoutSecret
+    .replaceAll(/https?:\/\//g, "")
+    .replaceAll(/[^a-z0-9._:-]+/g, "_")
+    .replaceAll(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return bucket || fallback;
+}
+
+function hostname(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const trimmed = value.trim();
+  try {
+    return new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    try {
+      return new URL(`https://${trimmed}`).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+  }
+}
+
+function registrableDomain(host) {
+  if (!host) return null;
+  const labels = host.toLowerCase().split(".").filter(Boolean);
+  if (labels.length <= 2) return labels.join(".");
+  const lastTwo = labels.slice(-2).join(".");
+  const lastThree = labels.slice(-3).join(".");
+  if (["co.uk", "ac.uk", "gov.uk", "org.uk"].includes(lastTwo)) {
+    return lastThree;
+  }
+  return lastTwo;
+}
+
+function atsDomainBucket(value) {
+  const host = hostname(value) ?? safeBucket(value, null);
+  if (!host) return "unknown";
+  const normalized = host.toLowerCase().replace(/^www\./, "");
+  const atsBuckets = [
+    ["greenhouse.io", "greenhouse.io"],
+    ["lever.co", "lever.co"],
+    ["myworkdayjobs.com", "workday"],
+    ["workdayjobs.com", "workday"],
+    ["smartrecruiters.com", "smartrecruiters.com"],
+    ["ashbyhq.com", "ashbyhq.com"],
+    ["workable.com", "workable.com"],
+    ["bamboohr.com", "bamboohr.com"],
+    ["icims.com", "icims.com"],
+    ["oraclecloud.com", "oraclecloud.com"],
+    ["successfactors", "successfactors"],
+    ["taleo.net", "taleo.net"],
+    ["recruitee.com", "recruitee.com"],
+    ["personio", "personio"],
+    ["jobvite.com", "jobvite.com"],
+    ["join.com", "join.com"],
+  ];
+  for (const [needle, bucket] of atsBuckets) {
+    if (normalized.includes(needle)) return bucket;
+  }
+  return registrableDomain(normalized) ?? safeBucket(normalized);
+}
+
+function sourceBucket(value) {
+  const host = hostname(value);
+  if (host) return registrableDomain(host) ?? host;
+  return safeBucket(value);
+}
+
+function blockerReasonBucket(value) {
+  const raw = typeof value === "string" ? value.toLowerCase() : "";
+  if (!raw) return "unknown";
+  if (/portal_submitted/.test(raw)) return "portal_submitted";
+  if (/captcha/.test(raw)) return "portal_captcha_required";
+  if (/session|login|auth|signin|sign_in/.test(raw)) {
+    return "portal_session_required";
+  }
+  if (/allowlist|policy|configured autonomous-submit|supported ats/.test(raw)) {
+    return "portal_allowlist_blocked";
+  }
+  if (/dry.?run|disabled|pre_submit/.test(raw))
+    return "portal_dry_run_no_submit";
+  if (/no_submit|submit button|submit control/.test(raw)) {
+    return "portal_no_submit_control";
+  }
+  if (/missing.*pdf|stale.*pdf|resume_pdf/.test(raw)) {
+    return "missing_or_stale_resume_pdf";
+  }
+  if (/alternate_routes_exhausted|alternate routes exhausted/.test(raw)) {
+    return "alternate_routes_exhausted";
+  }
+  if (/no_contact|no contact|no_route|no route|direct_ats/.test(raw)) {
+    return "no_contact_or_direct_ats_found";
+  }
+  if (/needs_portal_session/.test(raw)) return "portal_session_required";
+  if (/needs_review|needs human|needs_human/.test(raw))
+    return "portal_needs_review";
+  if (/email/.test(raw)) return "email_route_blocked";
+  if (/error|exception|failed|failure/.test(raw)) return "error";
+  if (/^[a-z0-9_.:-]+$/.test(raw)) return safeBucket(raw);
+  return "other";
+}
+
+function buildJobMatrixLookup(db) {
+  const lookup = new Map();
+  if (!tableExists(db, "jobs")) return lookup;
+  const columns = tableColumns(db, "jobs");
+  if (!columns.has("id")) return lookup;
+  const select = [
+    "id",
+    optionalColumn(columns, "source"),
+    optionalColumn(columns, "application_link"),
+    optionalColumn(columns, "job_url_direct"),
+    optionalColumn(columns, "job_url"),
+  ].join(", ");
+  for (const row of db.prepare(`select ${select} from jobs`).all()) {
+    lookup.set(row.id, row);
+  }
+  return lookup;
+}
+
+function firstPresent(...values) {
+  return values.find(
+    (value) => value !== null && value !== undefined && value !== "",
+  );
+}
+
+function summarizeMatrixEntries(entries) {
+  const counts = new Map();
+  for (const entry of entries) {
+    const key = [
+      entry.sourceBucket,
+      entry.domainBucket,
+      entry.blockerReasonBucket,
+    ].join("\u0000");
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([key, count]) => {
+      const [sourceBucketValue, domainBucketValue, blockerReasonBucketValue] =
+        key.split("\u0000");
+      return {
+        sourceBucket: sourceBucketValue,
+        domainBucket: domainBucketValue,
+        blockerReasonBucket: blockerReasonBucketValue,
+        count,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.sourceBucket.localeCompare(b.sourceBucket) ||
+        a.domainBucket.localeCompare(b.domainBucket) ||
+        a.blockerReasonBucket.localeCompare(b.blockerReasonBucket),
+    );
+}
+
+function matrixEntryFromValues(sourceValue, domainValue, blockerValue) {
+  return {
+    sourceBucket: sourceBucket(sourceValue),
+    domainBucket: atsDomainBucket(domainValue),
+    blockerReasonBucket: blockerReasonBucket(blockerValue),
+  };
+}
+
+function buildReadyDrainMatrix(readyDrainResultPath, jobLookup) {
+  const readyDrain = readJsonIfPresent(readyDrainResultPath);
+  const entries = [];
+  for (const result of readyDrain?.results ?? []) {
+    const jobId = firstPresent(
+      result?.jobId,
+      result?.job_id,
+      result?.applicationId,
+      result?.application_id,
+      result?.id,
+    );
+    const job = jobLookup.get(jobId) ?? {};
+    const sourceValue = firstPresent(
+      result?.sourceBucket,
+      result?.source,
+      result?.jobSource,
+      result?.job_source,
+      job.source,
+    );
+    const domainValue = firstPresent(
+      result?.domainBucket,
+      result?.domain,
+      result?.atsDomain,
+      result?.ats_domain,
+      result?.portalDomain,
+      result?.portal_domain,
+      result?.resolved?.portal,
+      result?.portal,
+      job.application_link,
+      job.job_url_direct,
+      job.job_url,
+    );
+    const blockerValue = firstPresent(
+      result?.blockerReason,
+      result?.blocker_reason,
+      result?.reasonCode,
+      result?.reason_code,
+      result?.blockerCategory,
+      result?.blocker_category,
+      result?.blocker,
+      result?.portalError,
+      result?.action,
+    );
+    entries.push(matrixEntryFromValues(sourceValue, domainValue, blockerValue));
+  }
+  return summarizeMatrixEntries(entries);
+}
+
+function buildStageEventMatrix(db, jobLookup) {
+  if (!tableExists(db, "stage_events")) return [];
+  const columns = tableColumns(db, "stage_events");
+  const applicationIdColumn = columns.has("application_id")
+    ? "application_id"
+    : columns.has("job_id")
+      ? "job_id as application_id"
+      : "null as application_id";
+  const rows = db
+    .prepare(
+      `select ${applicationIdColumn}, metadata, outcome from stage_events where metadata is not null or outcome is not null`,
+    )
+    .all();
+  const entries = [];
+  for (const row of rows) {
+    const metadata = parseJsonObject(row.metadata);
+    const portalOutcome = metadata?.portalOutcome ?? {};
+    const blockerValue = firstPresent(
+      portalOutcome.reasonCode,
+      metadata?.reasonCode,
+      row.outcome,
+    );
+    if (!blockerValue) continue;
+    const job = jobLookup.get(row.application_id) ?? {};
+    entries.push(
+      matrixEntryFromValues(
+        firstPresent(portalOutcome.source, metadata?.source, job.source),
+        firstPresent(
+          portalOutcome.domain,
+          metadata?.domain,
+          metadata?.externalUrl,
+          job.application_link,
+          job.job_url_direct,
+          job.job_url,
+        ),
+        blockerValue,
+      ),
+    );
+  }
+  return summarizeMatrixEntries(entries);
+}
+
+function buildSourceDomainBlockerMatrix(db, dbPath, readyDrainResultPath) {
+  const jobLookup = buildJobMatrixLookup(db);
+  return {
+    name: "source_domain_blocker_matrix",
+    source: {
+      database: {
+        type: "sqlite",
+        path: dbPath,
+        tables: ["jobs", "stage_events"],
+      },
+      readyDrainResultPath,
+    },
+    description:
+      "Redacted counts only: source bucket, ATS/domain bucket, blocker reason bucket, and count. URLs, titles, companies, and content are intentionally omitted.",
+    redaction: {
+      omits: ["url", "title", "company", "employer", "content", "email"],
+      buckets: ["sourceBucket", "domainBucket", "blockerReasonBucket"],
+    },
+    latestRun: buildReadyDrainMatrix(readyDrainResultPath, jobLookup),
+    snapshotTotals: buildStageEventMatrix(db, jobLookup),
+  };
+}
+
+function flattenNumericObject(value, prefix = "") {
+  const entries = {};
+  if (!value || typeof value !== "object") return entries;
+  for (const [key, child] of Object.entries(value)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (typeof child === "number" && Number.isFinite(child)) {
+      entries[path] = child;
+    } else if (child && typeof child === "object" && !Array.isArray(child)) {
+      Object.assign(entries, flattenNumericObject(child, path));
+    }
+  }
+  return entries;
+}
+
+function diffNumericObjects(current, previous) {
+  const currentFlat = flattenNumericObject(current);
+  const previousFlat = flattenNumericObject(previous);
+  const keys = [
+    ...new Set([...Object.keys(currentFlat), ...Object.keys(previousFlat)]),
+  ].sort();
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      (currentFlat[key] ?? 0) - (previousFlat[key] ?? 0),
+    ]),
+  );
+}
+
+function matrixRowsToMap(rows = []) {
+  return new Map(
+    rows.map((row) => [
+      `${row.sourceBucket}\u0000${row.domainBucket}\u0000${row.blockerReasonBucket}`,
+      numericOrZero(row.count),
+    ]),
+  );
+}
+
+function diffMatrixRows(currentRows = [], previousRows = []) {
+  const current = matrixRowsToMap(currentRows);
+  const previous = matrixRowsToMap(previousRows);
+  const keys = [...new Set([...current.keys(), ...previous.keys()])].sort();
+  return keys
+    .map((key) => {
+      const [sourceBucketValue, domainBucketValue, blockerReasonBucketValue] =
+        key.split("\u0000");
+      return {
+        sourceBucket: sourceBucketValue,
+        domainBucket: domainBucketValue,
+        blockerReasonBucket: blockerReasonBucketValue,
+        delta: (current.get(key) ?? 0) - (previous.get(key) ?? 0),
+      };
+    })
+    .filter((row) => row.delta !== 0);
+}
+
+function getSnapshotCountsForDelta(artifact) {
+  return artifact?.snapshotTotals?.counts ?? artifact?.counts ?? {};
+}
+
+function computeDeltasSincePrevious(
+  artifact,
+  previousArtifact,
+  previousArtifactPath,
+) {
+  if (!previousArtifact) {
+    return {
+      available: false,
+      previousArtifactPath,
+      reason: "previous artifact not found",
+    };
+  }
+  return {
+    available: true,
+    previousArtifactPath,
+    previousGeneratedAt: previousArtifact.generatedAt ?? null,
+    previousRunId: previousArtifact.runId ?? null,
+    counts: diffNumericObjects(
+      artifact.snapshotTotals?.counts ?? {},
+      getSnapshotCountsForDelta(previousArtifact),
+    ),
+    sourceDomainBlockerMatrix: diffMatrixRows(
+      artifact.sourceDomainBlockerMatrix?.snapshotTotals ?? [],
+      previousArtifact.sourceDomainBlockerMatrix?.snapshotTotals ?? [],
+    ),
+  };
+}
+
 const ROUTE_TAXONOMY_COLUMNS = [
   "job_id",
   "tenant_id",
@@ -305,6 +930,7 @@ function buildReadyDrainRouteEvidence(readyDrainResultPath) {
     const jobId =
       result?.jobId ??
       result?.job_id ??
+      result?.id ??
       result?.applicationId ??
       result?.application_id;
     const runId =
@@ -323,26 +949,21 @@ function buildReadyDrainRouteEvidence(readyDrainResultPath) {
     portalSubmitted: Number(stats.portalSubmitted ?? 0) > 0,
   };
 
+  const hasAggregateEvidence =
+    aggregate.emailSent || aggregate.resolvedEmail || aggregate.portalSubmitted;
+
   return {
     available: Boolean(readyDrain),
     byJobId,
     byRunId,
-    aggregate:
-      aggregate.emailSent ||
-      aggregate.resolvedEmail ||
-      aggregate.portalSubmitted
-        ? aggregate
-        : null,
+    aggregate: hasAggregateEvidence ? aggregate : null,
+    aggregateFallback: hasAggregateEvidence ? "disabled_no_row_identity" : null,
   };
 }
 
 function getReadyDrainEvidence(routeEvidence, jobId, runId) {
   return (
-    routeEvidence.byJobId.get(jobId) ??
-    routeEvidence.byRunId.get(runId) ??
-    (routeEvidence.byJobId.size === 0 && routeEvidence.byRunId.size === 0
-      ? routeEvidence.aggregate
-      : null)
+    routeEvidence.byJobId.get(jobId) ?? routeEvidence.byRunId.get(runId) ?? null
   );
 }
 
@@ -497,6 +1118,7 @@ function buildAppliedRouteTaxonomy(db, dbPath, readyDrainResultPath, runId) {
     summary: buildRouteTaxonomySummary(classifiedRows),
     columns: ROUTE_TAXONOMY_COLUMNS,
     readyDrainAvailable: readyDrainEvidence.available,
+    readyDrainAggregateFallback: readyDrainEvidence.aggregateFallback,
     applicationEmailAttemptsAvailable: tableExists(
       db,
       "application_email_attempts",
@@ -507,17 +1129,8 @@ function buildAppliedRouteTaxonomy(db, dbPath, readyDrainResultPath, runId) {
 function buildReadyDrainQueries(readyDrainResultPath, readyDrainLogPath) {
   const readyDrain = readJsonIfPresent(readyDrainResultPath);
   const actionCounts = countActions(readyDrain?.results ?? []);
-  const dryRunNoSubmitActions = [
-    "portal_pre_submit_dry_run",
-    "no_submit_button",
-    "no_submit_control",
-    "portal_no_submit",
-  ];
-  const needsReviewActions = [
-    "needs_portal_session",
-    "portal_needs_review",
-    "skipped_no_route",
-  ];
+  const dryRunNoSubmitActions = READY_DRAIN_DRY_RUN_NO_SUBMIT_ACTIONS;
+  const needsReviewActions = READY_DRAIN_NEEDS_REVIEW_ACTIONS;
 
   return [
     {
@@ -624,6 +1237,11 @@ export async function buildMonitorArtifact(options = {}) {
     options.readyDrainLogPath ?? env.JOBOPS_READY_DRAIN_LOG_PATH ?? null;
   const artifactPath =
     options.artifactPath ?? env.JOBOPS_MONITOR_ARTIFACT_PATH ?? null;
+  const previousArtifactPath =
+    options.previousArtifactPath ??
+    env.JOBOPS_PREVIOUS_MONITOR_ARTIFACT_PATH ??
+    (artifactPath && existsSync(artifactPath) ? artifactPath : null);
+  const previousArtifact = readJsonIfPresent(previousArtifactPath);
 
   try {
     const stageQueries = STAGE_QUERIES.map((query) =>
@@ -636,11 +1254,21 @@ export async function buildMonitorArtifact(options = {}) {
       readyDrainResultPath,
       readyDrainLogPath,
     );
+    const latestRun = buildReadyDrainLatestRun(
+      readyDrainResultPath,
+      readyDrainLogPath,
+    );
+    latestRun.captcha = buildReadyDrainCaptchaSummary(readyDrainResultPath);
     const routeTaxonomy = buildAppliedRouteTaxonomy(
       db,
       dbPath,
       readyDrainResultPath,
       runId,
+    );
+    const sourceDomainBlockerMatrix = buildSourceDomainBlockerMatrix(
+      db,
+      dbPath,
+      readyDrainResultPath,
     );
     const queries = [...stageQueries, ...readyDrainQueries];
     const queryByCategory = Object.fromEntries(
@@ -650,8 +1278,21 @@ export async function buildMonitorArtifact(options = {}) {
       env,
       options.fetchImpl ?? globalThis.fetch,
     );
+    const snapshotTotals = {
+      description:
+        "Cumulative historical snapshot totals from persisted database tables only. These are not latest-run deltas.",
+      counts: {
+        truePortalSubmitted: queryByCategory.true_portal_submitted?.count ?? 0,
+        portalNeedsReview: queryByCategory.portal_needs_review?.count ?? 0,
+        portalDryRunNoSubmit:
+          queryByCategory.portal_dry_run_no_submit?.count ?? 0,
+        appliedEmailRoute: routeTaxonomy.summary.appliedEmailRoute,
+        appliedPortalOnly: routeTaxonomy.summary.appliedPortalOnly,
+      },
+      captcha: buildStageCaptchaSummary(db),
+    };
     const artifact = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt,
       runId,
       artifactPath,
@@ -659,8 +1300,19 @@ export async function buildMonitorArtifact(options = {}) {
         database: dbPath,
         readyDrainResultPath,
         readyDrainLogPath,
+        previousArtifactPath,
       },
       publicHealth,
+      counterScopes: {
+        counts:
+          "legacy compatibility counters; combines persisted snapshot counters with latest ready-drain counters where historically expected",
+        snapshotTotals:
+          "cumulative historical database snapshot totals; not latest-run deltas",
+        latestRun:
+          "current ready-drain artifact counters when a ready-drain result is available",
+        deltasSincePrevious:
+          "numeric difference between this artifact's snapshotTotals and the previous artifact where feasible",
+      },
       counts: {
         truePortalSubmitted: queryByCategory.true_portal_submitted?.count ?? 0,
         portalNeedsReview:
@@ -673,10 +1325,18 @@ export async function buildMonitorArtifact(options = {}) {
         appliedEmailRoute: routeTaxonomy.summary.appliedEmailRoute,
         appliedPortalOnly: routeTaxonomy.summary.appliedPortalOnly,
       },
+      snapshotTotals,
+      latestRun,
+      sourceDomainBlockerMatrix,
       queries,
       routeTaxonomy,
       summaryQueries,
     };
+    artifact.deltasSincePrevious = computeDeltasSincePrevious(
+      artifact,
+      previousArtifact,
+      previousArtifactPath,
+    );
 
     if (artifactPath) {
       await mkdir(dirname(artifactPath), { recursive: true });

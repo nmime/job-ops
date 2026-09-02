@@ -1,9 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getDataDir } from "@server/config/dataDir";
 import { getAllJobs, getJobById, updateJob } from "@server/repositories/jobs";
 import {
   classifyPortalUrlForSession,
+  evaluatePortalSubmitPolicy,
   isFullAutoBrowserDryRunEnabled,
   isFullAutoBrowserSubmitEnabled,
   isFullAutoCaptchaEnabled,
@@ -14,6 +16,12 @@ import {
   resolveAutoApplyRecipient,
   sendAutoApplication,
 } from "@server/services/auto-apply";
+import {
+  type BlockerBucket,
+  classifyReadyDrainCandidate,
+  isExplicitReviewOnlyMutationEnabled,
+  selectReadyDrainBatch,
+} from "@server/services/autonomous-ready-drain-selection";
 import {
   getJobPdfFreshness,
   resolvePdfFingerprintContext,
@@ -32,12 +40,25 @@ type DestinationResolution = {
   pages: string[];
 };
 
+type BlockerTelemetry = {
+  blockerBucket: BlockerBucket;
+  blockerReason: string;
+  reasonCode?: string;
+};
+
+type PortalBlockerDetails = BlockerTelemetry & {
+  message: string;
+};
+
 type JobResult = {
   id: string;
   employer: string;
   title: string;
   action: string;
   blocker?: string;
+  blockerBucket?: BlockerBucket;
+  blockerReason?: string;
+  reasonCode?: string;
   emailError?: string;
   portalError?: string;
   resolved?: Pick<
@@ -94,6 +115,7 @@ const stats = {
   errors: 0,
   batchLimit,
   queuedAtStart: 0,
+  reviewOnlyBlocked: 0,
 };
 const results: JobResult[] = [];
 
@@ -192,16 +214,108 @@ function isAtsHost(host: string): boolean {
   return domainMatches(host, portalAllowedDomains());
 }
 
-function portalAutoSubmitPolicyBlocker(
-  url: string | null | undefined,
-): string | null {
-  if (!isHttpUrl(url)) return "portal_url_missing_or_invalid";
-  const host = hostname(url);
-  if (!host || isAggregatorHost(host)) {
-    return "portal route is not a direct supported ATS/company apply page; needs human review before submission.";
+function blockerBucketFromReasonCode(
+  reasonCode: string | null | undefined,
+  fallback: BlockerBucket = "unknown",
+): BlockerBucket {
+  switch (reasonCode) {
+    case "portal_blocked_domain_not_validated":
+      return "allowlist_policy";
+    case "portal_blocked_unsupported_source":
+      return "unsupported_source";
+    case "portal_needs_review_login_required":
+    case "portal_needs_review_session_missing":
+      return "session_login";
+    case "portal_needs_review_captcha":
+      return "captcha";
+    case "portal_needs_review_required_fields":
+    case "portal_needs_review_resume_upload_missing":
+      return "required_fields";
+    case "portal_needs_review_no_submit_control":
+      return "no_submit_control";
+    case "portal_needs_review_no_success_signal":
+      return "no_success_confirmation";
+    default:
+      return fallback;
   }
-  if (!domainMatches(host, portalAllowedDomains())) {
-    return "portal route is not on the configured autonomous-submit portal allowlist; needs human review before submission.";
+}
+
+function applyBlockerTelemetry(
+  result: JobResult,
+  details: PortalBlockerDetails,
+): void {
+  result.portalError = details.message;
+  result.blocker = details.message;
+  result.blockerBucket = details.blockerBucket;
+  result.blockerReason = details.blockerReason;
+  result.reasonCode = details.reasonCode;
+}
+
+function makeBlockerDetails(input: {
+  message: string;
+  blockerBucket: BlockerBucket;
+  blockerReason?: string;
+  reasonCode?: string;
+}): PortalBlockerDetails {
+  return {
+    message: input.message,
+    blockerBucket: input.blockerBucket,
+    blockerReason: input.blockerReason ?? input.message,
+    reasonCode: input.reasonCode,
+  };
+}
+
+function portalAutoSubmitPolicyBlocker(
+  job: Job,
+  url: string | null | undefined,
+): PortalBlockerDetails | null {
+  if (!isHttpUrl(url)) {
+    return makeBlockerDetails({
+      message: "portal_url_missing_or_invalid",
+      blockerBucket: "invalid_url/no_domain",
+      blockerReason: "Portal URL is missing, invalid, or has no domain.",
+      reasonCode: "portal_blocked_domain_not_validated",
+    });
+  }
+  const host = hostname(url);
+  if (!host) {
+    return makeBlockerDetails({
+      message: "portal_url_missing_or_invalid",
+      blockerBucket: "invalid_url/no_domain",
+      blockerReason: "Portal URL is missing, invalid, or has no domain.",
+      reasonCode: "portal_blocked_domain_not_validated",
+    });
+  }
+  if (isAggregatorHost(host)) {
+    return makeBlockerDetails({
+      message:
+        "portal route is an aggregator/listing URL, not a direct supported ATS/company apply page; needs human review before submission.",
+      blockerBucket: "unsupported_source",
+      blockerReason: "Portal route is an aggregator/listing URL.",
+      reasonCode: "portal_blocked_unsupported_source",
+    });
+  }
+
+  const policy = evaluatePortalSubmitPolicy(job, url);
+  if (!policy.allowed) {
+    const reasonCode = policy.reasonCode;
+    return makeBlockerDetails({
+      message:
+        policy.reason ??
+        "portal route is blocked by autonomous portal submit policy.",
+      blockerBucket:
+        policy.blockerCode === "unsupported_source"
+          ? "unsupported_source"
+          : policy.blockerCode === "session_required" ||
+              policy.blockerCode === "login_wall"
+            ? "session_login"
+            : policy.blockerCode === "domain_not_allowlisted" ||
+                policy.blockerCode === "domain_blocked"
+              ? "allowlist_policy"
+              : blockerBucketFromReasonCode(reasonCode),
+      blockerReason: policy.blockerCode,
+      reasonCode,
+    });
   }
   return null;
 }
@@ -465,10 +579,22 @@ async function markApplied(
   });
 }
 
-function portalSessionBlocker(url: string | null | undefined): string | null {
+function portalSessionBlocker(
+  url: string | null | undefined,
+): PortalBlockerDetails | null {
   if (!url) return null;
   const gate = classifyPortalUrlForSession(url);
-  return gate ? gate.reason : null;
+  return gate
+    ? makeBlockerDetails({
+        message: gate.reason,
+        blockerBucket: "session_login",
+        blockerReason: gate.provider,
+        reasonCode:
+          gate.provider === "generic"
+            ? "portal_needs_review_session_missing"
+            : "portal_needs_review_login_required",
+      })
+    : null;
 }
 
 function fullAutoSubmitAllowed(): boolean {
@@ -485,7 +611,11 @@ async function markSkipped(job: Job, blocker: string): Promise<void> {
   });
 }
 
-async function markNeedsReview(job: Job, blocker: string): Promise<void> {
+async function markNeedsReview(
+  job: Job,
+  blocker: string,
+  telemetry?: BlockerTelemetry,
+): Promise<void> {
   const reviewedAt = new Date();
   const occurredAt = Math.floor(reviewedAt.getTime() / 1000);
   transitionStage(
@@ -496,7 +626,7 @@ async function markNeedsReview(job: Job, blocker: string): Promise<void> {
       eventLabel: "Autonomous service needs review",
       actor: "system",
       eventType: "status_update",
-      reasonCode: "portal_needs_review",
+      reasonCode: telemetry?.reasonCode ?? "portal_needs_review",
       note: blocker,
     },
     "needs_human" as never,
@@ -511,6 +641,9 @@ async function markNeedsReview(job: Job, blocker: string): Promise<void> {
     event: "job_needs_review",
     jobId: job.id,
     blocker,
+    blockerBucket: telemetry?.blockerBucket,
+    blockerReason: telemetry?.blockerReason,
+    reasonCode: telemetry?.reasonCode,
   });
 }
 
@@ -537,16 +670,16 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
   const sessionBlocker = portalSessionBlocker(targetUrl);
   if (sessionBlocker) {
     stats.portalNeedsReview += 1;
-    result.portalError = sessionBlocker;
-    result.blocker = sessionBlocker;
+    stats.reviewOnlyBlocked += 1;
+    applyBlockerTelemetry(result, sessionBlocker);
     result.action = "needs_portal_session";
     return false;
   }
-  const policyBlocker = portalAutoSubmitPolicyBlocker(targetUrl);
+  const policyBlocker = portalAutoSubmitPolicyBlocker(job, targetUrl);
   if (policyBlocker) {
     stats.portalNeedsReview += 1;
-    result.portalError = policyBlocker;
-    result.blocker = policyBlocker;
+    stats.reviewOnlyBlocked += 1;
+    applyBlockerTelemetry(result, policyBlocker);
     result.action = "needs_review";
     return false;
   }
@@ -555,6 +688,9 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
     result.portalError =
       "Full-auto portal submit is disabled or dry-run; skipped before any real submit click.";
     result.blocker = result.portalError;
+    result.blockerBucket = "unknown";
+    result.blockerReason = "pre_submit_dry_run";
+    result.reasonCode = "portal_needs_review_pre_submit_dry_run";
     result.action = "portal_pre_submit_dry_run";
     return false;
   }
@@ -569,6 +705,7 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
         "portal_submitted",
       );
       stats.portalSubmitted += 1;
+      result.reasonCode = "portal_submitted";
       result.action = "portal_submitted";
       return true;
     }
@@ -579,11 +716,18 @@ async function tryPortal(job: Job, result: JobResult): Promise<boolean> {
         "portal application needs review",
     );
     result.blocker = result.portalError;
+    result.blockerBucket = blockerBucketFromReasonCode(portal.reasonCode);
+    result.blockerReason =
+      portal.reviewReason ?? portal.reasonCode ?? "unknown";
+    result.reasonCode = portal.reasonCode;
     result.action = "needs_review";
     return false;
   } catch (error) {
     result.portalError = redact(error instanceof Error ? error.message : error);
     result.blocker = result.portalError;
+    result.blockerBucket = "unknown";
+    result.blockerReason = "browser_error";
+    result.reasonCode = "portal_needs_review_browser_error";
     result.action = "needs_review";
     return false;
   }
@@ -636,22 +780,26 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
     stats.resolvedPortal += 1;
     const sessionBlocker = portalSessionBlocker(resolved.portal);
     if (sessionBlocker) {
-      result.portalError = sessionBlocker;
-      result.blocker = sessionBlocker;
+      applyBlockerTelemetry(result, sessionBlocker);
       result.action = "needs_portal_session";
       stats.portalNeedsReview += 1;
-      stats.skippedNoRoute += 1;
-      await markNeedsReview(job, sessionBlocker);
+      stats.reviewOnlyBlocked += 1;
+      if (isExplicitReviewOnlyMutationEnabled()) {
+        stats.skippedNoRoute += 1;
+        await markNeedsReview(job, sessionBlocker.message, sessionBlocker);
+      }
       return result;
     }
-    const policyBlocker = portalAutoSubmitPolicyBlocker(resolved.portal);
+    const policyBlocker = portalAutoSubmitPolicyBlocker(job, resolved.portal);
     if (policyBlocker) {
-      result.portalError = policyBlocker;
-      result.blocker = policyBlocker;
+      applyBlockerTelemetry(result, policyBlocker);
       result.action = "needs_review";
       stats.portalNeedsReview += 1;
-      stats.skippedNoRoute += 1;
-      await markNeedsReview(job, policyBlocker);
+      stats.reviewOnlyBlocked += 1;
+      if (isExplicitReviewOnlyMutationEnabled()) {
+        stats.skippedNoRoute += 1;
+        await markNeedsReview(job, policyBlocker.message, policyBlocker);
+      }
       return result;
     }
     const updated = await updateJob(job.id, {
@@ -669,22 +817,26 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
   if (isHttpUrl(directUrl) && !isAggregatorHost(hostname(directUrl))) {
     const sessionBlocker = portalSessionBlocker(directUrl);
     if (sessionBlocker) {
-      result.portalError = sessionBlocker;
-      result.blocker = sessionBlocker;
+      applyBlockerTelemetry(result, sessionBlocker);
       result.action = "needs_portal_session";
       stats.portalNeedsReview += 1;
-      stats.skippedNoRoute += 1;
-      await markNeedsReview(job, sessionBlocker);
+      stats.reviewOnlyBlocked += 1;
+      if (isExplicitReviewOnlyMutationEnabled()) {
+        stats.skippedNoRoute += 1;
+        await markNeedsReview(job, sessionBlocker.message, sessionBlocker);
+      }
       return result;
     }
-    const policyBlocker = portalAutoSubmitPolicyBlocker(directUrl);
+    const policyBlocker = portalAutoSubmitPolicyBlocker(job, directUrl);
     if (policyBlocker) {
-      result.portalError = policyBlocker;
-      result.blocker = policyBlocker;
+      applyBlockerTelemetry(result, policyBlocker);
       result.action = "needs_review";
       stats.portalNeedsReview += 1;
-      stats.skippedNoRoute += 1;
-      await markNeedsReview(job, policyBlocker);
+      stats.reviewOnlyBlocked += 1;
+      if (isExplicitReviewOnlyMutationEnabled()) {
+        stats.skippedNoRoute += 1;
+        await markNeedsReview(job, policyBlocker.message, policyBlocker);
+      }
       return result;
     }
     if (await tryPortal(job, result)) return result;
@@ -696,11 +848,27 @@ async function handleReadyJob(jobSnapshot: Job): Promise<JobResult> {
     (resolved.emailsFound > 0 || resolved.portalsFound > 0
       ? "alternate_routes_exhausted_no_confirmed_submit"
       : "no_contact_or_direct_ats_found_after_search");
-  stats.skippedNoRoute += 1;
   if (result.portalError || resolved.portal) {
-    await markNeedsReview(job, result.blocker);
-  } else {
+    stats.reviewOnlyBlocked += 1;
+    if (!result.blockerBucket) {
+      result.blockerBucket = "unknown";
+      result.blockerReason = result.blocker;
+    }
+    if (isExplicitReviewOnlyMutationEnabled()) {
+      stats.skippedNoRoute += 1;
+      await markNeedsReview(job, result.blocker, {
+        blockerBucket: result.blockerBucket,
+        blockerReason: result.blockerReason ?? result.blocker,
+        reasonCode: result.reasonCode,
+      });
+    }
+  } else if (isExplicitReviewOnlyMutationEnabled()) {
+    stats.skippedNoRoute += 1;
     await markSkipped(job, result.blocker);
+  } else {
+    stats.reviewOnlyBlocked += 1;
+    result.blockerBucket = "unknown";
+    result.blockerReason = result.blocker;
   }
   return result;
 }
@@ -710,22 +878,24 @@ async function main(): Promise<void> {
   const ready = await getAllJobs(["ready"]);
   stats.totalReadyAtStart = ready.length;
   stats.queuedAtStart = ready.length;
-  const readyBatch = ready
-    .slice()
-    .sort((a, b) =>
-      String(b.readyAt ?? b.updatedAt ?? b.createdAt ?? "").localeCompare(
-        String(a.readyAt ?? a.updatedAt ?? a.createdAt ?? ""),
-      ),
-    )
-    .slice(0, batchLimit);
+  const readyBatch = selectReadyDrainBatch(ready, batchLimit, {
+    hasEmailReady: (job) => Boolean(resolveAutoApplyRecipient(job)),
+  });
   await appendLog({
     ts: startedAt,
     event: "start",
     ready: ready.length,
     batchLimit,
     selected: readyBatch.length,
+    selectedRoutes: readyBatch.map((job) => ({
+      jobId: job.id,
+      ...classifyReadyDrainCandidate(job, {
+        hasEmailReady: Boolean(resolveAutoApplyRecipient(job)),
+      }),
+    })),
     maxPages,
     allowCaptcha: isFullAutoCaptchaEnabled(),
+    mutateReviewOnlyRoutes: isExplicitReviewOnlyMutationEnabled(),
   });
   await writeProgress(false);
 
@@ -771,19 +941,24 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(final, null, 2));
 }
 
-main().catch(async (error) => {
-  stats.errors += 1;
-  const failure = {
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    stats,
-    error: redact(
-      error instanceof Error ? (error.stack ?? error.message) : error,
-    ),
-    paths: { outDir, resultPath, progressPath, logPath },
-  };
-  await mkdir(outDir, { recursive: true });
-  await writeFile(resultPath, JSON.stringify(failure, null, 2));
-  console.error(JSON.stringify(failure, null, 2));
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch(async (error) => {
+    stats.errors += 1;
+    const failure = {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      stats,
+      error: redact(
+        error instanceof Error ? (error.stack ?? error.message) : error,
+      ),
+      paths: { outDir, resultPath, progressPath, logPath },
+    };
+    await mkdir(outDir, { recursive: true });
+    await writeFile(resultPath, JSON.stringify(failure, null, 2));
+    console.error(JSON.stringify(failure, null, 2));
+    process.exitCode = 1;
+  });
+}

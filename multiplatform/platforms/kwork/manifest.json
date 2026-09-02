@@ -1,54 +1,19 @@
 {
- "id": "kwork",
- "name": "Kwork",
- "model": "post",
- "region": "CIS/Global",
- "url": "https://kwork.com",
- "level": 1,
- "enabled": false,
- "updated": "2026-09-01",
- "account": {
-  "email": "a-0f96b4e25039c19b2d0cec1e235297ae@agents.splox.io",
-  "username": "a-0f96b4e25039c19b2d",
-  "password": null,
-  "userId": 25140334,
-  "email_verified": true,
-  "phone_verified": false,
-  "role": "seller (onboarding) \u2014 NOT yet isUserWorker",
-  "password_file": "secrets/kwork.env",
-  "credential_note": "email/username/userId are identifiers; the password lives in multiplatform/secrets/kwork.env (gitignored)"
- },
- "model_notes": "Kwork is Fiverr-shaped: sellers POST kworks (service listings); buyers buy them. There is NO public buyer-gig board to apply to. Autonomous action = post kwork service listings (title/description/price/category/packages).",
- "auth": {
-  "method": "HTTP",
-  "detail": "The `slrememberme` cookie works over plain HTTPS: a fresh slrememberme value bootstraps a logged-in session (returns RORSSQIHEK session cookie + csrf_user_token). Login form: https://kwork.com/settings (email 'Email address or username', 'Password', 'Sign In'). Verified: profile /user/<slug> returns 200 + 'Freelancer'.",
-  "login_url": "https://kwork.com/settings"
- },
- "blocker": {
-  "what": "Create-Kwork link renders on /seller but is SOFT-GATED: clicking it (even logged in) does not navigate to a form (no document request, no modal). Account has window.isEmailVerified=true, window.actorPhoneVerified=null, isSellerOnboardingTester=true, but NO window.isUserWorker. The /seller page shows a 'New phone number' input (phone-linking is part of onboarding).",
-  "constraint_1_phone": "Phone verification is required to complete onboarding / unlock create-kwork. BUT the harness rental-SMS provider (sms_services) supports only 30 consumer services (linkedin, google, uber, telegram, vkcom, ...) and NO freelance platforms (no kwork/flru/weblancer). So a rental number cannot be used for Kwork. A real number the user controls (or a provider-supported number) is needed.",
-  "constraint_2_session": "agent-browser sessions do NOT persist across separate shell invocations (idle-out in ~1-2 min). Multi-step RE (login -> form -> submit -> capture) MUST be done in ONE command/session.",
-  "fix": "1) Link a phone number on /seller (need a real number \u2014 SMS provider does not cover kwork). 2) Complete the seller profile onboarding to set window.isUserWorker=true. 3) Confirm 'Create a Kwork' navigates to the form. 4) In ONE session: open the form, `agent-browser network har start`, fill a draft kwork, submit, `agent-browser network har stop`, inspect the POST (likely /save-kwork or /api/... endpoint) for fields+payload. 5) build kwork-orchestrator.mjs (brain: generate kwork ideas) + kwork-apply.mjs (driver: POST the kwork) + kwork-orch.sh (worker). 6) enable in registry.",
-  "next_session": "Blocked on a usable phone number for Kwork. Once available, run the single-session create-kwork RE above."
- },
- "endpoints_found": {
-  "save": "/save-kwork",
-  "card_images_preview": "/kwork-card-images-preview",
-  "set_icon": "/kwork-set-icon",
-  "checkworkeroffers": "/api/user/checkworkeroffers",
-  "app_store": "kwork/id1456387980"
- },
- "persona_profile_to_set": {
-  "name": "Nikita N0xeid",
-  "title": "Senior Software Engineer (Node.js, TypeScript, React, backend)",
-  "location": "Falkenstein, Germany",
-  "skills": [
-   "Node.js",
-   "TypeScript",
-   "React",
-   "API development",
-   "backend",
-   "data/real-time systems"
-  ]
- }
+  "id": "kwork",
+  "name": "Kwork",
+  "model": "post",
+  "fingerprintSeed": 777,
+  "home": "https://kwork.com",
+  "login": { "url": "https://kwork.com/settings", "email": "a-0f96b4e25039c19b2d0cec1e235297ae@agents.splox.io", "password_file": "/opt/job-ops/multiplatform/secrets/kwork.env" },
+  "account": { "email": "a-0f96b4e25039c19b2d0cec1e235297ae@agents.splox.io", "username": "a-0f96b4e25039c19b2d", "user_id": "25140334" },
+  "blockers": ["phone-verification-voice-call"],
+  "reversed": {
+    "login_endpoint": "POST /api/user/login (200)",
+    "create_url": "https://kwork.com/new -> 302 /manage_kworks",
+    "create_button": "a.js-create-kwork-btn 'Create a Kwork'",
+    "phone_modal": "phone-setting-modal: country v-select (default USA) + input[type=tel].phone-setting-modal__get-phone-input + Continue=span.kw-button (inactive until valid)",
+    "verification": "VOICE CALL with code (not SMS): 'You'll receive a call with a verification code.'",
+    "endpoints": ["/phone_codes (global countries)", "/captcha/check_phone_captcha_enabled"]
+  },
+  "notes": "isUserWorker=true, email verified, phone NOT verified. Create-a-Kwork gated behind voice-call phone verification. Rental SMS provider does not list Kwork and can't take a voice call."
 }
